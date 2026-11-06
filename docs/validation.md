@@ -55,7 +55,7 @@ yyjson::read<Request>(R"({"method":"get","verbose":true})");
 *   A key with `null` is a key. Thus `{"method":"get","verbose":null}` is rejected.
 *   `merge_into` checks the keys of the patch, without the keys whose value is `null`.
 *   When `yyjson::reject_unknown_keys` applies too, the error is the error of the closed struct.
-*   The setting applies only to the objects read into that struct. It does not apply to the types of its fields.
+*   The setting applies only to the objects read into that struct. It does not apply to the types of its fields. A field can close the struct that it holds, as in [Keywords of an object at a field](#keywords-of-an-object-at-a-field).
 *   A write is not changed. A struct writes only its fields and its tags.
 *   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes no `yyjson::additional_properties(false)`. A struct with `yyjson::as_array` takes `yyjson::items(false)` instead.
 *   `yyjson::additional_properties` with the constraints of a value applies to a map field, as in [Constraints of elements](#constraints-of-elements). On a struct, it is a compile error.
@@ -83,7 +83,7 @@ yyjson::read<Patch>("{}");
 *   `merge_into` counts the members of the patch, without the members whose value is `null`.
 *   The error has the path of the object. When the struct also rejects a key, because it is closed or because of a read policy, the error of the key comes first.
 *   A minimum greater than the maximum is a compile error. A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes neither setting.
-*   A write does not check the number. A struct with `yyjson::min_properties` writes each field that equals its [default value](conversions.md#default-values-and-required-keys), as `yyjson::emit_defaults` does, because the read counts the members. It does not write an empty `std::optional`.
+*   A write does not check the number. A struct with `yyjson::min_properties` writes each field that equals its [default value](conversions.md#default-values-and-required-keys), as `yyjson::emit_defaults` does, because the read counts the members. It does not write an empty `std::optional`. `yyjson::min_properties` in a `yyjson::all_of` of the struct has the same effect. In the other [conditions](#keywords-of-an-object-in-the-conditions) and at a [field](#keywords-of-an-object-at-a-field), it does not change the write.
 
 ### The names of the members of a struct
 
@@ -578,8 +578,70 @@ yyjson::read<Billing>(R"({"card":"c","postal":"1"})");
 *   `yyjson::any_of_required` has the same message as `yyjson::one_of_required` without the keys of a group. The message gives the groups of the setting in their order.
 *   A struct can have more than one of these settings and the other conditions. The object must satisfy all of them. The read checks them in the order of `yyjson::annotate`, after the keys, the number of members and the values of the fields.
 *   An empty list of keys, an empty group or no group is a compile error. So is a key given twice in one list or in one group, and `yyjson::dependent_required` that lists its own key. Two groups can share a key.
-*   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes none of these settings. The subschemas of the conditions do not take them.
+*   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes none of these settings. The subschemas of the conditions take them, as in [Keywords of an object in the conditions](#keywords-of-an-object-in-the-conditions).
 *   A write does not check the keys. A field that equals its [default value](conversions.md#default-values-and-required-keys) is left out also when a setting names its key. The text can then fail the read. Thus give such a field `std::optional` and no default, because a write writes it only when it holds a value. `yyjson::emit_defaults` on the field writes it in every case.
+
+#### Keywords of an object in the conditions
+
+The subschemas of the conditions of a struct also take `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)` and the three settings above. Then they check the keys of the object and their number:
+
+```cpp
+struct Shape
+{
+    std::optional<std::string> kind;
+    std::optional<double> r;
+    std::optional<double> w;
+};
+template <>
+inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+    yyjson::then(yyjson::field("kind"), yyjson::field("r", yyjson::required), yyjson::additional_properties(false)),
+    yyjson::else_(yyjson::max_properties(2))));
+
+yyjson::read<Shape>(R"({"kind":"circle","r":1,"w":2})");
+// throws: Shape has the key "w", which yyjson::additional_properties(false) of yyjson::if_then_else rejects at /w (line 1, column 28, pos 27)
+yyjson::read<Shape>(R"({"kind":"square","r":1,"w":2})");
+// throws: Shape has more properties than the maximum 2 of yyjson::if_then_else (line 1, column 1, pos 0)
+```
+
+*   `yyjson::additional_properties(false)` in a subschema accepts only the keys that `yyjson::field` names in the same subschema, and the keys of the [tags](conversions.md#tagged-variants). `yyjson::field("key")` without settings names a key and puts no other condition on it.
+*   The count keywords count the members of the JSON object, as on the [struct](#the-number-of-members-of-a-struct). `yyjson::property_names` checks each key of the object, as on the [struct](#the-names-of-the-members-of-a-struct).
+*   `merge_into` takes the members of the patch without the members whose value is `null`, as for the other conditions.
+*   A subschema checks the keys first: `yyjson::additional_properties(false)`, then `yyjson::property_names`, then the number of the members. It then checks the fields and its other conditions.
+*   The message names the combinator of the struct. The error of a key has the path of the member of the key. The other errors have the path of the object.
+
+#### Keywords of an object at a field
+
+A field, an element or a value of a map that holds a struct also takes the keywords of an object. These are `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)`, `yyjson::field("key", s...)`, the three settings above and the combinators with them. A `std::variant` with a struct alternative takes them too. They apply to the struct at that position only:
+
+```cpp
+struct Point
+{
+    std::optional<int> x;
+    std::optional<int> y;
+};
+struct Path
+{
+    std::optional<Point> start;
+    std::vector<Point> points;
+};
+template <>
+inline constexpr auto yyjson::annotations<Path> = yyjson::annotate(
+    yyjson::field("start", yyjson::field("x", yyjson::required), yyjson::additional_properties(false)),
+    yyjson::field("points", yyjson::items(yyjson::min_properties(1))));
+
+yyjson::read<Path>(R"({"start":{"x":1,"y":2}})");
+// throws: the value of the key "start" of Path has a key that yyjson::additional_properties(false) rejects at /start (line 1, column 10, pos 9)
+yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
+// throws: an element of the value of the key "points" of Path has fewer properties than the minimum 1 at /points/1 (line 1, column 20, pos 19)
+```
+
+*   `yyjson::field` names a field of the struct at the position by its JSON key. A key that the struct does not have is a compile error. For a `std::variant`, each struct alternative must have the key.
+*   That `yyjson::field` takes only `yyjson::required` and the keywords of the value. `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, `yyjson::default_`, `yyjson::default_from` and `yyjson::emit_defaults` in it are compile errors. Give them in the `yyjson::annotate` of the struct.
+*   The object has a key as in the [conditions between fields](#conditions-between-fields). `read_into` checks the keys that it reads. `merge_into` checks the keys of the patch without `null`, with the values of the struct after the merge.
+*   The error has the path of the struct. The message gives the keyword that fails, and not the key.
+*   A struct without such settings at its position is read as before. With them, a read keeps the JSON object of the struct until it checks the settings.
+*   `yyjson::additional_properties(false)` on a field that holds no struct is a compile error. A map takes `yyjson::additional_properties(s...)` with the settings of its values.
 
 ### How constraints are checked
 
@@ -602,7 +664,7 @@ yyjson::read<Billing>(R"({"card":"c","postal":"1"})");
 *   These are compile errors, most of them with a `static_assert` that tells the reason:
     *   A constraint on a field of a type that it does not apply to, such as `yyjson::minimum` on a string or `yyjson::unique_items` on a set.
     *   `nullptr` in `yyjson::const_` or `yyjson::enum_` on a field that cannot be `null`, such as a `std::optional<int>`. Only `yyjson::nullable`, an owning pointer and a value of the DOM take it.
-    *   A constraint directly on a struct that is not an [`as_array`](conversions.md#a-struct-as-a-json-array) struct, on a [skipped field](conversions.md#skipped-fields), or on a field that [`yyjson::adjacent_tag`](conversions.md#tagged-variants) tags. A struct takes `yyjson::min_properties` and `yyjson::max_properties` as settings of its own.
+    *   A constraint directly on a struct that is not an [`as_array`](conversions.md#a-struct-as-a-json-array) struct, on a [skipped field](conversions.md#skipped-fields), or on a field that [`yyjson::adjacent_tag`](conversions.md#tagged-variants) tags. A struct takes the [keywords of an object](#keywords-of-an-object-at-a-field) only.
     *   A constraint other than `yyjson::pattern` and the combinators, given twice in one subschema.
     *   `yyjson::multiple_of` of 0 or less.
     *   Constraints that leave no value to read, such as `yyjson::minimum(1)` with `yyjson::maximum(0)`, or `yyjson::exclusive_minimum(1)` with `yyjson::maximum(1)`. A minimum of a length, of the items, of `contains` or of the properties that is greater than its maximum is one too. So is a `yyjson::const_` or a `yyjson::enum_` with no value within the bounds and the lengths.
@@ -749,13 +811,13 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 
 | Keyword | cpp-yyjson | Difference |
 | --- | --- | --- |
-| `properties` | the fields of a struct, or `yyjson::field` in a combinator | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
+| `properties` | the fields of a struct, or `yyjson::field` in a combinator or at a [struct position](#keywords-of-an-object-at-a-field) | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
 | `required` | `yyjson::required`, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. |
-| `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
+| `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, in its conditions or at a struct position, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
 | `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | none. |
-| `propertyNames` | `yyjson::property_names(settings...)` on a struct or a map | none. |
-| `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct or a map | none. |
-| `dependentRequired` | `yyjson::dependent_required("key", {"keys"...})` on a struct | none. |
+| `propertyNames` | `yyjson::property_names(settings...)` on a struct, in its conditions, at a struct position or on a map | none. |
+| `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct, in its conditions, at a struct position or on a map | none. |
+| `dependentRequired` | `yyjson::dependent_required("key", {"keys"...})` on a struct, in its conditions or at a struct position | none. |
 
 ### Combining schemas
 

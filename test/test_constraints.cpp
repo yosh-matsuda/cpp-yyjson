@@ -1358,6 +1358,146 @@ template <>
 inline constexpr auto yyjson::annotations<PresenceKnown> =
     yyjson::annotate(yyjson::field("b", yyjson::rename("bb")), yyjson::any_of_required({"a"}, {"bb", "s"}));
 
+// additional_properties(false) in then and else_: a circle has only a kind and a radius, another shape only a kind
+// and a width
+struct ConditionClosed
+{
+    std::optional<std::string> kind;
+    std::optional<double> r;
+    std::optional<int> w;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionClosed> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+    yyjson::then(yyjson::field("kind"), yyjson::field("r", yyjson::required, yyjson::minimum(0)),
+                 yyjson::additional_properties(false)),
+    yyjson::else_(yyjson::field("kind"), yyjson::field("w"), yyjson::additional_properties(false))));
+// the keys of tags are allowed: an adjacent tag, and the internal tag of an alternative
+struct ClosedTagged
+{
+    std::variant<int, std::string> data;
+    std::optional<int> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedTagged> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})),
+                     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::required)),
+                                          yyjson::then(yyjson::field("n"), yyjson::field("data"),
+                                                       yyjson::additional_properties(false))));
+struct ClosedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedAlternative> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
+                                          yyjson::then(yyjson::field("a"), yyjson::additional_properties(false))));
+using ClosedAlternatives = std::variant<ClosedAlternative, ConditionPoint>;
+template <>
+inline constexpr auto yyjson::annotations<ClosedAlternatives> =
+    yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
+
+// yyjson::min_properties and yyjson::max_properties in the conditions count the keys of the object
+struct ConditionCounted
+{
+    std::optional<std::string> kind;
+    std::optional<int> a;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionCounted> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
+                         yyjson::then(yyjson::min_properties(3)), yyjson::else_(yyjson::max_properties(2))),
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2), yyjson::max_properties(2)),
+                         yyjson::then(yyjson::field("a", yyjson::required))),
+    yyjson::not_(yyjson::min_properties(5)));
+// the internal tag of an alternative is a key of its object
+struct CountedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedAlternative> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::field("b", yyjson::required))));
+using CountedAlternatives = std::variant<CountedAlternative, ConditionPoint>;
+template <>
+inline constexpr auto yyjson::annotations<CountedAlternatives> =
+    yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
+// yyjson::property_names in a condition
+struct ConditionNamed
+{
+    std::optional<std::string> kind;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionNamed> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("short"), yyjson::required)),
+                                          yyjson::then(yyjson::property_names(yyjson::max_length(4)))));
+
+// yyjson::one_of_required and yyjson::any_of_required in the conditions require the keys of groups
+struct ConditionGrouped
+{
+    std::optional<std::string> kind;
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionGrouped> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
+                         yyjson::then(yyjson::field("c", yyjson::maximum(9)), yyjson::one_of_required({"a"}, {"b"})),
+                         yyjson::else_(yyjson::any_of_required({"a", "c"}, {"b"}), yyjson::max_properties(2))));
+// the internal tag of an alternative is not a member of a group
+struct GroupedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupedAlternative> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::any_of_required({"a"}, {"b"}))));
+using GroupedAlternatives = std::variant<GroupedAlternative, ConditionPoint>;
+template <>
+inline constexpr auto yyjson::annotations<GroupedAlternatives> =
+    yyjson::annotate(yyjson::internal_tag("type", {"g", "p"}));
+
+// the keywords of an object on a struct that a field, an element, a value of a map and an alternative hold
+struct Positioned
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+struct PositionedOther
+{
+    std::optional<int> a;
+    int x = 0;
+};
+using PositionedAlternatives = std::variant<Positioned, PositionedOther>;
+template <>
+inline constexpr auto yyjson::annotations<PositionedAlternatives> =
+    yyjson::annotate(yyjson::internal_tag("type", {"p", "o"}));
+struct Positions
+{
+    std::optional<Positioned> field;
+    std::vector<Positioned> list;
+    std::map<std::string, Positioned> map;
+    std::optional<PositionedAlternatives> alternative;
+    std::optional<Positioned> groups;
+    std::optional<Positioned> conditional;
+};
+template <>
+inline constexpr auto yyjson::annotations<Positions> = yyjson::annotate(
+    yyjson::field("field", yyjson::min_properties(1), yyjson::field("a", yyjson::required, yyjson::maximum(5)),
+                  yyjson::additional_properties(false)),
+    yyjson::field("list", yyjson::items(yyjson::max_properties(1), yyjson::property_names(yyjson::max_length(1)))),
+    yyjson::field("map", yyjson::additional_properties(yyjson::not_(yyjson::min_properties(2)))),
+    yyjson::field("alternative", yyjson::additional_properties(false), yyjson::field("a", yyjson::minimum(0))),
+    yyjson::field("groups", yyjson::one_of_required({"a"}, {"b"})),
+    yyjson::field("conditional",
+                  yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
+                                       yyjson::then(yyjson::field("a"), yyjson::additional_properties(false)),
+                                       yyjson::else_(yyjson::dependent_required("b", {"a"})))));
+
 namespace struct_condition_rules
 {
     // the settings that a condition of a struct takes, which the types alone tell
@@ -1405,10 +1545,21 @@ namespace struct_condition_rules
                   presence_error<PresenceKnown> == none);
     static_assert(yyjson::detail::has_struct_conditions<PresenceKnown> &&
                   !yyjson::detail::has_constraints<PresenceKnown>);
-    // they are settings of a struct, not of a subschema or a field, until a struct in them takes them
-    static_assert(!yyjson::detail::subschema_setting<decltype(yyjson::one_of_required({"a"}, {"b"}))> &&
-                  !yyjson::detail::subschema_setting<decltype(yyjson::dependent_required("a", {"b"}))> &&
-                  !yyjson::detail::field_setting<decltype(yyjson::any_of_required({"a"}))>);
+    // the keywords of an object at a position of a struct, which a map, a struct written as an array and a value
+    // of another type do not take as a struct
+    using yyjson::detail::holds_object_struct, yyjson::detail::object_struct_value;
+    static_assert(object_struct_value<Positioned>() && holds_object_struct<PositionedAlternatives>() &&
+                  holds_object_struct<ClosedAlternatives>());
+    static_assert(!object_struct_value<int>() && !object_struct_value<std::map<std::string, int>>() &&
+                  !object_struct_value<std::vector<Positioned>>() && !object_struct_value<Scores>() &&
+                  !holds_object_struct<std::variant<int, std::string>>() && !object_struct_value<yyjson::object>());
+    using yyjson::detail::field_schema, yyjson::detail::struct_object_node;
+    static_assert(field_schema<Positions, 0>::node.closed && field_schema<Positions, 3>::node.closed &&
+                  !struct_object_node<field_schema<Positions, 1>> && !struct_object_node<field_schema<Positions, 4>>);
+    // they are settings of a subschema and of a field too, as a struct at any position takes them
+    static_assert(yyjson::detail::subschema_setting<decltype(yyjson::one_of_required({"a"}, {"b"}))> &&
+                  yyjson::detail::subschema_setting<decltype(yyjson::dependent_required("a", {"b"}))> &&
+                  yyjson::detail::field_setting<decltype(yyjson::any_of_required({"a"}))>);
 }  // namespace struct_condition_rules
 
 #if FIELD_RFL_ANNOTATIONS
@@ -3253,6 +3404,188 @@ TEST(Constraints, StructConditionsOfValues)
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":[]})", n);
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["b"]})", "");
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["a"],"n":1})", "");
+}
+
+TEST(Constraints, ClosedConditions)
+{
+    const auto closed = [](std::string_view type, std::string_view key) {
+        return std::string(type) + R"( has the key ")" + std::string(key) +
+               R"(", which yyjson::additional_properties(false) of yyjson::if_then_else rejects)";
+    };
+    const auto shape = [&](std::string_view json, std::string_view key = "") {
+        expect_conditions<ConditionClosed>(json, key.empty() ? "" : closed("ConditionClosed", key),
+                                           key.empty() ? "" : "/" + std::string(key));
+    };
+    shape(R"({"kind":"circle","r":1})");
+    shape(R"({"r":1,"kind":"circle"})");
+    shape(R"({})");
+    shape(R"({"kind":"square","w":1})");
+    shape(R"({"kind":"circle","r":1,"w":2})", "w");
+    shape(R"({"w":2,"kind":"circle","r":1})", "w");
+    shape(R"({"kind":"circle","r":1,"x":1})", "x");
+    shape(R"({"kind":"square","r":1})", "r");
+    shape(R"({"x":1})", "x");
+    // in a subschema, the keys come before the values
+    shape(R"({"kind":"circle","r":-1,"w":2})", "w");
+
+    expect_conditions<ClosedTagged>(R"({"kind":"i","data":1,"n":1})", "");
+    expect_conditions<ClosedTagged>(R"({"n":1,"data":"a","kind":"s"})", "");
+    expect_conditions<ClosedTagged>(R"({"kind":"i","data":1,"n":1,"z":0})", closed("ClosedTagged", "z"), "/z");
+    expect_conditions<ClosedTagged>(R"({"kind":"i","data":1,"z":0})", "");
+
+    expect_conditions<ClosedAlternatives>(R"({"type":"c","a":1})", "");
+    expect_conditions<ClosedAlternatives>(R"({"a":1,"type":"c"})", "");
+    expect_conditions<ClosedAlternatives>(R"({"type":"c","a":1,"b":2})", closed("ClosedAlternative", "b"), "/b");
+
+    // merge_into checks the keys of the patch
+    auto merged = ConditionClosed{"circle", 1.0, {}};
+    yyjson::merge_into(R"({"kind":"circle","r":2})", merged);
+    EXPECT_EQ(merged.r, 2.0);
+    // the patch has no key "kind", so yyjson::else_ applies
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"r":3})", merged); }).path(), "/r");
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":"circle","r":1,"w":1})", merged); });
+    EXPECT_EQ(e.path(), "/w");
+}
+
+TEST(Constraints, CountedConditions)
+{
+    const auto fewer = "ConditionCounted has fewer properties than the minimum 3 of yyjson::if_then_else";
+    const auto more = "ConditionCounted has more properties than the maximum 2 of yyjson::if_then_else";
+    expect_conditions<ConditionCounted>(R"({})", "");
+    expect_conditions<ConditionCounted>(R"({"kind":"pair","a":1,"x":2})", "");
+    expect_conditions<ConditionCounted>(R"({"x":2,"kind":"pair","a":1,"y":3})", "");
+    expect_conditions<ConditionCounted>(R"({"kind":"one"})", "");
+    expect_conditions<ConditionCounted>(R"({"kind":"pair","a":1})", fewer);
+    expect_conditions<ConditionCounted>(R"({"kind":"one","a":1,"x":2})", more);
+    // the keys of no field count too
+    expect_conditions<ConditionCounted>(R"({"x":1,"y":2,"z":3})", more);
+    expect_conditions<ConditionCounted>(R"({"a":1,"x":2})", "");
+    expect_conditions<ConditionCounted>(R"({"kind":"one","x":2})",
+                                        R"(ConditionCounted is not constructible from JSON without the key "a", )"
+                                        R"(which yyjson::if_then_else requires)");
+    expect_conditions<ConditionCounted>(R"({"kind":"pair","a":1,"x":2,"y":3,"z":4})",
+                                        "ConditionCounted has the keys and the values that yyjson::not_ rejects");
+    // a null is a key of the object that a read counts, and no key of a patch
+    expect_conditions<ConditionCounted>(R"({"kind":"one","a":null,"x":2})", more, "", false);
+    auto merged = ConditionCounted{};
+    yyjson::merge_into(R"({"kind":"one","a":null})", merged);
+    EXPECT_EQ(merged.kind, "one");
+
+    expect_conditions<CountedAlternatives>(R"({"type":"c","b":1})", "");
+    expect_conditions<CountedAlternatives>(R"({"type":"c"})", "");
+    expect_conditions<CountedAlternatives>(R"({"type":"c","a":1})",
+                                           R"(CountedAlternative is not constructible from JSON without the key )"
+                                           R"("b", which yyjson::if_then_else requires)");
+    EXPECT_NO_THROW((void)yyjson::read<CountedAlternative>(R"({"a":1})"));
+
+    expect_conditions<ConditionNamed>(R"({"kind":"short","a":1})", "");
+    expect_conditions<ConditionNamed>(R"({"kind":"long","alpha":1})", "");
+    expect_conditions<ConditionNamed>(R"({"kind":"short","alpha":1})",
+                                      R"(a key of ConditionNamed is longer than the maximum length 4 in )"
+                                      R"(yyjson::property_names of yyjson::if_then_else)",
+                                      "/alpha");
+}
+
+TEST(Constraints, GroupedConditions)
+{
+    const auto without = [](std::string_view groups) {
+        return "ConditionGrouped is not constructible from JSON without all the keys of one of " + std::string(groups);
+    };
+    // in the order of the fields, and out of it
+    expect_conditions<ConditionGrouped>(R"({"kind":"pair","a":1})", "");
+    expect_conditions<ConditionGrouped>(R"({"b":1,"kind":"pair"})", "");
+    expect_conditions<ConditionGrouped>(
+        R"({"kind":"pair","a":1,"b":2})",
+        R"(ConditionGrouped is not constructible from JSON with all the keys of more than one of ["a"], ["b"])");
+    expect_conditions<ConditionGrouped>(R"({"kind":"pair","c":1})", without(R"(["a"], ["b"])"));
+    // the values of the fields come first
+    expect_conditions<ConditionGrouped>(R"({"kind":"pair","c":10})",
+                                        R"(the value of the key "c" of ConditionGrouped is greater than)", "/c");
+    expect_conditions<ConditionGrouped>(R"({"a":1,"c":2})", "");
+    expect_conditions<ConditionGrouped>(R"({"c":2,"b":1})", "");
+    expect_conditions<ConditionGrouped>(R"({"a":1})", without(R"(["a", "c"], ["b"])"));
+    expect_conditions<ConditionGrouped>(R"({})", without(R"(["a", "c"], ["b"])"));
+    // the number of the keys comes before the groups
+    expect_conditions<ConditionGrouped>(R"({"kind":"one","x":1,"y":2})",
+                                        "ConditionGrouped has more properties than the maximum 2 of "
+                                        "yyjson::if_then_else");
+    expect_conditions<ConditionGrouped>(R"({"kind":"one","x":1})", without(R"(["a", "c"], ["b"])"));
+    expect_conditions<ConditionGrouped>(R"({"kind":"one","b":1,"y":2})",
+                                        "ConditionGrouped has more properties than the maximum 2 of "
+                                        "yyjson::if_then_else");
+
+    expect_conditions<GroupedAlternatives>(R"({"type":"g"})", "");
+    expect_conditions<GroupedAlternatives>(R"({"type":"g","b":1})", "");
+    expect_conditions<GroupedAlternatives>(R"({"a":1,"type":"g","b":1})", "");
+}
+
+TEST(Constraints, ObjectKeywordsAtPositions)
+{
+    const auto value = [](std::string_view key) {
+        return R"(the value of the key ")" + std::string(key) + R"(" of Positions )";
+    };
+    const auto element = [](std::string_view key) {
+        return R"(an element of the value of the key ")" + std::string(key) + R"(" of Positions )";
+    };
+    const auto closed = "has a key that yyjson::additional_properties(false) rejects";
+    const auto fields = "does not have the keys and the values that yyjson::field gives";
+    expect_conditions<Positions>(
+        R"({"field":{"a":1},"list":[{"a":1},{}],"map":{"k":{"a":1}},"alternative":{"type":"p","a":1},)"
+        R"("groups":{"a":1},"conditional":{"a":1}})",
+        "");
+    expect_conditions<Positions>(R"({"field":{}})", value("field") + "has fewer properties than the minimum 1",
+                                 "/field");
+    expect_conditions<Positions>(R"({"field":{"b":1}})", value("field") + closed, "/field");
+    expect_conditions<Positions>(R"({"field":{"a":1,"z":1}})", value("field") + closed, "/field");
+    // the empty key is not a tag
+    expect_conditions<Positions>(R"({"field":{"a":1,"":1}})", value("field") + closed, "/field");
+    expect_conditions<Positions>(R"({"field":{"a":9}})", value("field") + fields, "/field");
+    // a null in a field that cannot hold null is no key
+    expect_conditions<Positions>(R"({"field":{"a":null,"b":null}})", value("field") + closed, "/field");
+
+    expect_conditions<Positions>(R"({"list":[{"a":1},{"a":1,"b":2}]})",
+                                 element("list") + "has more properties than the maximum 1", "/list/1");
+    expect_conditions<Positions>(
+        R"({"list":[{"zz":1}]})",
+        element("list") + "has a key that does not satisfy the constraints of yyjson::property_names", "/list/0");
+    expect_conditions<Positions>(R"({"map":{"k":{"a":1,"b":2}}})",
+                                 element("map") + "satisfies the settings of yyjson::not_", "/map/k");
+
+    // the internal tag is a key that the alternative has
+    expect_conditions<Positions>(R"({"alternative":{"type":"o","x":1}})", value("alternative") + closed,
+                                 "/alternative");
+    expect_conditions<Positions>(R"({"alternative":{"a":-1,"type":"p"}})", value("alternative") + fields,
+                                 "/alternative");
+    expect_conditions<Positions>(R"({"alternative":{"type":"o","a":2}})", "");
+
+    expect_conditions<Positions>(R"({"groups":{"b":1}})", "");
+    expect_conditions<Positions>(R"({"groups":{"a":1,"b":1}})",
+                                 value("groups") + "has all the keys of more than one group of yyjson::one_of_required",
+                                 "/groups");
+    expect_conditions<Positions>(R"({"groups":{}})",
+                                 value("groups") +
+                                     "does not have all the keys of one group of "
+                                     "yyjson::one_of_required or any_of_required",
+                                 "/groups");
+    expect_conditions<Positions>(
+        R"({"conditional":{"a":1,"b":1}})",
+        value("conditional") + "satisfies the settings of yyjson::if_ and not those of yyjson::then", "/conditional");
+    expect_conditions<Positions>(
+        R"({"conditional":{"b":1}})",
+        value("conditional") + "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_",
+        "/conditional");
+    expect_conditions<Positions>(R"({"conditional":{}})", "");
+
+    // merge_into checks the keys of the patch, with the values of the merged struct
+    auto merged = Positions{};
+    merged.field = Positioned{1, {}};
+    yyjson::merge_into(R"({"field":{"a":2}})", merged);
+    EXPECT_EQ(merged.field->a, 2);
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"field":{"b":1}})", merged); });
+    EXPECT_TRUE(message_of(e).starts_with(value("field") + closed)) << e.what();
+    merged.groups = Positioned{1, {}};
+    yyjson::merge_into(R"({"groups":{"a":null,"b":1}})", merged);
+    EXPECT_EQ(merged.groups->b, 1);
 }
 
 TEST(Constraints, DomConditions)

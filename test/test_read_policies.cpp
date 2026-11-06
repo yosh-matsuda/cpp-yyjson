@@ -400,6 +400,22 @@ struct UncountedDefaults
 template <>
 inline constexpr auto yyjson::annotations<UncountedDefaults> =
     yyjson::annotate(yyjson::field("b", yyjson::default_), yyjson::max_properties(3));
+// `yyjson::min_properties` in `yyjson::all_of`, which applies in every case, and in a condition
+struct AllOfCountedDefaults
+{
+    int b = 5;
+};
+template <>
+inline constexpr auto yyjson::annotations<AllOfCountedDefaults> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_), yyjson::all_of(yyjson::all_of(yyjson::min_properties(0))));
+struct ConditionCountedDefaults
+{
+    int b = 5;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionCountedDefaults> = yyjson::annotate(
+    yyjson::field("b", yyjson::default_),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("b", yyjson::required)), yyjson::then(yyjson::min_properties(0))));
 
 // types that constrain the keys of the members of their objects
 struct NamedPt
@@ -1363,6 +1379,8 @@ TEST(PropertyCounts, Write)
     // `yyjson::min_properties` writes the fields equal to their defaults, but not an empty optional
     EXPECT_EQ(std::string(yyjson::write(CountedDefaults())), R"({"a":0,"b":5})");
     EXPECT_EQ(std::string(yyjson::write(UncountedDefaults())), R"({"a":0})");
+    EXPECT_EQ(std::string(yyjson::write(AllOfCountedDefaults())), R"({"b":5})");
+    EXPECT_EQ(std::string(yyjson::write(ConditionCountedDefaults())), R"({})");
     EXPECT_EQ(std::string(yyjson::write(std::vector{CountedDefaults()})), R"([{"a":0,"b":5}])");
     auto doc = yyjson::object(CountedDefaults());
     EXPECT_EQ(std::string(doc.write()), R"({"a":0,"b":5})");
