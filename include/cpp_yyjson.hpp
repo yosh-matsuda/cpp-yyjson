@@ -10805,6 +10805,17 @@ namespace yyjson
                 }
                 return false;
             }
+            // Whether the object `object` has the key of a tag.
+            [[nodiscard]] static bool any(const void* object) noexcept
+            {
+                for (const auto* p = innermost_; p != nullptr; p = p->outer_)
+                {
+                    if (p->object_ != object) continue;
+                    if (p->original_ == nullptr) return true;
+                    object = p->original_;
+                }
+                return false;
+            }
             // Calls `f(key)` for the key of each tag in the object `object`.
             template <typename F>
             static void for_each_key(const void* object, F&& f)
@@ -21839,7 +21850,7 @@ namespace yyjson
 
         // The JSON values that a value of the type T reads with the settings of `Level`, a `node_schema` or
         // `no_settings_level`, or more of them.  A struct, a map, a DOM value, a variant and a type of a caster
-        // of the user give only their kinds; a bound of the keys of a struct goes here.
+        // of the user give only their kinds; `one_of_struct_relations` compares the keys of structs.
         template <typename T, typename Level>
         consteval json_bound bound_of()
         {
@@ -21919,17 +21930,43 @@ namespace yyjson
             using type = union_alternative_schema<V, I>;
         };
 
+        // Whether the objects that the struct alternatives of the `yyjson::one_of_variant` V read are contained in
+        // or apart from each other, by their keys.  Defined after the keys of a struct.
+        template <typename V>
+        struct one_of_struct_relations;
+
         // Of the alternatives of the `yyjson::one_of_variant` V: the bounds of the values that each one reads,
         // whether two of them may read one value, and the first one whose values another one reads all of.
         template <typename V>
         struct one_of_relations
         {
             using traits = union_traits<std::remove_cv_t<V>>;
+            using structs = one_of_struct_relations<V>;
             static constexpr std::size_t size = std::variant_size_v<V>;
             static constexpr std::array<json_bound, size> bounds = []<std::size_t... Is>(std::index_sequence<Is...>) {
                 return std::array<json_bound, size>{
                     bound_of<std::variant_alternative_t<Is, V>, typename union_alternative_level<V, Is>::type>()...};
             }(std::make_index_sequence<size>{});
+            // The values of the alternative i other than objects.
+            static constexpr json_bound other_kinds(std::size_t i) noexcept
+            {
+                auto b = bounds[i];
+                b.object = {};
+                return b;
+            }
+            // Whether the alternative b reads each value that a reads, or no value that a reads.
+            static constexpr bool contains(std::size_t b, std::size_t a) noexcept
+            {
+                return bound_contains(bounds[b], bounds[a]) ||
+                       (structs::objects_contain(b, a) && bound_contains(other_kinds(b), other_kinds(a)));
+            }
+            // `by_key` lets a key that a closed struct does not name tell it apart, which the key of the tag of an
+            // enclosing `yyjson::internal_tag` does not.
+            static constexpr bool disjoint(std::size_t a, std::size_t b, bool by_key = true) noexcept
+            {
+                return bounds_disjoint(bounds[a], bounds[b]) ||
+                       (structs::objects_disjoint(a, b, by_key) && bounds_disjoint(other_kinds(a), other_kinds(b)));
+            }
 
             // The alternative before J that J contains or that contains J, as a pair of the contained one and the
             // other one; each J is a constant evaluation of its own to stay within the limits of a compiler.
@@ -21943,8 +21980,8 @@ namespace yyjson
                 using A = typename traits::template alternative<J>;
                 for (std::size_t i = 0; i < J; ++i)
                 {
-                    if (bound_contains(bounds[i], bounds[J])) return alternative_pair{J, i};
-                    if (bound_contains(bounds[J], bounds[i])) return alternative_pair{i, J};
+                    if (contains(i, J)) return alternative_pair{J, i};
+                    if (contains(J, i)) return alternative_pair{i, J};
                 }
                 const auto same = []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return std::array<bool, J + 1>{std::same_as<typename traits::template alternative<Is>, A>...};
@@ -21961,10 +21998,10 @@ namespace yyjson
             }(std::make_index_sequence<size>{});
 
             // `overlapping<J>[i]`: whether the alternatives i and J may both read a JSON value
-            template <std::size_t J>
+            template <std::size_t J, bool ByKey = true>
             static constexpr std::array<bool, size> overlapping = [] {
                 auto column = std::array<bool, size>{};
-                for (std::size_t i = 0; i < size; ++i) column[i] = i != J && !bounds_disjoint(bounds[i], bounds[J]);
+                for (std::size_t i = 0; i < size; ++i) column[i] = i != J && !disjoint(i, J, ByKey || !structs::closes);
                 return column;
             }();
             template <std::size_t J>
@@ -22517,6 +22554,258 @@ namespace yyjson
         }
         template <typename V, std::size_t I, typename T>
         inline constexpr auto union_alternative_named_v = union_alternative_named<V, I, T>();
+
+        // Whether the struct T has no annotation but `yyjson::transparent`, so that its keys and the types of its
+        // fields tell all the objects that it reads.
+        template <typename T>
+        consteval bool unannotated_struct()
+        {
+            constexpr bool listed = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return count_true<!std::same_as<As, transparent_t>...> == 0;
+            }(std::type_identity<annotation_values_of<T>>{});
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (!visitable<T>)
+                return listed && !annotated_members<T> &&
+                       std::meta::annotations_of(std::meta::dealias(^^T)).size() ==
+                           field_reflection::type_annotations<T, transparent_t>.size();
+#endif
+            return listed;
+        }
+        // Whether T and each transparent struct that it holds down to its keyed struct are unannotated structs.
+        template <typename T>
+        consteval bool unannotated_layers()
+        {
+            if constexpr (!unannotated_struct<T>())
+                return false;
+            else if constexpr (keyed_struct<T>)
+                return true;
+            else
+                return unannotated_layers<std::remove_cv_t<struct_field_type<T, 0>>>();
+        }
+        // Whether the settings of the alternative I of the union V, a struct T, leave its objects as they are, but
+        // for `yyjson::additional_properties(false)` and the keys that its `yyjson::field` names.
+        template <typename V, std::size_t I, typename T>
+        consteval bool alternative_keeps_objects()
+        {
+            if constexpr (!constrained_union_alternative<V, I>)
+                return true;
+            else if constexpr (!keyed_struct<T>)
+                return false;
+            else
+            {
+                using Schema = union_alternative_schema<V, I>;
+                const auto bare = [](const schema_node& n) {
+                    return n.constraints.bits == 0 && n.combinators == 0 && n.items == 0 && n.properties == 0 &&
+                           n.keys == 0 && n.contains == 0 && n.prefix_count == 0 && n.values_count == 0 &&
+                           n.patterns_count == 0;
+                };
+                if (!bare(Schema::node)) return false;
+                for (auto m = Schema::node.members; m != 0; m = Schema::tree.nodes[m].next)
+                {
+                    const schema_node& n = Schema::tree.nodes[m];
+                    if (!bare(n) || n.members != 0 || n.closed || n.required) return false;
+                }
+                return true;
+            }
+        }
+        // The node of `yyjson::field` of the alternative I of the union V, the keyed struct S, for each field of S,
+        // or 0.
+        template <typename V, std::size_t I, typename S>
+        consteval auto alternative_field_nodes()
+        {
+            auto result = std::array<std::size_t, struct_field_count<S>>{};
+            if constexpr (constrained_union_alternative<V, I> &&
+                          keyed_struct<std::remove_cv_t<std::variant_alternative_t<I, V>>>)
+            {
+                using Schema = union_alternative_schema<V, I>;
+                for (auto m = Schema::node.members; m != 0; m = Schema::tree.nodes[m].next)
+                {
+                    const auto k = struct_field_of_key<S>(Schema::tree.nodes[m].key.view());
+                    if (k < result.size() && result[k] == 0) result[k] = m;
+                }
+            }
+            return result;
+        }
+        template <typename V, std::size_t I, typename S>
+        inline constexpr auto alternative_field_nodes_v = alternative_field_nodes<V, I, S>();
+
+        // Whether a field of type F reads a value as `cast<F>` reads it, as `assign_reflected_field_impl` and
+        // `read_field` of the reader without a document do.  A caster or a translator in place, an array of C and
+        // a transparent struct read it otherwise.
+        template <typename F>
+        consteval bool field_reads_as_cast()
+        {
+            constexpr bool builtin = std::derived_from<caster<F>, builtin_caster>;
+            if constexpr (c_array<F> || (transparent_struct<F> && builtin))
+                return false;
+            else if constexpr ((indirect_value<F> || nullable_value<F>) && builtin)
+                return field_reads_as_cast<typename F::value_type>();
+            else if constexpr (caster_assigns_from_json<F, reader::const_value_ref>)
+                return is_std_optional<F>::value && builtin;
+            else
+                return !from_json_translator<F>::in_place;
+        }
+        // The type that a field of type F reads a present value into: the value of a `std::optional` of the
+        // caster of this library, which takes null as a missing key or as the null of that value, if `Unwrap`.
+        template <typename F, bool Unwrap>
+        struct present_field_value
+        {
+            using type = F;
+        };
+        template <typename U>
+        requires std::derived_from<caster<std::optional<U>>, builtin_caster>
+        struct present_field_value<std::optional<U>, true>
+        {
+            using type = U;
+        };
+        // The values, or more of them, that the field K of S, the keyed struct of the alternative I of the union
+        // V, reads under `yyjson::reject_null_as_missing`, with the settings of the `yyjson::field` node `Node` of
+        // the alternative or else of the field in S.  Null gives a field its `yyjson::default_from`.
+        template <typename V, std::size_t I, typename S, std::size_t K, std::size_t Node>
+        consteval json_bound alternative_field_bound()
+        {
+            using F = struct_field_type<S, K>;
+            using U = typename present_field_value<F, !null_takes_default<S, struct_declared_index<S, K>>>::type;
+            if constexpr (adjacent_field<S, K> || !field_reads_as_cast<F>())
+                return kinds_bound(json_kind_all);
+            else if constexpr (Node != 0)
+                return bound_of<U, typename union_alternative_schema<V, I>::template at<Node>>();
+            else if constexpr (has_constraints<S>)
+                return bound_of<U, field_schema<S, struct_declared_index<S, K>>>();
+            else
+                return bound_of<U, no_settings_level>();
+        }
+
+        // A field of a struct alternative of a `yyjson::one_of_variant`: its key, whether an object must have it,
+        // whether the alternative takes it, and the values that it reads, or more of them.
+        struct one_of_struct_member
+        {
+            std::string_view key;
+            bool required = false;
+            bool taken = true;
+            json_bound value;
+        };
+        // A struct alternative of a `yyjson::one_of_variant`, or not `keyed` for any other type.  `exact` if its
+        // members and tags tell each object that it reads, and `closed` if it takes no other key.
+        struct one_of_struct_shape
+        {
+            bool keyed = false;
+            bool exact = false;
+            bool closed = false;
+            std::span<const one_of_struct_member> members;
+            std::span<const std::string_view> tags;
+        };
+        template <typename V, std::size_t I, typename T>
+        inline constexpr auto one_of_struct_members = [] {
+            using S = typename ranked_struct_of<T>::type;
+            using keys = struct_key_list<T>;
+            return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<one_of_struct_member, sizeof...(Ks)>{one_of_struct_member{
+                    keys::keys[Ks], keys::required[Ks], union_alternative_named_v<V, I, T>[Ks],
+                    alternative_field_bound<V, I, S, Ks, alternative_field_nodes_v<V, I, S>[Ks]>()}...};
+            }(std::make_index_sequence<keys::keys.size()>{});
+        }();
+        template <typename V, std::size_t I>
+        consteval one_of_struct_shape one_of_alternative_shape()
+        {
+            using T = std::remove_cv_t<std::variant_alternative_t<I, V>>;
+            if constexpr (!ranked_struct<T>)
+                return {};
+            else
+            {
+                using S = typename ranked_struct_of<T>::type;
+                using keys = struct_key_list<T>;
+                const bool exact = unannotated_layers<T>() && !has_key_maps<S> && keys::tags.empty() &&
+                                   alternative_keeps_objects<V, I, T>();
+                return {true, exact, keys::closed || (keys::closable && union_alternative_closed<V, I, T>()),
+                        one_of_struct_members<V, I, T>, keys::tags};
+            }
+        }
+
+        template <typename V>
+        struct one_of_struct_relations
+        {
+            static constexpr std::size_t size = std::variant_size_v<V>;
+            // the most key comparisons for a pair of alternatives, beyond which they are neither contained nor apart
+            static constexpr std::size_t budget = 256;
+            static constexpr std::array<one_of_struct_shape, size> shapes =
+                []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array<one_of_struct_shape, size>{one_of_alternative_shape<V, Is>()...};
+                }(std::make_index_sequence<size>{});
+            // whether an alternative is a closed struct, which `by_key` may tell apart
+            static constexpr bool closes = [] {
+                for (const auto& s : shapes)
+                    if (s.keyed && s.closed) return true;
+                return false;
+            }();
+
+            // The member of s that takes `key`, or null.
+            static constexpr const one_of_struct_member* taking(const one_of_struct_shape& s,
+                                                                std::string_view key) noexcept
+            {
+                for (const auto& m : s.members)
+                    if (m.key == key) return m.taken ? &m : nullptr;
+                return nullptr;
+            }
+            static constexpr bool tag_of(const one_of_struct_shape& s, std::string_view key) noexcept
+            {
+                for (const auto& t : s.tags)
+                    if (t == key) return true;
+                return false;
+            }
+            static constexpr bool within_budget(const one_of_struct_shape& a, const one_of_struct_shape& b) noexcept
+            {
+                return a.keyed && b.keyed &&
+                       (a.members.size() + a.tags.size()) * (b.members.size() + b.tags.size()) <= budget;
+            }
+
+            // Whether the alternative b reads each object that a reads.  b names no key that a does not name: a takes
+            // any value there if open, and if closed, still at the key of the tag of an enclosing
+            // `yyjson::internal_tag`, which the object may repeat with any value.
+            static constexpr bool objects_contain(std::size_t b, std::size_t a) noexcept
+            {
+                const auto& x = shapes[a];
+                const auto& y = shapes[b];
+                if (!within_budget(x, y) || !y.exact || !x.tags.empty() || (y.closed && !x.closed)) return false;
+                for (const auto& m : x.members)
+                    if (m.taken && y.closed && taking(y, m.key) == nullptr) return false;
+                for (const auto& n : y.members)
+                {
+                    if (!n.taken)
+                    {
+                        if (n.required) return false;
+                        continue;
+                    }
+                    const auto* m = taking(x, n.key);
+                    if (n.required && (m == nullptr || !m->required)) return false;
+                    if (m == nullptr || !bound_contains(n.value, m->value)) return false;
+                }
+                return true;
+            }
+            // Whether each object that x reads has a key that y rejects, or a value there that y does not read.  A
+            // closed y rejects a key that it does not name only `by_key`.
+            static constexpr bool rejected(const one_of_struct_shape& x, const one_of_struct_shape& y,
+                                           bool by_key) noexcept
+            {
+                for (const auto& m : x.members)
+                {
+                    if (!m.required) continue;
+                    if (const auto* n = taking(y, m.key); n != nullptr)
+                    {
+                        if (bounds_disjoint(m.value, n->value)) return true;
+                    }
+                    else if (by_key && y.closed && !tag_of(y, m.key))
+                        return true;
+                }
+                return false;
+            }
+            static constexpr bool objects_disjoint(std::size_t a, std::size_t b, bool by_key) noexcept
+            {
+                const auto& x = shapes[a];
+                const auto& y = shapes[b];
+                return within_budget(x, y) && (rejected(x, y, by_key) || rejected(y, x, by_key));
+            }
+        };
 
         // How an untagged variant ranks its keyed struct alternatives for an object, tried first: those with one of
         // their keys, all required keys and no rejected key, more keys first and then in order.  A `Union` also
@@ -23141,10 +23430,16 @@ namespace yyjson
             template <typename Json>
             using guard = variant_reread_guard<V, Json>;
 
-            // `overlap[j][i]`: whether the alternatives i and j may both read a JSON value
+            // `overlap[j][i]`: whether the alternatives i and j may both read a JSON value, and the same for an
+            // object that has the key of the tag of an enclosing `yyjson::internal_tag`
             static constexpr auto overlap = []<std::size_t... Js>(std::index_sequence<Js...>) {
                 return std::array<std::array<bool, size>, size>{one_of_relations<V>::template overlapping<Js>...};
             }(std::index_sequence_for<Ts...>{});
+            static constexpr auto tagged_overlap = []<std::size_t... Js>(std::index_sequence<Js...>) {
+                return std::array<std::array<bool, size>, size>{
+                    one_of_relations<V>::template overlapping<Js, false>...};
+            }(std::index_sequence_for<Ts...>{});
+            static constexpr bool tag_sensitive = overlap != tagged_overlap;
             // whether a value read under the counting policies may differ from one read under those of the call
             static constexpr bool sensitive = count_true<policy_sensitive<Ts>...> != 0;
 
@@ -23223,6 +23518,13 @@ namespace yyjson
                         }
                     }
                 }
+                auto pairs = &overlap;
+                if constexpr (tag_sensitive)
+                {
+                    if (kind == json_kind_object &&
+                        internal_tag_key::any(dependent_t<writer::detail::json_value_access, Json>::get(json)))
+                        pairs = &tagged_overlap;
+                }
                 auto value = std::optional<V>();
                 auto other = std::optional<V>();
                 auto first = size;
@@ -23230,7 +23532,7 @@ namespace yyjson
                     const auto scope = exact_policy_scope(counting);
                     for (std::size_t i = 0; i < size; ++i)
                     {
-                        if ((kinds[i] & kind) == 0 || failing.test(i) || (first != size && !overlap[first][i]))
+                        if ((kinds[i] & kind) == 0 || failing.test(i) || (first != size && !(*pairs)[first][i]))
                             continue;
                         if (!tables<Json>::trials[i](json, first == size ? value : other, rereads)) continue;
                         if (first != size) throw_one_of_matches<V>(target_of(json), first, i);
@@ -30770,11 +31072,19 @@ namespace yyjson
                     }
                     const auto rereads = yyjson::detail::variant_reread_guard<V, const_value_ref>(kind);
                     const auto scope = exact_policy_guard(*this, static_cast<std::uint8_t>(policies_ | counting));
+                    auto pairs = &cast::overlap;
+                    if constexpr (cast::tag_sensitive)
+                    {
+                        for (const auto* p = tags_; p != nullptr; p = p->outer)
+                        {
+                            if (p->object == start) pairs = &cast::tagged_overlap;
+                        }
+                    }
                     // whether an alternative after I that the value may not fail may read it too
                     const auto overlapped = [&](std::size_t i) {
                         for (auto j = i + 1; j < size; ++j)
                         {
-                            if (cast::overlap[i][j] && !failing.test(j)) return true;
+                            if ((*pairs)[i][j] && !failing.test(j)) return true;
                         }
                         return false;
                     };

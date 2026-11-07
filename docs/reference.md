@@ -1925,7 +1925,7 @@ inline constexpr /* unspecified */ one_of;
 
 See [Combining constraints](validation.md#combining-constraints) and [Conditions between fields](validation.md#conditions-between-fields).
 
-`yyjson::any_of` constrains a value. To choose the type of a value by constraints, use [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt) or [`yyjson::one_of_variant`](#yyjsonone_of_variant).
+`yyjson::any_of` constrains a value. To choose the type of a value by constraints, use [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt) or [`yyjson::one_of_variant`](#yyjsonone_of_variant). The setting `yyjson::one_of` and `yyjson::one_of_variant` differ for a field that the object leaves out and for a subschema that another subschema contains. See [Exactly one alternative](conversions.md#exactly-one-alternative).
 
 ```cpp
 struct Contact
@@ -2626,9 +2626,9 @@ struct one_of_variant : std::variant</* T of each A */...>
 ```
 
 *   The template arguments, `yyjson::alt`, the write and the compile errors are those of [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt).
-*   An alternative matches a value if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. The policies of the call do not change the match.
+*   An alternative matches a value if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. The policies of the call do not change the match. Thus a plain read of an alternative alone can accept a value that the variant rejects.
 *   The read gives the only alternative that matches, and applies the policies of the call to it. If no alternative or two alternatives match, the read throws `yyjson::bad_cast`.
-*   An alternative can read only values that another alternative reads. When the library proves it, the alternative is a compile error. The library compares null, booleans, numbers, strings and arrays by their bounds, and other types by their kinds of JSON values. It does not compare the elements of arrays.
+*   An alternative can read only values that another alternative reads. When the library proves it, the alternative is a compile error. The library compares null, booleans, numbers, strings and arrays by their bounds. It compares structs by their keys and the bounds of their fields, and other types by their kinds of JSON values. It does not compare the elements of arrays. The setting `yyjson::one_of` takes such subschemas.
 
 ```cpp
 using Range = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;

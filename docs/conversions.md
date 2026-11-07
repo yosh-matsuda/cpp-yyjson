@@ -316,6 +316,7 @@ The setting [`yyjson::any_of`](reference.md#yyjsonnot_-yyjsonif_then_else-yyjson
 struct Point
 {
     int x = 0;
+    int y = 0;
 };
 struct Box
 {
@@ -324,8 +325,8 @@ struct Box
 };
 using Shape = yyjson::one_of_variant<Point, Box>;
 
-yyjson::read<Shape>(R"({"x":1})").index();  // -> 0: Box has no "z"
-yyjson::read<Shape>(R"({"x":1,"z":2})");
+yyjson::read<Shape>(R"({"x":1,"y":2})").index();  // -> 0: Box has no "z"
+yyjson::read<Shape>(R"({"x":1,"y":2,"z":3})");
 // throws yyjson::bad_cast: the value matches the alternatives 0 and 1 of yyjson::one_of_variant<Point, Box> ...
 ```
 
@@ -349,10 +350,10 @@ struct Sized
 yyjson::read<yyjson::one_of_variant<Named, Sized>>(R"({"size":1})");  // throws: Named matches too
 ```
 
-The library compares the alternatives of null, booleans, numbers, strings and arrays when it compiles the type. It uses the kinds of JSON values and the bounds and listed values of numbers and strings. It also uses the lengths of strings and the numbers of items of arrays. Other settings, such as `yyjson::pattern` and `yyjson::multiple_of`, can reject any value for the comparison. Structs and maps are compared only by their kinds of JSON values.
+The library compares the alternatives of null, booleans, numbers, strings and arrays when it compiles the type. It uses the kinds of JSON values and the bounds and listed values of numbers and strings. It also uses the lengths of strings and the numbers of items of arrays. Other settings, such as `yyjson::pattern` and `yyjson::multiple_of`, can reject any value for the comparison. The library compares two structs by their keys and the values of their fields. It compares maps and other types only by their kinds of JSON values.
 
-*   An alternative that reads only values that another alternative reads can never be the only match. It is a compile error when the comparison proves it. Examples are `yyjson::one_of_variant<int, double>` and two alternatives of the same type and settings. The comparison does not compare the elements of arrays and the members of objects. Thus it does not find all such alternatives of arrays, structs and maps. The error comes from the code that reads or writes the type.
-*   The read does not try an alternative if the comparison proves that no value can match both it and the alternative that matched first.
+*   An alternative that reads only values that another alternative reads can never be the only match. It is a compile error when the comparison proves it. Examples are `yyjson::one_of_variant<int, double>` and two alternatives of the same type and settings. A struct can read only objects that another struct reads. An example is a struct that requires each key of the other struct, with values that the other struct reads. Thus `yyjson::one_of_variant<Point, Box>` is an error if `Point` has only `x`. The comparison does not compare the elements of arrays and maps. It also does not prove this error if the struct that reads more objects has settings. Thus it does not find all such alternatives of arrays, structs and maps. The error comes from the code that reads or writes the type.
+*   The read does not try an alternative if the comparison proves that no value can match both it and the alternative that matched first. For example, a struct that does not take other keys reads no object of a struct that requires a different key. The key of the tag of an enclosing variant with `yyjson::internal_tag` does not count, because such a struct takes that key.
 
 ```cpp
 using Range = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
@@ -360,6 +361,17 @@ yyjson::read<Range>("-1").index();  // -> 1
 yyjson::read<Range>("11").index();  // -> 0
 yyjson::read<Range>("5");           // throws yyjson::bad_cast: 5 matches both alternatives
 ```
+
+The setting [`yyjson::one_of`](reference.md#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) and `yyjson::one_of_variant` both give `oneOf` of JSON Schema. The [policies](validation.md#read-policies) of the call, such as `yyjson::strict`, do not change which subschemas or alternatives match. The two have two differences:
+
+*   In a subschema of the setting, `yyjson::field("k", s...)` without `yyjson::required` accepts an object without the key `"k"`, as `properties` of JSON Schema does. A struct alternative of `yyjson::one_of_variant` matches only an object with the key of each field without a [default](#default-values-and-required-keys). Thus a plain read of an alternative alone can accept a value that the variant rejects:
+
+    ```cpp
+    yyjson::read<Point>(R"({"x":1})");  // -> Point{1, 0}
+    yyjson::read<Shape>(R"({"x":1})");  // throws yyjson::bad_cast: Point has no "y", Box has no "z"
+    ```
+
+*   The setting takes a subschema that accepts only values that another subschema accepts. Such a subschema is never the only match. Thus `yyjson::one_of(yyjson::minimum(0), yyjson::minimum(5))` accepts 3 and rejects 7. In `yyjson::one_of_variant`, such an alternative is a compile error when the comparison proves it.
 
 ## Structs
 

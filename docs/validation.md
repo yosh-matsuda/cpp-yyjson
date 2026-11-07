@@ -903,8 +903,8 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | Keyword | cpp-yyjson | Difference |
 | --- | --- | --- |
 | `allOf` | the constraints of one field, which all apply, or `yyjson::all_of(...)` | none. |
-| `anyOf` | `yyjson::any_of(...)`, or `std::variant` for alternatives of different types. `yyjson::any_of_required` on a struct for subschemas of `required` only | a `std::variant` reads the first alternative that accepts the value. |
-| `oneOf` | `yyjson::one_of(...)`, or a [tagged variant](conversions.md#tagged-variants). `yyjson::one_of_required` on a struct for subschemas of `required` only | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
+| `anyOf` | `yyjson::any_of(...)`, or `std::variant` or [`yyjson::any_of_variant`](reference.md#yyjsonany_of_variant-yyjsonalt) for alternatives of different types. `yyjson::any_of_required` on a struct for subschemas of `required` only | a `std::variant` reads the first alternative that accepts the value. |
+| `oneOf` | `yyjson::one_of(...)`, [`yyjson::one_of_variant`](reference.md#yyjsonone_of_variant) for alternatives of different types, or a [tagged variant](conversions.md#tagged-variants). `yyjson::one_of_required` on a struct for subschemas of `required` only | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
 | `not` | `yyjson::not_(...)` | none. |
 | `if`, `then`, `else` | `yyjson::if_then_else(...)` | none. |
 | `$ref`, `$defs` | a C++ type, or `yyjson::matches<T>` on a value of the DOM | a definition with constraints that is not an object is a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field). |

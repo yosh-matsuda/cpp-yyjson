@@ -4604,6 +4604,163 @@ struct yyjson::caster<OtherCodeMap>
         return result;
     }
 };
+struct OneOfZ
+{
+    int z = 0;
+    bool operator==(const OneOfZ&) const = default;
+};
+struct OneOfTextX
+{
+    std::string x;
+    bool operator==(const OneOfTextX&) const = default;
+};
+struct OneOfNullX
+{
+    std::nullptr_t x;
+    bool operator==(const OneOfNullX&) const = default;
+};
+struct OneOfXMaybeY
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const OneOfXMaybeY&) const = default;
+};
+struct OneOfXMaybeZ
+{
+    int x = 0;
+    std::optional<int> z;
+    bool operator==(const OneOfXMaybeZ&) const = default;
+};
+struct OneOfXRest
+{
+    int x = 0;
+    std::map<std::string, int> rest;
+    bool operator==(const OneOfXRest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneOfXRest> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+struct OneOfXAny
+{
+    int x = 0;
+    std::map<std::string, yyjson::value> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneOfXAny> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+struct OneOfSignedX
+{
+    std::int64_t x = 0;
+    bool operator==(const OneOfSignedX&) const = default;
+};
+struct OneOfUnsignedX
+{
+    std::uint64_t x = 0;
+    bool operator==(const OneOfUnsignedX&) const = default;
+};
+template <typename T>
+struct OneOfWrapped
+{
+    T inner;
+    bool operator==(const OneOfWrapped&) const = default;
+};
+template <typename T>
+inline constexpr auto yyjson::annotations<OneOfWrapped<T>> = yyjson::annotate(yyjson::transparent);
+struct OneOfMany16
+{
+    int a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p;
+};
+struct OneOfMany17
+{
+    int a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q;
+};
+// a field of OneOfCode reads a string in place, but `cast<OneOfCode>` reads no value
+struct OneOfCode
+{
+    int n = 0;
+};
+template <>
+struct yyjson::caster<OneOfCode>
+{
+    template <typename Json>
+    static void from_json(OneOfCode& c, const Json& json)
+    {
+        if (!json.is_string()) throw yyjson::bad_cast("not a string");
+        c.n = 1;
+    }
+};
+struct OneOfCodeX
+{
+    OneOfCode x;
+};
+struct OneOfOtherCodeX
+{
+    OneOfOtherCode x;
+};
+// a std::optional of a caster of the user, which reads a string
+struct OneOfNumber
+{
+    int n = 0;
+};
+template <>
+struct yyjson::caster<std::optional<OneOfNumber>>
+{
+    template <typename Json>
+    static std::optional<OneOfNumber> from_json(const Json& json)
+    {
+        if (!json.is_string()) throw yyjson::bad_cast("not a string");
+        return OneOfNumber{1};
+    }
+};
+struct OneOfMaybeNumberX
+{
+    std::optional<OneOfNumber> x;
+};
+// a closed struct takes the key of the tag of an enclosing variant
+struct OneOfXKind
+{
+    int x = 0;
+    std::string kind;
+};
+struct OneOfClosedXMaybeKind
+{
+    int x = 0;
+    std::optional<int> kind;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneOfClosedXMaybeKind> =
+    yyjson::annotate(yyjson::additional_properties(false));
+using OneOfTaggedXKind = std::variant<yyjson::one_of_variant<OneOfClosedX, OneOfXKind>>;
+template <>
+inline constexpr auto yyjson::annotations<OneOfTaggedXKind> = yyjson::annotate(yyjson::internal_tag("kind", {"p"}));
+using OneOfTaggedMaybeKind = std::variant<yyjson::one_of_variant<OneOfClosedX, OneOfClosedXMaybeKind>>;
+template <>
+inline constexpr auto yyjson::annotations<OneOfTaggedMaybeKind> = yyjson::annotate(yyjson::internal_tag("kind", {"p"}));
+struct OneOfXMaybeTextKind
+{
+    int x = 0;
+    std::optional<std::string> kind;
+};
+using OneOfTaggedTextKind = std::variant<yyjson::one_of_variant<OneOfClosedX, OneOfXMaybeTextKind>>;
+template <>
+inline constexpr auto yyjson::annotations<OneOfTaggedTextKind> = yyjson::annotate(yyjson::internal_tag("kind", {"p"}));
+// a field of an adjacent tag reads the value of the alternative, not the object of its own internal tag
+using OneOfPayload = std::variant<long, std::string>;
+template <>
+inline constexpr auto yyjson::annotations<OneOfPayload> = yyjson::annotate(yyjson::internal_tag("inner", {"i", "s"}));
+struct OneOfAdjacentX
+{
+    OneOfPayload x;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneOfAdjacentX> =
+    yyjson::annotate(yyjson::field("x", yyjson::adjacent_tag("kind", {"i", "s"})));
+// a transparent struct between two others with a setting of the field of the inner one
+struct OneOfMidX
+{
+    OneOfX b;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneOfMidX> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("b", yyjson::field("x", yyjson::minimum(0))));
 using OneOfInts = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
 inline bool one_of_has_value(const yyjson::nullable<int>& v) { return v.has_value(); }
 inline constexpr auto one_of_present = yyjson::satisfies<one_of_has_value>;
@@ -4647,13 +4804,13 @@ namespace
 TEST(Constraints, OneOfReading)
 {
     // the struct that misses a key without a default under yyjson::reject_missing_keys does not match
-    using XOrXZ = yyjson::one_of_variant<OneOfX, OneOfXZ>;
-    expect_accepted<XOrXZ>(R"({"x":1})", XOrXZ(OneOfX{1}));
-    // both match an object of both keys, since OneOfX takes other keys, and the policies of the call do not
+    using XOrZ = yyjson::one_of_variant<OneOfX, OneOfZ>;
+    expect_accepted<XOrZ>(R"({"x":1})", XOrZ(OneOfX{1}));
+    // both match an object of both keys, since each one takes other keys, and the policies of the call do not
     // change the match
-    expect_rejected<XOrXZ>(R"({"x":1,"z":2,"w":0})", read_by_two<XOrXZ>(0, 1), "");
-    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})", read_by_two<XOrXZ>(0, 1));
-    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})", read_by_two<XOrXZ>(0, 1), yyjson::reject_unknown_keys);
+    expect_rejected<XOrZ>(R"({"x":1,"z":2,"w":0})", read_by_two<XOrZ>(0, 1), "");
+    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_two<XOrZ>(0, 1));
+    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_two<XOrZ>(0, 1), yyjson::reject_unknown_keys);
     // an alternative may match with none of its keys
     using MaybeXOrY = yyjson::one_of_variant<OneOfMaybeX, OneOfY>;
     expect_rejected<MaybeXOrY>(R"({"y":1})", read_by_two<MaybeXOrY>(0, 1), "");
@@ -4779,6 +4936,105 @@ TEST(Constraints, OneOfBounds)
     expect_alternative<std::variant<OtherCodeMap, std::map<std::string, std::string>>>(R"({"a":"x"})", 0);
     expect_alternative<yyjson::any_of_variant<OtherCodeRange, std::vector<std::string>>>(R"(["x"])", 0);
     expect_alternative<yyjson::any_of_variant<OtherCodeMap, std::map<std::string, std::string>>>(R"({"a":"x"})", 0);
+
+    // a struct reads each object of another one that requires each key that it requires and takes no key that it
+    // does not name, with values that it reads
+    using XAndXZ = yyjson::detail::one_of_relations<yyjson::one_of_variant<OneOfX, OneOfXZ>>;
+    static_assert(XAndXZ::contained.contained == 1 && XAndXZ::contained.container == 0);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfClosedX>>);
+    using ClosedByAlt =
+        yyjson::alt<OneOfXZ, yyjson::field("x"), yyjson::field("z"), yyjson::additional_properties(false)>;
+    static_assert(one_of_contained<yyjson::one_of_variant<ClosedByAlt, OneOfXZ>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, ClosedByAlt>>);
+    static_assert(
+        one_of_contained<yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::field("x", yyjson::minimum(0))>, OneOfX>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXMaybeY>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXRest>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfWrapped<OneOfXZ>>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfWrapped<OneOfX>, OneOfXZ>>);
+
+    // a struct reads no object of another one that requires a key that it rejects, or a value there that it does
+    // not read
+    using ClosedXOrXZ = yyjson::one_of_variant<OneOfClosedX, OneOfXZ>;
+    static_assert(!one_of_overlapping<ClosedXOrXZ, 0, 1>);
+    expect_alternative<ClosedXOrXZ>(R"({"x":1,"z":2})", 1);
+    expect_alternative<ClosedXOrXZ>(R"({"x":1})", 0);
+    using IntOrText = yyjson::one_of_variant<OneOfX, OneOfTextX>;
+    static_assert(!one_of_overlapping<IntOrText, 0, 1>);
+    expect_alternative<IntOrText>(R"({"x":"a"})", 1);
+    expect_alternative<IntOrText>(R"({"x":1})", 0);
+    using Letters = yyjson::one_of_variant<yyjson::alt<OneOfTextX, yyjson::field("x", yyjson::enum_("a", "b"))>,
+                                           yyjson::alt<OneOfTextX, yyjson::field("x", yyjson::enum_("c"))>>;
+    static_assert(!one_of_overlapping<Letters, 0, 1>);
+    expect_alternative<Letters>(R"({"x":"c"})", 1);
+    expect_alternative<Letters>(R"({"x":"a"})", 0);
+    // a std::optional does not take null as a missing key while the alternatives are counted
+    using IntOrNull = yyjson::one_of_variant<OneOfMaybeX, OneOfNullX>;
+    static_assert(!one_of_overlapping<IntOrNull, 0, 1> && !one_of_contained<IntOrNull>);
+    expect_alternative<IntOrNull>(R"({"x":null})", 1);
+    expect_alternative<IntOrNull>(R"({"x":1})", 0);
+    expect_alternative<IntOrNull>("{}", 0);
+
+    // two structs that read some values of each other at a key are counted
+    using SignedOrUnsigned = yyjson::one_of_variant<OneOfSignedX, OneOfUnsignedX>;
+    static_assert(!one_of_contained<SignedOrUnsigned> && one_of_overlapping<SignedOrUnsigned, 0, 1>);
+    expect_rejected<SignedOrUnsigned>(R"({"x":1})", read_by_two<SignedOrUnsigned>(0, 1), "");
+    expect_alternative<SignedOrUnsigned>(R"({"x":-1})", 0);
+
+    // the analysis does not prove that a struct reads each value at a key that it does not name
+    using MaybeYOrZ = yyjson::one_of_variant<OneOfXMaybeY, OneOfXMaybeZ>;
+    static_assert(!one_of_contained<MaybeYOrZ> && one_of_overlapping<MaybeYOrZ, 0, 1>);
+    expect_rejected<MaybeYOrZ>(R"({"x":1})", read_by_two<MaybeYOrZ>(0, 1), "");
+    expect_alternative<MaybeYOrZ>(R"({"x":1,"y":"a"})", 1);
+    // nor what a struct reads with a setting other than the keys that it takes
+    using MinimumX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::field("x", yyjson::minimum(0))>,
+                                            yyjson::alt<OneOfXZ, yyjson::field("x", yyjson::minimum(0))>>;
+    static_assert(!one_of_contained<MinimumX> && one_of_overlapping<MinimumX, 0, 1>);
+    expect_rejected<MinimumX>(R"({"x":1,"z":2})", read_by_two<MinimumX>(0, 1), "");
+    // nor what a struct with a map of other keys reads at those keys
+    using XZOrAny = yyjson::one_of_variant<OneOfXZ, OneOfXAny>;
+    static_assert(!one_of_contained<XZOrAny> && one_of_overlapping<XZOrAny, 0, 1>);
+    expect_rejected<XZOrAny>(R"({"x":1,"z":2})", read_by_two<XZOrAny>(0, 1), "");
+    // nor compares the keys of two structs beyond 256 pairs of them
+    using Many = yyjson::one_of_variant<OneOfMany16, OneOfMany17>;
+    static_assert(!one_of_contained<Many> && one_of_overlapping<Many, 0, 1>);
+
+    // a field that is read otherwise than its type reads a value of its own may read any value: in place by a
+    // caster of the user, by a caster of the user of a std::optional, or as the value of an adjacent tag
+    using CodeOrText = yyjson::one_of_variant<OneOfCodeX, OneOfTextX>;
+    static_assert(one_of_overlapping<CodeOrText, 0, 1>);
+    expect_rejected_under<CodeOrText>(R"({"x":"a"})", read_by_two<CodeOrText>(0, 1));
+    // a caster of the user of the other document reads any value, also in a field
+    using OtherCodeOrText = yyjson::one_of_variant<OneOfOtherCodeX, OneOfTextX>;
+    static_assert(one_of_overlapping<OtherCodeOrText, 0, 1>);
+    expect_rejected_under<OtherCodeOrText>(R"({"x":"a"})", read_by_two<OtherCodeOrText>(0, 1));
+    using NumberOrText = yyjson::one_of_variant<OneOfMaybeNumberX, OneOfTextX>;
+    static_assert(one_of_overlapping<NumberOrText, 0, 1>);
+    expect_rejected_under<NumberOrText>(R"({"x":"a"})", read_by_two<NumberOrText>(0, 1));
+    using AdjacentOrX = yyjson::one_of_variant<OneOfAdjacentX, OneOfX>;
+    static_assert(one_of_overlapping<AdjacentOrX, 0, 1>);
+    expect_rejected_under<AdjacentOrX>(R"({"kind":"i","x":1})", read_by_two<AdjacentOrX>(0, 1));
+    // the key of the tag of an enclosing variant tells no closed struct apart, and a closed struct does not read
+    // only what another one reads that names that key
+    using XKind = std::variant_alternative_t<0, OneOfTaggedXKind>;
+    static_assert(!one_of_overlapping<XKind, 0, 1> && yyjson::detail::one_of_variant_cast<XKind>::tagged_overlap[1][0]);
+    expect_alternative<XKind>(R"({"x":1,"kind":"p"})", 1);
+    expect_rejected_under<OneOfTaggedXKind>(R"({"kind":"p","x":1})", read_by_two<XKind>(0, 1));
+    using MaybeKind = std::variant_alternative_t<0, OneOfTaggedMaybeKind>;
+    static_assert(!one_of_contained<MaybeKind>);
+    EXPECT_EQ(std::get<0>(yyjson::read<OneOfTaggedMaybeKind>(R"({"kind":"p","x":1})")).index(), 0);
+    EXPECT_EQ(std::get<0>(yyjson::read(R"({"kind":"p","x":1})").cast<OneOfTaggedMaybeKind>()).index(), 0);
+    // the closed struct also takes the key of the tag again with a value that the other one does not read
+    using TextKind = std::variant_alternative_t<0, OneOfTaggedTextKind>;
+    static_assert(!one_of_contained<TextKind>);
+    EXPECT_EQ(std::get<0>(yyjson::read<OneOfTaggedTextKind>(R"({"kind":"p","kind":1,"x":1})")).index(), 0);
+    EXPECT_EQ(std::get<0>(yyjson::read(R"({"kind":"p","kind":1,"x":1})").cast<OneOfTaggedTextKind>()).index(), 0);
+    expect_rejected_under<OneOfTaggedTextKind>(R"({"kind":"p","x":1})", read_by_two<TextKind>(0, 1));
+    // each transparent struct between an alternative and its keyed struct may have settings
+    using LayeredOrXZ = yyjson::one_of_variant<OneOfWrapped<OneOfMidX>, OneOfXZ>;
+    static_assert(!one_of_contained<LayeredOrXZ>);
+    expect_alternative<LayeredOrXZ>(R"({"x":-1,"z":1})", 1);
+    expect_rejected_under<LayeredOrXZ>(R"({"x":1,"z":1})", read_by_two<LayeredOrXZ>(0, 1));
 }
 
 #if defined(__cpp_lib_define_static)
