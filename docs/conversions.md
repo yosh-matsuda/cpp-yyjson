@@ -210,7 +210,12 @@ A JSON value is read as the first of the alternatives, in the order of the templ
 
 A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
 
-1.  The candidates are those structs that have at least one of their keys in the object and whose required keys the object all has. Every field that is not `std::optional` is required here. A renamed field counts by its JSON key, and a [skipped field](#skipped-fields) has no key.
+1.  The candidates are the structs that pass these checks:
+    *   The object has all the keys that the struct requires. A struct requires the keys of its fields that have no default, as [Default values and required keys](#default-values-and-required-keys) defines. Thus a `std::optional` field and a field with `yyjson::default_` are not required.
+    *   A struct that requires no keys needs at least one of its keys in the object.
+    *   A closed struct takes all the keys of the object. A struct is closed when it has [`yyjson::additional_properties(false)`](validation.md#closed-structs) or `yyjson::reject_unknown_keys`, or when the read gives `yyjson::reject_unknown_keys`. Besides the keys of its fields, it takes the keys of its adjacent tags and the tag of an enclosing [internal tag](#internal-tag). A struct with `yyjson::extra_keys` or `yyjson::pattern_properties` is never closed here.
+
+    A renamed field counts by its JSON key, and a [skipped field](#skipped-fields) has no key. A struct with [`yyjson::transparent`](#a-struct-as-the-value-of-its-field) has the keys of the struct in its field.
 2.  The candidates are tried first: the one that has the most of its keys in the object first, and in the order of the template arguments among those with as many.
 3.  Then the other alternatives are tried in the order of the template arguments.
 
@@ -232,9 +237,9 @@ auto other = yyjson::read<Result>(R"({"msg":"x"})");
 | `{"code":1}` | `Ok{1}` | `Err` lacks `msg`, so only `Ok` is a candidate. |
 | `{"msg":"x"}` | `Ok{0}` | `Ok` has none of its keys in the object and `Err` lacks `code`, so there is no candidate. Step 3 reads the object as `Ok`, whose missing field keeps its value in `Ok()`. |
 
-"Required" decides only which structs are candidates. A struct that lacks a required key is still read in step 3, with the field left at its value in `T()`, as the last row shows. Since step 3 tries every alternative, every JSON value that a variant read without steps 1 and 2 is still read; only the alternative that the variant holds may differ.
+"Required" decides only which structs are candidates. Step 3 also tries a struct that lacks one of the keys that it requires. The field of that key keeps its value in `T()`, as the last row shows. A field with [`yyjson::required`](#default-values-and-required-keys) makes that read fail. Since step 3 tries every alternative, every JSON value that a variant read without steps 1 and 2 is still read. Only the alternative that the variant holds may differ.
 
-With [`yyjson::reject_missing_keys`](validation.md#read-policies), or `yyjson::strict`, step 3 does not read an object into a struct that lacks a required key. The read of `{"msg":"x"}` above then throws `yyjson::bad_cast`.
+With [`yyjson::reject_missing_keys`](validation.md#read-policies), or `yyjson::strict`, a struct rejects an object that lacks one of the keys that the struct requires. Step 3 still tries every alternative, so a map or a `yyjson::value` alternative still reads such an object. The read of `{"msg":"x"}` above throws `yyjson::bad_cast`, because `Result` has no such alternative.
 
 Two cases need care:
 

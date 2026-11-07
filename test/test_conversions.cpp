@@ -720,6 +720,224 @@ TEST(Reader, UntaggedStructAlternatives)
         R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"x":0}])"));
 }
 
+// alternatives of untagged variants whose keys decide whether an object can be read into them
+struct KeyedPair
+{
+    int x = 0;
+    int z = 0;
+    bool operator==(const KeyedPair&) const = default;
+};
+struct KeyedX
+{
+    int x = 0;
+    bool operator==(const KeyedX&) const = default;
+};
+struct KeyedDefaulted
+{
+    int x = 0;
+    int y = 5;
+    bool operator==(const KeyedDefaulted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedDefaulted> = yyjson::annotate(yyjson::field("y", yyjson::default_));
+struct KeyedAllDefaulted
+{
+    int x = 1;
+    int w = 2;
+    bool operator==(const KeyedAllDefaulted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedAllDefaulted> = yyjson::annotate(yyjson::default_);
+struct KeyedWrapped
+{
+    KeyedPair pair;
+    bool operator==(const KeyedWrapped&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedWrapped> = yyjson::annotate(yyjson::transparent);
+struct KeyedWrappedTwice
+{
+    KeyedWrapped wrapped;
+    bool operator==(const KeyedWrappedTwice&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedWrappedTwice> = yyjson::annotate(yyjson::transparent);
+struct KeyedClosed
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const KeyedClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedClosed> = yyjson::annotate(yyjson::additional_properties(false));
+struct KeyedStrict
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const KeyedStrict&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedStrict> = yyjson::annotate(yyjson::reject_unknown_keys);
+struct KeyedNumber
+{
+    int a = 0;
+    bool operator==(const KeyedNumber&) const = default;
+};
+struct KeyedText
+{
+    std::string b;
+    bool operator==(const KeyedText&) const = default;
+};
+struct KeyedClosedTagged
+{
+    int x = 0;
+    std::variant<KeyedNumber, KeyedText> v;
+    bool operator==(const KeyedClosedTagged&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedClosedTagged> = yyjson::annotate(
+    yyjson::additional_properties(false), yyjson::field("v", yyjson::adjacent_tag("kind", {"n", "t"})));
+struct KeyedOpenTagged
+{
+    int x = 0;
+    std::variant<KeyedNumber, KeyedText> v;
+    bool operator==(const KeyedOpenTagged&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedOpenTagged> =
+    yyjson::annotate(yyjson::field("v", yyjson::adjacent_tag("kind", {"n", "t"})));
+struct KeyedKindMap
+{
+    std::string kind;
+    int x = 0;
+    std::map<std::string, int> v;
+    bool operator==(const KeyedKindMap&) const = default;
+};
+struct KeyedQ
+{
+    int q = 0;
+    bool operator==(const KeyedQ&) const = default;
+};
+struct KeyedKind
+{
+    std::string kind;
+    int a = 0;
+    bool operator==(const KeyedKind&) const = default;
+};
+struct KeyedClosedTriple
+{
+    int a = 0;
+    int b = 0;
+    int c = 0;
+    bool operator==(const KeyedClosedTriple&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedClosedTriple> =
+    yyjson::annotate(yyjson::additional_properties(false));
+using UntaggedInClosed = std::variant<KeyedX, KeyedClosed>;
+using TaggedOverUntagged = std::variant<KeyedQ, UntaggedInClosed>;
+template <>
+inline constexpr auto yyjson::annotations<TaggedOverUntagged> =
+    yyjson::annotate(yyjson::internal_tag("type", {"q", "u"}));
+using UntaggedWithTagField = std::variant<KeyedKind, KeyedClosedTriple>;
+using TaggedOverTagField = std::variant<KeyedQ, UntaggedWithTagField>;
+template <>
+inline constexpr auto yyjson::annotations<TaggedOverTagField> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"q", "u"}));
+
+namespace
+{
+    // `json` is read into the alternative `index` of V, by the reader without a document and through one
+    template <typename V, typename... Policies>
+    void expect_untagged(std::string_view json, std::size_t index, Policies... policies)
+    {
+        EXPECT_EQ(yyjson::read<V>(json, policies...).index(), index) << json;
+        EXPECT_EQ(yyjson::read(json).cast<V>(policies...).index(), index) << json;
+    }
+}  // namespace
+
+TEST(Reader, UntaggedCandidates)
+{
+    using yyjson::read;
+    // a key with a default is not required
+    using pair_or_defaulted = std::variant<KeyedPair, KeyedDefaulted>;
+    expect_untagged<pair_or_defaulted>(R"({"x":1})", 1);
+    EXPECT_EQ(read<pair_or_defaulted>(R"({"x":1})"), pair_or_defaulted(KeyedDefaulted{1, 5}));
+    using pair_or_all_defaulted = std::variant<KeyedPair, KeyedAllDefaulted>;
+    expect_untagged<pair_or_all_defaulted>(R"({"x":3})", 1);
+    EXPECT_EQ(read(R"({"x":3})").cast<pair_or_all_defaulted>(), pair_or_all_defaulted(KeyedAllDefaulted{3, 2}));
+    // a struct without required keys needs one of its keys
+    using q_or_optional = std::variant<KeyedQ, KeyedOptional>;
+    expect_untagged<q_or_optional>("{}", 0);
+    expect_untagged<q_or_optional>(R"({"r":1})", 0);
+    expect_untagged<q_or_optional>(R"({"y":1})", 1);
+
+    // a transparent struct ranks by the keys of the struct that its field is
+    using x_or_wrapped = std::variant<KeyedX, KeyedWrapped>;
+    expect_untagged<x_or_wrapped>(R"({"x":1,"z":2})", 1);
+    EXPECT_EQ(read<x_or_wrapped>(R"({"x":1,"z":2})"), x_or_wrapped(KeyedWrapped{{1, 2}}));
+    expect_untagged<x_or_wrapped>(R"({"x":1})", 0);
+    using wrapped_or_x = std::variant<KeyedWrapped, KeyedX>;
+    expect_untagged<wrapped_or_x>(R"({"x":1})", 1);
+    expect_untagged<wrapped_or_x>(R"({"x":1,"z":2})", 0);
+    using x_or_wrapped_twice = std::variant<KeyedX, KeyedWrappedTwice>;
+    expect_untagged<x_or_wrapped_twice>(R"({"x":1,"z":2})", 1);
+    using map_or_wrapped = std::variant<std::map<std::string, int>, KeyedWrapped>;
+    expect_untagged<map_or_wrapped>(R"({"x":1,"z":2})", 1);
+    expect_untagged<map_or_wrapped>(R"({"k":1})", 0);
+
+    // a closed struct with a key that it does not know is not a candidate, and fails when it is tried in order
+    using x_or_closed = std::variant<KeyedX, KeyedClosed>;
+    expect_untagged<x_or_closed>(R"({"x":1,"y":2})", 1);
+    expect_untagged<x_or_closed>(R"({"x":1,"y":2,"k":3})", 0);
+    using closed_or_pair = std::variant<KeyedClosed, KeyedPair>;
+    expect_untagged<closed_or_pair>(R"({"x":1,"z":2,"k":3})", 1);
+    expect_untagged<closed_or_pair>(R"({"x":1,"y":2})", 0);
+    using x_or_strict = std::variant<KeyedX, KeyedStrict>;
+    expect_untagged<x_or_strict>(R"({"x":1,"y":2})", 1);
+    expect_untagged<x_or_strict>(R"({"x":1,"y":2,"k":3})", 0);
+    // the keys of its adjacent tags and of the tag of an enclosing variant are its own
+    using x_or_closed_tagged = std::variant<KeyedX, KeyedClosedTagged>;
+    expect_untagged<x_or_closed_tagged>(R"({"x":1,"kind":"n","v":{"a":1}})", 1);
+    // but they do not count among its keys, unlike the same key of a field of another
+    using open_tagged_or_kind = std::variant<KeyedOpenTagged, KeyedKindMap>;
+    expect_untagged<open_tagged_or_kind>(R"({"x":1,"kind":"n","v":{"a":1}})", 1);
+    expect_untagged<std::variant<KeyedOpenTagged, KeyedX>>(R"({"x":1,"kind":"n","v":{"a":1}})", 0);
+    EXPECT_EQ(std::get<1>(read<TaggedOverUntagged>(R"({"type":"u","x":1,"y":2})")).index(), 1);
+    EXPECT_EQ(std::get<1>(read(R"({"type":"u","x":1,"y":2})").cast<TaggedOverUntagged>()).index(), 1);
+    EXPECT_EQ(std::get<1>(read<TaggedOverTagField>(R"({"kind":"u","a":1,"b":2,"c":3})")).index(), 1);
+    EXPECT_EQ(std::get<1>(read(R"({"kind":"u","a":1,"b":2,"c":3})").cast<TaggedOverTagField>()).index(), 1);
+    EXPECT_EQ(std::get<1>(read<TaggedOverTagField>(R"({"kind":"u","a":1})")).index(), 0);
+
+    // `yyjson::reject_unknown_keys` of the call closes every struct
+    using x_or_pair = std::variant<KeyedX, KeyedPair>;
+    expect_untagged<x_or_pair>(R"({"x":1,"z":2})", 1, yyjson::reject_unknown_keys);
+    EXPECT_THROW((void)read<x_or_pair>(R"({"x":1,"z":2,"k":3})", yyjson::reject_unknown_keys), yyjson::bad_cast);
+    EXPECT_THROW((void)read(R"({"x":1,"z":2,"k":3})").cast<x_or_pair>(yyjson::reject_unknown_keys),
+                 yyjson::bad_cast);
+    using pair_or_map = std::variant<KeyedPair, std::map<std::string, int>>;
+    expect_untagged<pair_or_map>(R"({"x":1,"z":2,"k":3})", 1, yyjson::reject_unknown_keys);
+    expect_untagged<pair_or_map>(R"({"x":1,"z":2,"k":3})", 0);
+    using closed_or_x = std::variant<KeyedClosed, KeyedX>;
+    expect_untagged<closed_or_x>(R"({"x":1,"y":2})", 0, yyjson::reject_unknown_keys);
+    expect_untagged<closed_or_x>(R"({"x":1,"y":2,"k":3})", 1);
+
+    // `yyjson::reject_missing_keys` rejects an object without a key into a struct, which a map or a JSON value
+    // still reads
+    expect_untagged<pair_or_map>(R"({"x":1})", 1, yyjson::reject_missing_keys);
+    using pair_or_value = std::variant<KeyedPair, yyjson::value>;
+    expect_untagged<pair_or_value>(R"({"x":1})", 1, yyjson::reject_missing_keys);
+    expect_untagged<pair_or_defaulted>(R"({"x":1})", 1, yyjson::reject_missing_keys);
+
+    // the reader without a document reads as the document does
+    EXPECT_TRUE(expect_direct_read<std::vector<pair_or_defaulted>>(R"([{"x":1},{"x":1,"z":2},{"z":2},{}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<x_or_wrapped>>(R"([{"x":1,"z":2},{"x":1},{"z":2,"k":3}])"));
+    EXPECT_TRUE(
+        expect_direct_read<std::vector<closed_or_pair>>(R"([{"x":1,"z":2,"k":3},{"x":1,"y":2},{"y":2,"k":1}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<x_or_closed_tagged>>(
+        R"([{"x":1,"kind":"n","v":{"a":1}},{"kind":"t","v":{"b":"s"},"x":2},{"x":1,"kind":"n","v":{"a":1},"k":0}])"));
+}
+
 TEST(Reader, FixedSizeShorterJson)
 {
     using namespace yyjson;

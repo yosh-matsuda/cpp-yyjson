@@ -4219,6 +4219,36 @@ TEST(Constraints, PatternProperties)
                                    "/o/aaaa");
 }
 
+// a closed struct whose patterns take keys that it does not name, as an alternative of an untagged variant
+struct PatternClosedPair
+{
+    int x = 0;
+    int y = 0;
+    std::map<std::string, int> extra;
+    bool operator==(const PatternClosedPair&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternClosedPair> = yyjson::annotate(
+    yyjson::additional_properties(false), yyjson::field("extra", yyjson::pattern_properties("^p")));
+struct PatternPlainX
+{
+    int x = 0;
+    bool operator==(const PatternPlainX&) const = default;
+};
+
+TEST(Constraints, PatternPropertiesUntagged)
+{
+    // the struct is a candidate whatever other keys the object has, and its patterns decide whether it reads them
+    using x_or_pair = std::variant<PatternPlainX, PatternClosedPair>;
+    const auto json = R"({"x":1,"y":2,"p1":3})";
+    EXPECT_EQ(yyjson::read<x_or_pair>(json), x_or_pair(PatternClosedPair{1, 2, {{"p1", 3}}}));
+    EXPECT_EQ(yyjson::read(json).cast<x_or_pair>(), x_or_pair(PatternClosedPair{1, 2, {{"p1", 3}}}));
+    EXPECT_EQ(yyjson::read<x_or_pair>(json, yyjson::reject_unknown_keys).index(), 1);
+    EXPECT_EQ(yyjson::read(json).cast<x_or_pair>(yyjson::reject_unknown_keys).index(), 1);
+    EXPECT_EQ(yyjson::read<x_or_pair>(R"({"x":1,"y":2,"q":3})").index(), 0);
+    EXPECT_TRUE(expect_direct_read<std::vector<x_or_pair>>(R"([{"x":1,"y":2,"p1":3},{"x":1,"y":2,"q":3}])"));
+}
+
 TEST(Constraints, PatternPropertiesMerged)
 {
     const auto merged = [](PatternMaps t, std::string_view json) {

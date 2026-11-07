@@ -10484,6 +10484,19 @@ namespace yyjson
                 }
                 return false;
             }
+            // Calls `f(key)` for the key of each tag in the object `object`.
+            template <typename F>
+            static void for_each_key(const void* object, F&& f)
+            {
+                for (const auto* p = innermost_; p != nullptr; p = p->outer_)
+                {
+                    if (p->object_ != object) continue;
+                    if (p->original_ != nullptr)
+                        object = p->original_;
+                    else
+                        f(p->key_);
+                }
+            }
         };
 
         // Calls `f(key, value)` for each member of the object `obj`.
@@ -21272,15 +21285,46 @@ namespace yyjson
                 for (std::size_t w = 0; w < words.size(); ++w) lacking |= other.words[w] & ~words[w];
                 return lacking == 0;
             }
+            // Whether a bit set here is set in neither `a` nor `b`.
+            [[nodiscard]] bool exceeds(const bit_array& a, const bit_array& b) const noexcept
+            {
+                auto beyond = std::uint64_t{0};
+                for (std::size_t w = 0; w < words.size(); ++w) beyond |= words[w] & ~(a.words[w] | b.words[w]);
+                return beyond != 0;
+            }
         };
 
-        // The keys of the fields of a keyed struct that are read, and whether an object has to have each, which
-        // it need not for a `std::optional` field.  None for any other type.
+        // The keyed struct whose keys an untagged variant ranks the type T by: T itself, or the keyed struct that a
+        // struct annotated with `yyjson::transparent` reads its field as.  void for any other type.
+        template <typename T>
+        struct ranked_struct_of
+        {
+            using type = void;
+        };
+        template <keyed_struct T>
+        struct ranked_struct_of<T>
+        {
+            using type = T;
+        };
+        template <typename T>
+        requires (!keyed_struct<T>) && transparent_struct<T> && std::derived_from<caster<T>, builtin_caster>
+        struct ranked_struct_of<T> : ranked_struct_of<std::remove_cv_t<struct_field_type<T, 0>>>
+        {
+        };
+        template <typename T>
+        concept ranked_struct = !std::is_void_v<typename ranked_struct_of<T>::type>;
+
+        // The keys of the fields of a keyed struct that are read, and whether an object has to have each, which it
+        // need not for a field that may be absent or has a default, with the keys of its adjacent tags.  None for any
+        // other type.
         template <typename T>
         struct struct_key_list
         {
             static constexpr std::array<std::string_view, 0> keys = {};
             static constexpr std::array<bool, 0> required = {};
+            static constexpr std::array<std::string_view, 0> tags = {};
+            static constexpr bool closed = false;
+            static constexpr bool closable = false;
         };
         template <keyed_struct S>
         struct struct_key_list<S>
@@ -21288,9 +21332,22 @@ namespace yyjson
             static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return std::array<std::string_view, sizeof...(Ks)>{struct_field_key<S, Ks>...};
             }(std::make_index_sequence<struct_field_count<S>>{});
-            static constexpr auto required = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                return std::array<bool, sizeof...(Ks)>{!is_std_optional<struct_field_type<S, Ks>>::value...};
-            }(std::make_index_sequence<struct_field_count<S>>{});
+            static constexpr auto required = [] {
+                auto result = struct_field_absence<S>;
+                for (auto& r : result) r = !r;
+                return result;
+            }();
+            static constexpr auto tags = struct_adjacent_tags<S>.first;
+            // Whether it rejects a key that it does not know: always if `closed`, under the call's
+            // `yyjson::reject_unknown_keys` if `closable`.  A struct with a map of other keys takes any key.
+            static constexpr bool closable = !has_key_maps<S>;
+            static constexpr bool closed =
+                closable && (struct_closed<S> || (struct_policies<S> & unknown_keys_policy) != 0);
+        };
+        template <ranked_struct T>
+        requires (!keyed_struct<T>)
+        struct struct_key_list<T> : struct_key_list<typename ranked_struct_of<T>::type>
+        {
         };
 
         // Whether an untagged variant ranks its alternatives for a JSON object as `untagged_key_ranking` does,
@@ -21304,33 +21361,39 @@ namespace yyjson
                                       0)...> < 2)
                 return false;
             else
-                return count_true<keyed_struct<std::remove_cv_t<Ts>>...> != 0;
+                return count_true<ranked_struct<std::remove_cv_t<Ts>>...> != 0;
         }();
 
-        // How an untagged variant ranks its alternatives that are keyed structs for a JSON object, which it tries
-        // before the others: those whose object has one of their keys and every key that they require, those with
-        // more of their keys first, and in the order of the variant among those with as many.  The keys of the
-        // object are looked up once among the keys of all of them.
+        // How an untagged variant ranks its keyed struct alternatives for a JSON object, tried before the others:
+        // those with one of their keys, all keys that they require and no key that they reject, more keys first and
+        // then in the order of the variant.  The keys of the object are looked up once among the keys of all of them.
         template <typename Variant>
         struct untagged_key_ranking;
         template <typename... Ts>
         struct untagged_key_ranking<std::variant<Ts...>>
         {
             static constexpr std::size_t n = sizeof...(Ts);
-            static constexpr std::size_t size = count_true<keyed_struct<std::remove_cv_t<Ts>>...>;
+            static constexpr std::size_t size = count_true<ranked_struct<std::remove_cv_t<Ts>>...>;
 
         private:
+            template <typename T>
+            using key_list = struct_key_list<std::remove_cv_t<T>>;
             static constexpr std::array<bool, n> reads_objects = {
                 ((accepted_json_kinds<Ts, reader::const_value_ref>() & json_kind_object) != 0)...};
-            static constexpr std::array<bool, n> keyed = {keyed_struct<std::remove_cv_t<Ts>>...};
+            static constexpr std::array<bool, n> keyed = {ranked_struct<std::remove_cv_t<Ts>>...};
             static constexpr std::array<std::span<const std::string_view>, n> alternative_keys = {
-                std::span<const std::string_view>(struct_key_list<std::remove_cv_t<Ts>>::keys)...};
+                std::span<const std::string_view>(key_list<Ts>::keys)...};
             static constexpr std::array<std::span<const bool>, n> alternative_required = {
-                std::span<const bool>(struct_key_list<std::remove_cv_t<Ts>>::required)...};
-            static constexpr std::size_t entry_count = (struct_key_list<std::remove_cv_t<Ts>>::keys.size() + ... + 0);
+                std::span<const bool>(key_list<Ts>::required)...};
+            static constexpr std::array<std::span<const std::string_view>, n> alternative_tags = {
+                std::span<const std::string_view>(key_list<Ts>::tags)...};
+            static constexpr std::array<bool, n> alternative_closed = {key_list<Ts>::closed...};
+            static constexpr std::array<bool, n> alternative_closable = {key_list<Ts>::closable...};
+            static constexpr std::size_t field_entry_count = (key_list<Ts>::keys.size() + ... + 0);
+            static constexpr std::size_t entry_count = field_entry_count + (key_list<Ts>::tags.size() + ... + 0);
 
-            // The keys of the fields of the keyed alternatives, each with the index of the alternative among them
-            // and the index of the key among the distinct keys.
+            // The keys of the fields of the keyed alternatives and then those of their adjacent tags, each with the
+            // index of the alternative among them and the index of the key among the distinct keys.
             struct entries
             {
                 std::array<std::string_view, entry_count> distinct_keys = {};
@@ -21338,6 +21401,7 @@ namespace yyjson
                 std::array<std::size_t, entry_count> key = {};
                 std::array<std::size_t, entry_count> alternative = {};
                 std::array<bool, entry_count> required = {};
+                std::array<bool, entry_count> tag = {};
             };
             // A function rather than a lambda, as in `field_keys`.  The keys are told apart by a hash table, which
             // takes fewer constant evaluation steps than comparing each with all before it.
@@ -21347,37 +21411,42 @@ namespace yyjson
                 constexpr auto slots = std::bit_ceil(2 * entry_count + 1);
                 std::array<std::uint64_t, slots> hashes = {};
                 std::array<std::size_t, slots> indices = {};  // the index of a distinct key and one, or zero
-                for (std::size_t i = 0, e = 0, k = 0; i < n; ++i)
+                for (std::size_t pass = 0, e = 0; pass < 2; ++pass)
                 {
-                    if (!keyed[i]) continue;
-                    for (std::size_t f = 0; f < alternative_keys[i].size(); ++f, ++e)
+                    for (std::size_t i = 0, k = 0; i < n; ++i)
                     {
-                        const auto name = alternative_keys[i][f];
-                        auto hash = std::uint64_t{14695981039346656037ULL};
-                        for (const char c : name) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
-                        auto s = static_cast<std::size_t>(hash) & (slots - 1);
-                        while (indices[s] != 0 &&
-                               (hashes[s] != hash || result.distinct_keys[indices[s] - 1] != name))
-                            s = (s + 1) & (slots - 1);
-                        if (indices[s] == 0)
+                        if (!keyed[i]) continue;
+                        const auto names = pass == 0 ? alternative_keys[i] : alternative_tags[i];
+                        for (std::size_t f = 0; f < names.size(); ++f, ++e)
                         {
-                            hashes[s] = hash;
-                            result.distinct_keys[result.distinct] = name;
-                            indices[s] = ++result.distinct;
+                            const auto name = names[f];
+                            auto hash = std::uint64_t{14695981039346656037ULL};
+                            for (const char c : name) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+                            auto s = static_cast<std::size_t>(hash) & (slots - 1);
+                            while (indices[s] != 0 &&
+                                   (hashes[s] != hash || result.distinct_keys[indices[s] - 1] != name))
+                                s = (s + 1) & (slots - 1);
+                            if (indices[s] == 0)
+                            {
+                                hashes[s] = hash;
+                                result.distinct_keys[result.distinct] = name;
+                                indices[s] = ++result.distinct;
+                            }
+                            result.key[e] = indices[s] - 1;
+                            result.alternative[e] = k;
+                            result.required[e] = pass == 0 && alternative_required[i][f];
+                            result.tag[e] = pass == 1;
                         }
-                        result.key[e] = indices[s] - 1;
-                        result.alternative[e] = k;
-                        result.required[e] = alternative_required[i][f];
+                        ++k;
                     }
-                    ++k;
                 }
                 return result;
             }
             static constexpr auto table = make_entries();
-            // The keys of the first keyed alternative come first, at the indices of its fields, which
+            // The keys of the fields of the first keyed alternative come first, at the indices of its fields, which
             // `key_watching_read` relies on
             static_assert([] {
-                for (std::size_t e = 0; e < entry_count && table.alternative[e] == 0; ++e)
+                for (std::size_t e = 0; e < field_entry_count && table.alternative[e] == 0; ++e)
                 {
                     if (table.key[e] != e) return false;
                 }
@@ -21386,7 +21455,7 @@ namespace yyjson
 
         public:
             static constexpr std::size_t key_count = table.distinct;
-            // the keys of all keyed alternatives, each once
+            // the keys of all keyed alternatives and of their adjacent tags, each once
             static constexpr auto keys = [] {
                 auto result = std::array<std::string_view, key_count>{};
                 for (std::size_t i = 0; i < key_count; ++i) result[i] = table.distinct_keys[i];
@@ -21394,14 +21463,22 @@ namespace yyjson
             }();
             static constexpr auto matcher = field_key_matcher<key_count>(keys);
 
-            // The keys of `keys` that an object has.
-            using seen_keys = bit_array<key_count>;
+            // The keys of `keys` that an object has, and at `key_count` whether it has a key that is none of them
+            // and no tag of `yyjson::internal_tag`.
+            using seen_keys = bit_array<key_count + 1>;
+            // Whether a keyed alternative may reject a key of the object that it does not know, for which the
+            // object's keys outside `keys` are noted.
+            static constexpr bool may_close = count_true<key_list<Ts>::closable...> != 0;
 
         private:
-            // the keys that each keyed alternative has, and those that it requires
+            // the keys that each keyed alternative has, those that it requires, and those that it takes with the
+            // keys of its adjacent tags
             static constexpr auto declared = [] {
                 auto result = std::array<seen_keys, size>{};
-                for (std::size_t e = 0; e < entry_count; ++e) result[table.alternative[e]].set(table.key[e]);
+                for (std::size_t e = 0; e < entry_count; ++e)
+                {
+                    if (!table.tag[e]) result[table.alternative[e]].set(table.key[e]);
+                }
                 return result;
             }();
             static constexpr auto required = [] {
@@ -21412,10 +21489,40 @@ namespace yyjson
                 }
                 return result;
             }();
+            static constexpr auto accepted = [] {
+                auto result = std::array<seen_keys, size>{};
+                for (std::size_t e = 0; e < entry_count; ++e) result[table.alternative[e]].set(table.key[e]);
+                return result;
+            }();
             // the index among the keyed alternatives of each alternative, or `size`
             static constexpr auto keyed_index = [] {
                 auto result = std::array<std::size_t, n>{};
                 for (std::size_t i = 0, k = 0; i < n; ++i) result[i] = keyed[i] ? k++ : size;
+                return result;
+            }();
+            // The keyed alternatives that reject the keys that they do not know: those that are closed themselves,
+            // and those that `yyjson::reject_unknown_keys` of the call closes.
+            static constexpr auto closed_by = [](const std::array<bool, n>& closed) {
+                auto result = bit_array<size>{};
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    if (keyed[i] && closed[i]) result.set(keyed_index[i]);
+                }
+                return result;
+            };
+            static constexpr auto closed_alternatives = closed_by(alternative_closed);
+            static constexpr auto closable_alternatives = closed_by(alternative_closable);
+            // The keys besides its own that the first keyed alternative takes and no other has: the keys of its
+            // adjacent tags that are not keys of another, and a key outside `keys`.
+            static constexpr auto first_also_takes = [] {
+                auto result = seen_keys{};
+                result.set(key_count);
+                for (std::size_t i = 0; i < key_count; ++i)
+                {
+                    auto others = false;
+                    for (std::size_t k = 1; k < size; ++k) others = others || declared[k].test(i);
+                    if (accepted[0].test(i) && !others) result.set(i);
+                }
                 return result;
             }();
 
@@ -21457,11 +21564,13 @@ namespace yyjson
                 return false;
             }();
 
-            // Whether the first keyed alternative ranks first for the keys `seen`, as it does when it has one of
-            // them, all of them, and every key that it requires: no other has more of them.
+            // Whether the first keyed alternative, which has read the object of the keys `seen`, ranks first for
+            // them, as it does when it has one of them and every key that it requires, and no other has a key that
+            // it does not have.
             [[nodiscard]] static bool first_leads(const seen_keys& seen) noexcept
             {
-                return seen.any() && declared[0].covers(seen) && seen.covers(required[0]);
+                return seen.count_common(declared[0]) != 0 && seen.covers(required[0]) &&
+                       !seen.exceeds(declared[0], first_also_takes);
             }
 
             // The keyed alternatives that an object can be read into first, by their index among them, best first.
@@ -21488,15 +21597,19 @@ namespace yyjson
                 }
             };
 
-            // Ranks the keyed alternatives that have at least one of the keys `seen` and require none that it lacks.
-            static ranking rank(const seen_keys& seen)
+            // Ranks the keyed alternatives that have at least one of the keys `seen`, require none that it lacks,
+            // and reject none: one that is closed, or that `call_closed` closes, takes its keys, those of its
+            // adjacent tags and `internal_tags`, the tags of `yyjson::internal_tag` among `keys`.
+            static ranking rank(const seen_keys& seen, bool call_closed, const seen_keys& internal_tags = {})
             {
                 auto present = std::array<std::size_t, size>{};
                 auto result = ranking{};
+                const auto& closed = call_closed ? closable_alternatives : closed_alternatives;
                 for (std::size_t k = 0; k < size; ++k)
                 {
                     present[k] = seen.count_common(declared[k]);
                     if (present[k] == 0 || !seen.covers(required[k])) continue;
+                    if (closed.test(k) && seen.exceeds(accepted[k], internal_tags)) continue;
                     // after those with as many keys, which keeps them in the order of the variant
                     auto pos = result.count++;
                     for (; pos > 0 && present[result.order[pos - 1]] < present[k]; --pos)
@@ -21507,9 +21620,15 @@ namespace yyjson
                 return result;
             }
 
-            // Ranks the alternatives for the JSON object `obj` of a document.
+            // Sets the bit of `key`, a tag of `yyjson::internal_tag`, in `internal_tags` if it is one of `keys`.
+            static void note_internal_tag(seen_keys& internal_tags, std::string_view key) noexcept
+            {
+                if (const auto i = matcher.find(key, 0); i < key_count) internal_tags.set(i);
+            }
+
+            // Ranks the alternatives for the JSON object `obj` of a document at `raw` under `call_closed`.
             template <typename Object>
-            static ranking rank_object(const Object& obj)
+            static ranking rank_object(const Object& obj, const void* raw, bool call_closed)
             {
                 auto seen = seen_keys{};
                 auto hint = std::size_t{0};
@@ -21521,21 +21640,31 @@ namespace yyjson
                         seen.set(i);
                         hint = i + 1;
                     }
+                    else if constexpr (may_close)
+                    {
+                        if (!seen.test(key_count) && !internal_tag_key::contains(raw, kv.first)) seen.set(key_count);
+                    }
                 }
-                return rank(seen);
+                auto internal_tags = seen_keys{};
+                if constexpr (may_close)
+                {
+                    const auto note = [&](std::string_view key) { note_internal_tag(internal_tags, key); };
+                    internal_tag_key::for_each_key(raw, note);
+                }
+                return rank(seen, call_closed, internal_tags);
             }
         };
 
-        // A function that reads the fields of the first keyed alternative of the variant that `Ranking` ranks,
-        // which also records in `seen` the keys of the object, by their index in `Ranking::keys`.  The keys of that
-        // alternative come first there, in the order of its fields, so the index of each of its keys is the index
-        // of its field.
+        // Reads the fields of the first keyed alternative that `Ranking` ranks and records in `seen` the keys of the
+        // object `open`, by their index in `Ranking::keys`.  The keys of that alternative come first there, in the
+        // order of its fields, so the index of each of its keys is the index of its field.
         template <typename Ranking, typename Read>
         struct key_watching_read
         {
             using ranking = Ranking;
             const Read& read;
             typename Ranking::seen_keys* seen;
+            const char* open;
 
             template <typename... Args>
             CPPYYJSON_ALWAYS_INLINE void operator()(Args&&... args) const
@@ -21620,7 +21749,13 @@ namespace yyjson
                 {
                     const auto obj = *json.as_object();
                     if (obj.size() >= key_ranking::members_to_rank)
-                        return from_ranked(json, key_ranking::rank_object(obj), 0, rereads);
+                    {
+                        const void* const raw = detail::dependent_t<writer::detail::json_value_access, Json>::get(json);
+                        return from_ranked(json,
+                                           key_ranking::rank_object(
+                                               obj, raw, (detail::read_policies & detail::unknown_keys_policy) != 0),
+                                           0, rereads);
+                    }
                 }
             }
             return from_alternative<0>(json, kind, rereads);
@@ -29070,20 +29205,32 @@ namespace yyjson
             template <typename Ranking>
             typename Ranking::ranking rank_members()
             {
+                const char* const open = cur_;
                 auto seen = typename Ranking::seen_keys{};
                 auto hint = std::size_t{0};
                 read_members([&] {
+                    const char* const key_at = cur_;
                     auto i = expected_field(Ranking::matcher, hint);
                     if (i == Ranking::key_count) i = find_field(Ranking::matcher, hint);
-                    read_colon();
                     if (i < Ranking::key_count)
                     {
                         seen.set(i);
                         hint = i + 1;
                     }
+                    else
+                        note_unknown_key<Ranking>(seen, open, key_at);
+                    read_colon();
                     skip_brackets();
                 });
-                return Ranking::rank(seen);
+                return rank_seen<Ranking>(seen, open);
+            }
+
+            // Ranks the object at `open` of the keys `seen` under the policies of the reader.
+            template <typename Ranking>
+            typename Ranking::ranking rank_seen(const typename Ranking::seen_keys& seen, const char* open) const
+            {
+                return Ranking::rank(seen, (policies_ & yyjson::detail::unknown_keys_policy) != 0,
+                                     internal_tags_of<Ranking>(open));
             }
 
             // Moves past the value at `cur_` by its brackets and strings alone, to the comma or the bracket after
@@ -29138,13 +29285,14 @@ namespace yyjson
                 using ranking = yyjson::detail::untagged_key_ranking<std::remove_cv_t<T>>;
                 constexpr auto first = ranking::alternatives[0];
                 using first_type = std::remove_cv_t<std::variant_alternative_t<first, T>>;
-                if constexpr (!yyjson::detail::type_reaches<std::remove_cv_t<T>, first_type>)
+                if constexpr (yyjson::detail::keyed_struct<first_type> &&
+                              !yyjson::detail::type_reaches<std::remove_cv_t<T>, first_type>)
                 {
                     auto seen = typename ranking::seen_keys{};
                     if (read_watched_alternative<T, first, ranking>(make, &seen))
                     {
                         if (ranking::first_leads(seen)) return;
-                        const auto ranked = ranking::rank(seen);
+                        const auto ranked = rank_seen<ranking>(seen, start);
                         if (ranked.count == 0 ? ranking::first_in_order : ranked.order[0] == 0) return;
                         cur_ = start;
                         read_ranked_alternatives<T>(make, start, rereads, ranked, false);
@@ -31800,11 +31948,49 @@ namespace yyjson
             CPPYYJSON_ALWAYS_INLINE std::size_t find_watched_field(const Watch& watch, std::size_t hint)
             {
                 using ranking = typename Watch::ranking;
+                const char* const key_at = cur_;
                 auto index = expected_field(ranking::matcher, hint);
                 if (index == ranking::key_count) index = find_field(ranking::matcher, hint);
-                if (index == ranking::key_count) return N;
+                if (index == ranking::key_count)
+                {
+                    note_unknown_key<ranking>(*watch.seen, watch.open, key_at);
+                    return N;
+                }
                 watch.seen->set(index);
                 return index < N ? index : N;
+            }
+
+            // Notes in `seen` the key at `key_at` of the object at `open`, which is none of the keys of `Ranking`,
+            // unless it is a tag of `yyjson::internal_tag` or a key outside them has been noted.
+            template <typename Ranking>
+            void note_unknown_key(typename Ranking::seen_keys& seen, const char* open, const char* key_at)
+            {
+                if constexpr (Ranking::may_close)
+                {
+                    if (seen.test(Ranking::key_count)) return;
+                    if (tags_ != nullptr)
+                    {
+                        const auto guard = cursor_guard{*this, cur_};
+                        cur_ = key_at;
+                        if (is_internal_tag(open, read_string(scratch_))) return;
+                    }
+                    seen.set(Ranking::key_count);
+                }
+            }
+
+            // The keys of `Ranking` that are tags of `yyjson::internal_tag` in the object at `open`.
+            template <typename Ranking>
+            typename Ranking::seen_keys internal_tags_of(const char* open) const noexcept
+            {
+                auto result = typename Ranking::seen_keys{};
+                if constexpr (Ranking::may_close)
+                {
+                    for (const auto* p = tags_; p != nullptr; p = p->outer)
+                    {
+                        if (p->object == open) Ranking::note_internal_tag(result, p->key);
+                    }
+                }
+                return result;
             }
 
             // Fails at the first key of the object at `open` read into the struct T that `yyjson::property_names`
@@ -32323,6 +32509,7 @@ namespace yyjson
             void read_watched_fields(T& t, typename Ranking::seen_keys* seen)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                const char* const open = cur_;
                 auto adjacent = struct_reading<T>{adjacent_fields_of<T>{cur_}, {}, {}};
                 if constexpr (yyjson::detail::visitable<T>)
                 {
@@ -32338,9 +32525,9 @@ namespace yyjson
                     using watching = yyjson::detail::key_watching_read<Ranking, decltype(read_one)>;
                     if constexpr (yyjson::detail::struct_conditions_object<T>)
                         read_struct_fields<visit_struct<T>::key_matcher, T>(
-                            watching{read_one, seen}, static_cast<yyjson::detail::condition_keys<T>&>(adjacent));
+                            watching{read_one, seen, open}, static_cast<yyjson::detail::condition_keys<T>&>(adjacent));
                     else
-                        read_struct_fields<visit_struct<T>::key_matcher, T>(watching{read_one, seen});
+                        read_struct_fields<visit_struct<T>::key_matcher, T>(watching{read_one, seen, open});
                 }
                 else
                 {
@@ -32358,9 +32545,9 @@ namespace yyjson
                     using watching = yyjson::detail::key_watching_read<Ranking, decltype(read_one)>;
                     if constexpr (yyjson::detail::struct_conditions_object<T>)
                         read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(
-                            watching{read_one, seen}, static_cast<yyjson::detail::condition_keys<T>&>(adjacent));
+                            watching{read_one, seen, open}, static_cast<yyjson::detail::condition_keys<T>&>(adjacent));
                     else
-                        read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(watching{read_one, seen});
+                        read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(watching{read_one, seen, open});
                 }
                 adjacent.fill(t);
                 read_skipped_adjacent_fields(t, adjacent);
