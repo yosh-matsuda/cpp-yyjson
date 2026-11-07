@@ -82,6 +82,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
 *   [Utilities](#utilities)
     *   [`yyjson::nullable`](#yyjsonnullable)
     *   [`yyjson::indirect`](#yyjsonindirect)
+    *   [`yyjson::any_of_variant`, `yyjson::alt`](#yyjsonany_of_variant-yyjsonalt)
     *   [`yyjson::overloaded`](#yyjsonoverloaded)
 *   [Build configuration](#build-configuration)
     *   [Link-time optimization](#link-time-optimization)
@@ -1923,6 +1924,8 @@ inline constexpr /* unspecified */ one_of;
 
 See [Combining constraints](validation.md#combining-constraints) and [Conditions between fields](validation.md#conditions-between-fields).
 
+`yyjson::any_of` constrains a value. To choose the type of a value by constraints, use [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt).
+
 ```cpp
 struct Contact
 {
@@ -2569,6 +2572,40 @@ auto expr = Expr{.op = "-", .lhs = yyjson::indirect<Expr>(Expr{.op = "1", .lhs =
 yyjson::write(expr);  // -> {"op":"-","lhs":{"op":"1"}}
 
 auto text = yyjson::indirect<std::string>(std::in_place, "text");  // not from "text" alone: std::string is a class
+```
+
+### `yyjson::any_of_variant`, `yyjson::alt`
+
+A variant whose alternatives can have constraints, as `anyOf` of JSON Schema. See [Alternatives with constraints](conversions.md#alternatives-with-constraints).
+
+```cpp
+template <typename T, auto... Settings>
+struct alt;  // declared only
+
+template <typename... As>
+struct any_of_variant : std::variant</* T of each A */...>
+{
+    using variant_type = std::variant</* T of each A */...>;
+    using variant_type::variant_type;
+    using variant_type::operator=;
+};
+
+// std::variant_size and std::variant_alternative of any_of_variant<As...> are those of variant_type
+```
+
+*   Each `A` of `As` is a type `T` or `yyjson::alt<T, settings...>`. `yyjson::alt<T>` is `T`.
+*   The settings of `yyjson::alt` are those of the value of a field of `T`: the [constraints](#constraints), the [constraints of elements](#constraints-of-elements), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), [`yyjson::matches<T>`](#yyjsonmatchest), and the keywords of an object for a struct. For a struct, `yyjson::value`, `yyjson::object` and a `std::variant` with struct alternatives, `yyjson::field("key", s...)` constrains a member as at [a field that holds a struct](validation.md#keywords-of-an-object-at-a-field). Each setting is a value, or a pointer to a `constexpr` variable that holds it. Before C++26, a setting made from a `std::string_view` variable needs the pointer. So do `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required`.
+*   `yyjson::additional_properties(false)` in `yyjson::alt` accepts only the keys that `yyjson::field` names in it, and the keys of the tags.
+*   A read tries the alternatives as an untagged `std::variant` does. An alternative reads a value only if the value converts to `T` and satisfies its settings. `write` does not check the settings.
+*   These are compile errors: `yyjson::alt` at another position, `yyjson::alt` in `yyjson::alt`, `yyjson::required` directly in `yyjson::alt`, `yyjson::rename` in `yyjson::field` in `yyjson::alt`, and `yyjson::internal_tag` or `yyjson::adjacent_tag` on the variant.
+
+The setting [`yyjson::any_of`](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) is a different feature, which constrains the value of a field.
+
+```cpp
+using Id = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>, yyjson::alt<std::string, yyjson::max_length(8)>>;
+
+auto id = yyjson::read<Id>(R"("ab")");  // -> holds "ab", id.index() is 1
+yyjson::write(Id(std::in_place_index<0>, 7));  // -> 7
 ```
 
 ### `yyjson::overloaded`

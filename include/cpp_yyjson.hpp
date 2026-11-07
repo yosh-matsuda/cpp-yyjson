@@ -2249,6 +2249,24 @@ namespace yyjson
         template <typename T>
         constexpr std::string_view type_name() noexcept;
 
+        // The name of T in an array of static storage.  A template argument can point to it, but not into the
+        // string literal of the name that `type_name` takes it from.
+        template <typename T>
+        inline constexpr auto type_name_chars = [] {
+            auto result = std::array<char, type_name<T>().size() + 1>{};
+            std::ranges::copy(type_name<T>(), result.begin());
+            return result;
+        }();
+        template <typename T>
+        consteval const char* static_type_name()
+        {
+#if defined(__cpp_lib_define_static)
+            return static_string(type_name<T>());
+#else
+            return type_name_chars<T>.data();
+#endif
+        }
+
         template <typename F>
         struct predicate_parameter
         {
@@ -2287,8 +2305,9 @@ namespace yyjson
         template <auto F>
         consteval satisfies_t make_predicate()
         {
-            constexpr auto parameter = type_name<typename predicate_parameter<decltype(F)>::type>();
-            return {&call_predicate<F>, static_string(parameter), parameter.size()};
+            using parameter = typename predicate_parameter<decltype(F)>::type;
+            constexpr auto name = type_name<parameter>();
+            return {&call_predicate<F>, static_type_name<parameter>(), name.size()};
         }
     }  // namespace detail
 
@@ -2438,7 +2457,7 @@ namespace yyjson
         consteval type_test make_type_test()
         {
             constexpr auto name = type_name<T>();
-            return {&test_type<T>, static_string(name), name.size()};
+            return {&test_type<T>, static_type_name<T>(), name.size()};
         }
     }  // namespace detail
 
@@ -2458,28 +2477,27 @@ namespace yyjson
 
     namespace detail
     {
-        template <typename... As>
+        template <std::size_t N, typename... As>
         struct field_annotation;
 
         // A `yyjson::field("key", ...)` in a subschema, as JSON Schema's `properties` and `required`: the key, and
         // the keywords of its value with `yyjson::required`, which tests that the object has the key.
-        template <typename... As>
+        template <std::size_t N, typename... As>
         struct member_schema
         {
-            const char* key_data = nullptr;
-            std::size_t key_size = 0;
+            setting_string<N> key_string;
             setting_list<As...> settings;
 
-            [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
+            [[nodiscard]] constexpr std::string_view key() const noexcept { return key_string.view(); }
             static constexpr bool required = (std::same_as<As, required_t> || ...);
         };
-        template <typename... As>
-        struct setting_type<member_schema<As...>>
+        template <std::size_t N, typename... As>
+        struct setting_type<member_schema<N, As...>>
         {
-            using type = member_schema<>;
+            using type = member_schema<0>;
         };
         template <>
-        inline constexpr std::uint32_t constraint_bit<member_schema<>> = 1U << 31;
+        inline constexpr std::uint32_t constraint_bit<member_schema<0>> = 1U << 31;
 
         // A setting of a subschema as the subschema holds it: `yyjson::field` as a `member_schema`.
         template <typename A>
@@ -2487,10 +2505,10 @@ namespace yyjson
         {
             using type = A;
         };
-        template <typename... As>
-        struct subschema_entry<field_annotation<As...>>
+        template <std::size_t N, typename... As>
+        struct subschema_entry<field_annotation<N, As...>>
         {
-            using type = member_schema<As...>;
+            using type = member_schema<N, As...>;
         };
         template <typename A>
         using subschema_entry_t = typename subschema_entry<A>::type;
@@ -2506,26 +2524,35 @@ namespace yyjson
 
         template <typename A>
         struct member_schema_maker;
-        template <typename... As>
-        struct member_schema_maker<field_annotation<As...>>
+        // Where a `yyjson::field` constrains a member that another setting declares: in a subschema, in
+        // `yyjson::alt`, or in another `yyjson::field`.
+        enum class member_position : std::uint8_t
+        {
+            subschema,
+            alternative,
+            nested
+        };
+        // Fails to compile if the settings of such a `yyjson::field` declare a member.  Defined after
+        // `field_annotation`.
+        template <member_position P, typename... As>
+        consteval bool check_member_settings();
+        template <std::size_t N, typename... As>
+        struct member_schema_maker<field_annotation<N, As...>>
         {
             template <std::size_t... Is>
-            static consteval subschema_entry_t<field_annotation<As...>> make(const field_annotation<As...>& a,
-                                                                             std::index_sequence<Is...>)
+            static consteval subschema_entry_t<field_annotation<N, As...>> make(const field_annotation<N, As...>& a,
+                                                                                std::index_sequence<Is...>)
             {
-                static_assert(((subschema_setting<As> || std::same_as<As, required_t>) && ...),
-                              "yyjson::field in yyjson::not_, if_then_else, all_of, any_of and one_of takes "
-                              "yyjson::required and the keywords of the value; yyjson::rename, skip, adjacent_tag, "
-                              "default_, default_from and emit_defaults declare a member, outside them");
-                return {static_string(a.member), a.member.size(), make_setting_list(std::get<Is>(a.values)...)};
+                static_assert(check_member_settings<member_position::subschema, As...>());
+                return {a.member_string, make_setting_list(annotation_at<Is>(a.values)...)};
             }
         };
         template <typename A>
         consteval subschema_entry_t<A> make_subschema_entry(const A& a)
         {
             if constexpr (member_annotation<A>)
-                return member_schema_maker<A>::make(a,
-                                                    std::make_index_sequence<std::tuple_size_v<decltype(a.values)>>{});
+                return member_schema_maker<A>::make(
+                    a, std::make_index_sequence<std::tuple_size_v<typename A::value_types>>{});
             else
                 return a;
         }
@@ -3082,7 +3109,7 @@ namespace yyjson
         // the keywords of a JSON string and of a JSON object by their kind: `yyjson::format` is an annotation of any
         // value, and `yyjson::field` names a key
         inline constexpr std::uint32_t string_kind_constraints = string_constraints & ~constraint_bit<format<>>;
-        inline constexpr std::uint32_t object_kind_constraints = object_constraints | constraint_bit<member_schema<>>;
+        inline constexpr std::uint32_t object_kind_constraints = object_constraints | constraint_bit<member_schema<0>>;
         // the keywords of any kind that the type of a struct does not take
         inline constexpr std::uint32_t listed_constraints = constraint_bit<satisfies_t> | constraint_bit<const_<>> |
                                                             constraint_bit<enum_<0>> | constraint_bit<format<>> |
@@ -3257,37 +3284,101 @@ namespace yyjson
             std::same_as<A, pattern_properties> || constraint_setting<A> || object_subschema_setting<A> ||
             member_annotation<A>;
 
-        // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
-        template <typename... As>
+        template <std::size_t I, typename A>
+        struct annotation_leaf
+        {
+            A value;
+        };
+        template <typename Is, typename... As>
+        struct annotation_values;
+        // The settings of `annotate(...)`, one base per setting.  `std::tuple` of libstdc++ nests one level per
+        // element, and constructing it in a constant expression exceeds the depth limit of the compiler with a few
+        // hundred settings, which a generated enumeration of time zones has.
+        template <std::size_t... Is, typename... As>
+        struct annotation_values<std::index_sequence<Is...>, As...> : annotation_leaf<Is, As>...
+        {
+            constexpr explicit annotation_values(const As&... values) : annotation_leaf<Is, As>{values}... {}
+        };
+        template <std::size_t I, typename A>
+        constexpr const A& annotation_at(const annotation_leaf<I, A>& leaf) noexcept
+        {
+            return leaf.value;
+        }
+        // The settings of the field `member()` of a struct, which `yyjson::annotate` takes.  It is a structural
+        // type, so that `yyjson::alt` takes it as a template argument; N is that of its `setting_string`.
+        template <std::size_t N, typename... As>
         struct field_annotation
         {
-            std::string_view member;
-            std::tuple<As...> values;
+            using value_types = std::tuple<As...>;
+            setting_string<N> member_string;
+            annotation_values<std::index_sequence_for<As...>, As...> values;
+
+            [[nodiscard]] constexpr std::string_view member() const noexcept { return member_string.view(); }
         };
 
-        // A `yyjson::field` in another `yyjson::field` constrains a member of the struct at that position, and takes
-        // no setting that declares the member.
-        template <typename A>
-        inline constexpr bool nested_field_settings = true;
         template <typename... As>
-        inline constexpr bool nested_field_settings<field_annotation<As...>> =
-            ((subschema_setting<As> || std::same_as<As, required_t>) && ...);
+        consteval bool check_field_settings()
+        {
+            static_assert((field_setting<As> && ...),
+                          "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::adjacent_tag, yyjson::required, "
+                          "yyjson::default_, yyjson::default_from, yyjson::emit_defaults, yyjson::extra_items, "
+                          "yyjson::extra_keys, yyjson::pattern_properties and the keywords of the value, such as "
+                          "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::field(\"key\", ...)");
+            return true;
+        }
+        template <member_position P, typename... As>
+        consteval bool check_member_settings()
+        {
+            constexpr bool member = ((subschema_setting<As> || std::same_as<As, required_t>) && ...);
+            if constexpr (P == member_position::nested)
+                static_assert(member,
+                              "yyjson::field in yyjson::field takes yyjson::required and the keywords of the value; "
+                              "yyjson::rename, skip, adjacent_tag, default_, default_from and emit_defaults declare "
+                              "a member, only in yyjson::field directly in yyjson::annotate");
+            else if constexpr (P == member_position::alternative)
+                static_assert(member,
+                              "yyjson::field in yyjson::alt takes yyjson::required and the keywords of the value; "
+                              "yyjson::rename, skip, adjacent_tag, default_, default_from and emit_defaults declare "
+                              "a member, outside it");
+            else
+                static_assert(member,
+                              "yyjson::field in yyjson::not_, if_then_else, all_of, any_of and one_of takes "
+                              "yyjson::required and the keywords of the value; yyjson::rename, skip, adjacent_tag, "
+                              "default_, default_from and emit_defaults declare a member, outside them");
+            return true;
+        }
+        // Checks the settings of A at P if it is a `yyjson::field`.  A `yyjson::field` in it was checked when the
+        // call of `yyjson::field` that made A took it.
+        template <member_position P, typename A>
+        struct member_settings_check : std::true_type
+        {
+        };
+        template <member_position P, std::size_t N, typename... As>
+        struct member_settings_check<P, field_annotation<N, As...>>
+            : std::bool_constant<check_member_settings<P, As...>()>
+        {
+        };
     }  // namespace detail
 
     template <typename... As>
-    consteval detail::field_annotation<As...> field(std::string_view member, As... values)
+    consteval detail::field_annotation<0, As...> field(std::string_view member, As... values)
     {
-        static_assert((detail::field_setting<As> && ...),
-                      "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::adjacent_tag, yyjson::required, "
-                      "yyjson::default_, yyjson::default_from, yyjson::emit_defaults, yyjson::extra_items, "
-                      "yyjson::extra_keys, yyjson::pattern_properties and the keywords of the value, such as "
-                      "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::field(\"key\", ...)");
-        static_assert((detail::nested_field_settings<As> && ...),
-                      "yyjson::field in yyjson::field takes yyjson::required and the keywords of the value; "
-                      "yyjson::rename, skip, adjacent_tag, default_, default_from and emit_defaults declare "
-                      "a member, only in yyjson::field directly in yyjson::annotate");
-        return {member, {values...}};
+        static_assert(detail::check_field_settings<As...>());
+        static_assert((detail::member_settings_check<detail::member_position::nested, As>::value && ...));
+        return {detail::setting_string<0>(member),
+                detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
+#if !defined(__cpp_lib_define_static)
+    // A key from a string literal is held in the setting, which can then be a template argument of `yyjson::alt`.
+    template <std::size_t N, typename... As>
+    consteval detail::field_annotation<N, As...> field(const char (&member)[N], As... values)
+    {
+        static_assert(detail::check_field_settings<As...>());
+        static_assert((detail::member_settings_check<detail::member_position::nested, As>::value && ...));
+        return {detail::setting_string<N>(member),
+                detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
+    }
+#endif
 
     // How an enumeration is written and read: by the names of its enumerators, as the integer of its underlying
     // type, or by the name and as the integer when the value has no name.  It annotates the enumeration:
@@ -3321,26 +3412,6 @@ namespace yyjson
 
     namespace detail
     {
-        template <std::size_t I, typename A>
-        struct annotation_leaf
-        {
-            A value;
-        };
-        template <typename Is, typename... As>
-        struct annotation_values;
-        // The settings of `annotate(...)`, one base per setting.  `std::tuple` of libstdc++ nests one level per
-        // element, and constructing it in a constant expression exceeds the depth limit of the compiler with a few
-        // hundred settings, which a generated enumeration of time zones has.
-        template <std::size_t... Is, typename... As>
-        struct annotation_values<std::index_sequence<Is...>, As...> : annotation_leaf<Is, As>...
-        {
-            constexpr explicit annotation_values(const As&... values) : annotation_leaf<Is, As>{values}... {}
-        };
-        template <std::size_t I, typename A>
-        constexpr const A& annotation_at(const annotation_leaf<I, A>& leaf) noexcept
-        {
-            return leaf.value;
-        }
         // The number of the values in Bs that are true.  The settings of an `annotate(...)` can be more than 256,
         // and clang before 22 takes no more operands in a fold expression, so the functions over them expand their
         // packs in an array.
@@ -3428,8 +3499,8 @@ namespace yyjson
         struct is_field_annotation : std::false_type
         {
         };
-        template <typename... As>
-        struct is_field_annotation<field_annotation<As...>> : std::true_type
+        template <std::size_t N, typename... As>
+        struct is_field_annotation<field_annotation<N, As...>> : std::true_type
         {
         };
         template <typename A>
@@ -4272,10 +4343,10 @@ namespace yyjson
             {
                 if constexpr (is_field_annotation<A>::value)
                 {
-                    const auto i = member_index(a.member, next);
+                    const auto i = member_index(a.member(), next);
                     if (i == N) return fail(field_key_error::unknown_member);
                     next = i + 1;
-                    std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
+                    for_each_annotation([&](const auto& value) { apply_setting(i, value); }, a.values);
                 }
                 else if constexpr (std::same_as<A, transparent_t>)
                     make_transparent();
@@ -4431,8 +4502,9 @@ namespace yyjson
         // alone.
         template <typename A>
         inline constexpr bool adjacent_field_annotation = false;
-        template <typename... As>
-        inline constexpr bool adjacent_field_annotation<field_annotation<As...>> = (adjacent_tag_annotation<As> || ...);
+        template <std::size_t N, typename... As>
+        inline constexpr bool adjacent_field_annotation<field_annotation<N, As...>> =
+            (adjacent_tag_annotation<As> || ...);
         template <typename T>
         inline constexpr bool annotates_adjacent_fields = []<typename... As>(std::type_identity<std::tuple<As...>>) {
             return count_true<adjacent_field_annotation<As>...> != 0;
@@ -5934,7 +6006,7 @@ namespace yyjson
             if constexpr (Count == 0)
                 return no_variant_tag{};
             else
-                return std::get<K>(annotation_at<I>(annotations<S>.values).values);
+                return annotation_at<K>(annotation_at<I>(annotations<S>.values).values);
         }
 
         // The `yyjson::adjacent_tag` of the field R of S, in `annotations<S>` or, with C++26, on the member.
@@ -5954,12 +6026,12 @@ namespace yyjson
                             if constexpr (adjacent_field_annotation<E>)
                             {
                                 // not a local constexpr variable: MSVC cannot use one in a generic lambda (C2326)
-                                if (entry.member == declared_member_name<S, R>)
+                                if (entry.member() == declared_member_name<S, R>)
                                 {
                                     [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                                         (
                                             [&] {
-                                                using A = std::tuple_element_t<Ks, decltype(entry.values)>;
+                                                using A = std::tuple_element_t<Ks, typename E::value_types>;
                                                 if constexpr (adjacent_tag_annotation<A>)
                                                 {
                                                     result[0] = j;
@@ -5968,7 +6040,7 @@ namespace yyjson
                                                 }
                                             }(),
                                             ...);
-                                    }(std::make_index_sequence<std::tuple_size_v<decltype(entry.values)>>{});
+                                    }(std::make_index_sequence<std::tuple_size_v<typename E::value_types>>{});
                                 }
                             }
                             ++j;
@@ -6825,8 +6897,8 @@ namespace yyjson
         // Whether the annotation `A` of a struct gives a field a keyword of its value.
         template <typename A>
         inline constexpr bool constraint_field_annotation = false;
-        template <typename... As>
-        inline constexpr bool constraint_field_annotation<field_annotation<As...>> =
+        template <std::size_t N, typename... As>
+        inline constexpr bool constraint_field_annotation<field_annotation<N, As...>> =
             count_true<(constraint_setting<As> || object_subschema_setting<As> || member_annotation<As>)...> != 0;
 
         // Whether a field of the class S has a keyword of its value, which the types of the settings tell.
@@ -6866,17 +6938,14 @@ namespace yyjson
                     {
                         auto i = n;
                         for (std::size_t k = 0; k < n && i == n; ++k)
-                            if (members[(next + k) % n] == a.member) i = (next + k) % n;
+                            if (members[(next + k) % n] == a.member()) i = (next + k) % n;
                         next = i + 1;
                         if (i != R) return;
-                        std::apply(
-                            [&](const auto&... values) {
-                                const auto apply = [&]<typename V>(const V& v) {
-                                    if constexpr (constraint_setting<V> || object_subschema_setting<V> ||
-                                                  member_annotation<V>)
-                                        f(v);
-                                };
-                                (apply(values), ...);
+                        for_each_annotation(
+                            [&]<typename V>(const V& v) {
+                                if constexpr (constraint_setting<V> || object_subschema_setting<V> ||
+                                              member_annotation<V>)
+                                    f(v);
                             },
                             a.values);
                     }
@@ -7077,15 +7146,15 @@ namespace yyjson
             bool has_const = false;
             visit([&]<typename A>(const A& a) {
                 using B = setting_type_t<A>;
-                if ((c.bits & constraint_bit<B> & ~(combinator_constraints | constraint_bit<member_schema<>>)) != 0 &&
+                if ((c.bits & constraint_bit<B> & ~(combinator_constraints | constraint_bit<member_schema<0>>)) != 0 &&
                     !std::same_as<B, pattern<>>)
                     b.fail(constraint_error::keyword_twice);
                 c.bits |= constraint_bit<B>;
                 if constexpr (is_field_annotation<A>::value || presence_setting<A>)
-                    c.bits |= constraint_bit<member_schema<>>;
+                    c.bits |= constraint_bit<member_schema<0>>;
                 else if constexpr (std::same_as<A, additional_properties<bool>>)
                 {
-                    c.bits |= constraint_bit<member_schema<>>;
+                    c.bits |= constraint_bit<member_schema<0>>;
                     node.closed = true;
                 }
                 else if constexpr (std::same_as<B, minimum>)
@@ -7159,15 +7228,13 @@ namespace yyjson
             std::size_t last_member = 0;
             visit([&]<typename A>(const A& a) {
                 using B = setting_type_t<A>;
-                if constexpr (std::same_as<B, member_schema<>> || is_field_annotation<A>::value)
+                if constexpr (std::same_as<B, member_schema<0>> || is_field_annotation<A>::value)
                 {
                     auto member = std::size_t{0};
                     if constexpr (is_field_annotation<A>::value)
                     {
-                        member = build_schema_node(
-                            b, [&a](const auto& f) { std::apply([&](const auto&... v) { (f(v), ...); }, a.values); },
-                            keep);
-                        b.nodes[member].key = keep(a.member);
+                        member = build_schema_node(b, [&a](const auto& f) { for_each_annotation(f, a.values); }, keep);
+                        b.nodes[member].key = keep(a.member());
                         b.nodes[member].required = subschema_entry_t<A>::required;
                     }
                     else
@@ -7541,6 +7608,180 @@ namespace yyjson
         // The schema of the field R of S, by its index among all the fields, of a struct that `has_constraints`.
         template <typename S, std::size_t R>
         using field_schema = node_schema<field_tree<S, R>, 0>;
+    }  // namespace detail
+
+    // An alternative of `yyjson::any_of_variant`: T with the settings of the value of a field of T, but not its key.
+    // A setting is a template argument, or a pointer to a constexpr variable that holds one.  `alt<T>` is T.
+    // Never defined, because argument-dependent lookup completes the arguments of a union, as `a == b` does.
+    template <typename T, auto... Settings>
+    struct alt;
+
+    namespace detail
+    {
+        // Whether the template argument S of `yyjson::alt` is a setting or a pointer to one.
+        template <auto S>
+        inline constexpr bool alternative_setting_argument =
+            std::is_class_v<std::remove_cv_t<decltype(S)>> ||
+            (std::is_pointer_v<decltype(S)> && std::is_class_v<std::remove_cv_t<std::remove_pointer_t<decltype(S)>>>);
+        // The setting S of `yyjson::alt`, or the one that it points to.
+        template <auto S>
+        consteval const auto& alternative_setting_value() noexcept
+        {
+            if constexpr (std::is_pointer_v<decltype(S)>)
+                return *S;
+            else
+                return S;
+        }
+        template <auto S>
+        using alternative_setting_t = std::remove_cvref_t<decltype(alternative_setting_value<S>())>;
+
+        // The settings that `yyjson::alt` takes: those of the value of a field.
+        template <typename A>
+        concept alternative_setting = (constraint_setting<A> && !setting_of<A, member_schema<0>>) ||
+                                      object_subschema_setting<A> || is_field_annotation<A>::value;
+
+        template <typename A>
+        inline constexpr bool is_alt = false;
+        template <typename T, auto... Settings>
+        inline constexpr bool is_alt<alt<T, Settings...>> = true;
+
+        // The type of the alternative A of a union, which is `yyjson::alt<T, settings...>` or T, and whether it has
+        // settings.
+        template <typename A>
+        struct alternative_traits
+        {
+            using type = A;
+            static constexpr bool constrained = false;
+        };
+        template <typename T, auto... Settings>
+        struct alternative_traits<alt<T, Settings...>>
+        {
+            using type = T;
+            static constexpr bool constrained = sizeof...(Settings) != 0;
+        };
+        template <typename A>
+        using alternative_type_t = typename alternative_traits<A>::type;
+
+        // The tree of the settings of `yyjson::alt`.
+        template <auto... Settings>
+        constexpr tree_builder build_alternative_tree()
+        {
+            auto b = tree_builder{};
+            build_schema_node(
+                b, [](const auto& f) { (f(alternative_setting_value<Settings>()), ...); },
+                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
+            return b;
+        }
+        // The schema of the settings of the alternative A of a union.
+        template <typename A>
+        struct alternative_schema
+        {
+        };
+        template <typename T, auto... Settings>
+        struct alternative_schema<alt<T, Settings...>>
+        {
+            using type = node_schema<checked_tree<&build_alternative_tree<Settings...>>, 0>;
+        };
+
+        // Fails to compile if an alternative of a union is wrong.  Defined after the checks of the settings.
+        template <typename... As>
+        consteval bool check_alternatives();
+    }  // namespace detail
+
+    // A value of one of the types of the alternatives As, each `yyjson::alt<T, settings...>` or a type T, as JSON
+    // Schema's `anyOf`.  It is the `std::variant` of the types, and it is read as that variant, but an alternative
+    // reads a JSON value only if the value also satisfies its settings.  `index()` tells apart two of one type.
+    template <typename... As>
+    struct any_of_variant : std::variant<detail::alternative_type_t<As>...>
+    {
+        static_assert(sizeof...(As) != 0, "yyjson::any_of_variant needs an alternative");
+        static_assert(detail::check_alternatives<As...>());
+
+        using variant_type = std::variant<detail::alternative_type_t<As>...>;
+        using variant_type::variant_type;
+        using variant_type::operator=;
+    };
+
+    namespace detail
+    {
+        // Whether V is a union of alternatives with settings, such as `yyjson::any_of_variant`, and its parts:
+        // `base` is its `std::variant`, and `alternative<I>` is its template argument I.
+        template <typename V>
+        struct union_traits
+        {
+            static constexpr bool value = false;
+        };
+        template <typename... As>
+        struct union_traits<any_of_variant<As...>>
+        {
+            static constexpr bool value = true;
+            using base = std::variant<alternative_type_t<As>...>;
+            template <std::size_t I>
+            using alternative = std::tuple_element_t<I, std::tuple<As...>>;
+        };
+        template <typename V>
+        concept union_variant = union_traits<std::remove_cv_t<V>>::value;
+
+        // The `std::variant` of V: V itself, or the base of a union.
+        template <typename V>
+        struct variant_base
+        {
+            using type = V;
+        };
+        template <union_variant V>
+        struct variant_base<V>
+        {
+            using type = std::conditional_t<std::is_const_v<V>, const typename union_traits<std::remove_cv_t<V>>::base,
+                                            typename union_traits<std::remove_cv_t<V>>::base>;
+        };
+        template <typename V>
+        using variant_base_t = typename variant_base<V>::type;
+
+        // Whether the alternative I of the union V has settings, which a read checks.
+        template <typename V, std::size_t I>
+        concept constrained_union_alternative =
+            union_variant<V> &&
+            alternative_traits<typename union_traits<std::remove_cv_t<V>>::template alternative<I>>::constrained;
+        // The schema of the settings of the alternative I of the union V.
+        template <typename V, std::size_t I>
+        using union_alternative_schema =
+            typename alternative_schema<typename union_traits<std::remove_cv_t<V>>::template alternative<I>>::type;
+
+        // `t` as its `std::variant`, which `std::visit` takes before P2162.
+        template <typename T>
+        constexpr decltype(auto) as_std_variant(T&& t) noexcept
+        {
+            using U = std::remove_reference_t<T>;
+            if constexpr (union_variant<U>)
+                return static_cast<
+                    std::conditional_t<std::is_lvalue_reference_v<T>, variant_base_t<U>&, variant_base_t<U>&&>>(t);
+            else
+                return std::forward<T>(t);
+        }
+
+        template <typename... As>
+        struct template_type_args<any_of_variant<As...>>
+        {
+            using type = type_list<alternative_type_t<As>...>;
+        };
+    }  // namespace detail
+}  // namespace yyjson
+
+template <typename... As>
+struct std::variant_size<yyjson::any_of_variant<As...>>
+    : std::variant_size<typename yyjson::any_of_variant<As...>::variant_type>
+{
+};
+template <std::size_t I, typename... As>
+struct std::variant_alternative<I, yyjson::any_of_variant<As...>>
+    : std::variant_alternative<I, typename yyjson::any_of_variant<As...>::variant_type>
+{
+};
+
+namespace yyjson
+{
+    namespace detail
+    {
 
         // f(setting) for each `yyjson::not_`, `if_then_else`, `all_of`, `any_of` and `one_of` that annotates the
         // struct S, in `annotations<S>` and then on the type.
@@ -8564,6 +8805,8 @@ namespace yyjson
         inline constexpr bool null_holder<std::variant<Ts...>> =
             count_true<(std::same_as<Ts, std::monostate> || std::same_as<Ts, std::nullptr_t> || null_holder<Ts> ||
                         null_testable<Ts>)...> != 0;
+        template <union_variant V>
+        inline constexpr bool null_holder<V> = null_holder<variant_base_t<V>>;
 
         // The value that the field `f` holds, or null when it is empty, null or valueless.
         template <typename F>
@@ -8751,6 +8994,8 @@ namespace yyjson
         inline constexpr bool variant_value = false;
         template <typename... Ts>
         inline constexpr bool variant_value<std::variant<Ts...>> = true;
+        template <union_variant V>
+        inline constexpr bool variant_value<V> = true;
 
         // Whether V is a struct read from a JSON object by its keys, which the keywords of an object at its position
         // check, or a variant that has one.  Defined after the concepts of ranges.
@@ -8806,7 +9051,7 @@ namespace yyjson
                 static_assert(!c.template has<matches_t<void>>() || dom_kind_of<V> != dom_kind::other || dom_any,
                               "yyjson::matches constrains a value of the DOM: yyjson::value, yyjson::array or "
                               "yyjson::object");
-                static_assert(!c.template has<member_schema<>>() || dom_any || dom_kind_of<V> == dom_kind::object ||
+                static_assert(!c.template has<member_schema<0>>() || dom_any || dom_kind_of<V> == dom_kind::object ||
                                   holds_object_struct<V>(),
                               "yyjson::field in a subschema names a key of a struct, or of a yyjson::value or "
                               "yyjson::object, not of the value of another type");
@@ -8820,6 +9065,40 @@ namespace yyjson
             }
         }
 
+        template <typename A>
+        consteval bool check_alternative()
+        {
+            if constexpr (is_alt<A>)
+                return []<typename T, auto... Settings>(std::type_identity<alt<T, Settings...>>) {
+                    static_assert(!is_alt<T>, "yyjson::alt takes a type that is not yyjson::alt");
+                    constexpr bool arguments[] = {true, alternative_setting_argument<Settings>...};
+                    static_assert(std::ranges::all_of(arguments, std::identity{}),
+                                  "yyjson::alt takes settings, or pointers to constexpr variables that hold them");
+                    if constexpr (std::ranges::all_of(arguments, std::identity{}))
+                    {
+                        constexpr bool settings[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
+                        static_assert(std::ranges::all_of(settings, std::identity{}),
+                                      "yyjson::alt takes the settings of the value of a field and yyjson::field, "
+                                      "but no setting of a key or of presence, such as yyjson::rename or "
+                                      "yyjson::required");
+                        if constexpr (sizeof...(Settings) != 0 && std::ranges::all_of(settings, std::identity{}))
+                        {
+                            constexpr auto at = member_position::alternative;
+                            (void)(member_settings_check<at, alternative_setting_t<Settings>>::value && ...);
+                            (void)checked_tree<&build_alternative_tree<Settings...>>::tree;
+                        }
+                    }
+                    return true;
+                }(std::type_identity<A>{});
+            else
+                return true;
+        }
+        template <typename... As>
+        consteval bool check_alternatives()
+        {
+            constexpr bool checked[] = {true, check_alternative<As>()...};
+            return std::ranges::all_of(checked, std::identity{});
+        }
         // The keyword of `Schema` that the value `v`, which is not null, does not satisfy, other than
         // `yyjson::satisfies`, and other than `yyjson::const_` and `yyjson::enum_` unless `Listed`.
         template <typename Schema, bool Listed = true, typename V>
@@ -16925,7 +17204,7 @@ namespace yyjson
             if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
                     return (object_struct_value<constrained_value_t<As>>() || ...);
-                }(std::type_identity<V>{});
+                }(std::type_identity<variant_base_t<V>>{});
             else
                 return object_struct_value<V>();
         }
@@ -16942,7 +17221,7 @@ namespace yyjson
             else if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
                     return (0U | ... | json_kinds_of<constrained_value_t<As>>());
-                }(std::type_identity<V>{});
+                }(std::type_identity<variant_base_t<V>>{});
             else if constexpr (enum_integer_only<V> || (std::is_arithmetic_v<V> && !std::same_as<V, bool>))
                 return number_kind;
             else if constexpr (constraint_string<V>)
@@ -16971,7 +17250,7 @@ namespace yyjson
             else if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
                     return (counts_input<Schema, As>() || ...);
-                }(std::type_identity<V>{});
+                }(std::type_identity<variant_base_t<V>>{});
             else if constexpr (array_written_tuple<V> || array_written_range<V>)
             {
                 // a set drops the elements that equal earlier ones, which the counts take
@@ -17011,7 +17290,7 @@ namespace yyjson
             else if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
                     return (input_sensitive<constrained_value_t<As>>() || ...);
-                }(std::type_identity<V>{});
+                }(std::type_identity<variant_base_t<V>>{});
             else if constexpr (array_written_tuple<V>)
                 return []<std::size_t... J>(std::index_sequence<J...>) {
                     return (input_sensitive<constrained_value_t<std::remove_cv_t<std::tuple_element_t<J, V>>>>() ||
@@ -17672,7 +17951,8 @@ namespace yyjson
                 return equals_json_text<Schema, I>(v);
             else
                 return !v.valueless_by_exception() &&
-                       std::visit([](const auto& a) { return alternative_equals_listed<Schema, I>(a); }, v);
+                       std::visit([](const auto& a) { return alternative_equals_listed<Schema, I>(a); },
+                                  as_std_variant(v));
         }
 
         // Whether the `yyjson::field` M of `Schema`, and the later ones, hold for the struct `s`, whose fields of the
@@ -17718,6 +17998,7 @@ namespace yyjson
             const auto obj = json.as_object();
             if (!obj.has_value()) return constraint_kind::none;
             const auto& rules = struct_rules<S>;
+            const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(*obj);
             auto facts = object_facts<n>();
             for (const auto& kv : *obj)
             {
@@ -17733,7 +18014,8 @@ namespace yyjson
                 else
                 {
                     // A `tag` without data is no tag, so that the empty key is not taken for one.
-                    const bool is_tag = (tag.data() != nullptr && key == tag) || rules.is_adjacent_tag(key);
+                    const bool is_tag = (tag.data() != nullptr && key == tag) || rules.is_adjacent_tag(key) ||
+                                        internal_tag_key::contains(raw, key);
                     facts.others.emplace_back(key, is_tag);
                 }
             }
@@ -17843,7 +18125,7 @@ namespace yyjson
                 [input, tag]<typename A>(const A& a) {
                     return alternative_violation<Schema>(a, input_for<Schema, A>(input), tag);
                 },
-                v);
+                as_std_variant(v));
         }
 
         // Reads the JSON value `e` again as E, through Read, and throws at it, or at a value in it, if it does not
@@ -20992,6 +21274,20 @@ namespace yyjson
             }
         };
 
+        // A union takes the kinds of its alternatives, and never the tags of its `std::variant`.
+        template <union_variant V>
+        struct variant_json_kinds<V>
+        {
+            static constexpr bool is_variant = true;
+            template <typename Json, typename... Seen>
+            static consteval std::uint16_t value()
+            {
+                return []<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
+                    return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json, Seen...>()));
+                }(std::type_identity<variant_base_t<V>>{});
+            }
+        };
+
         // The nested values that `may_cast<T>` checks: the value of an optional or a non-null shared pointer, the
         // source of a translator, the first element of an array, and the first value and the enumeration key of a
         // map.  It does not check the values of a struct, a tuple, a variant and a user-defined caster.
@@ -21191,12 +21487,18 @@ namespace yyjson
                 return false;
             }
         };
-        template <typename... Ts, typename Json>
-        requires recursive_type<std::variant<Ts...>> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
-        class variant_reread_guard<std::variant<Ts...>, Json>
+        template <typename Variant, typename Json>
+        requires recursive_type<Variant> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0) &&
+                 (union_variant<Variant> || std::same_as<Variant, variant_base_t<Variant>>)
+        class variant_reread_guard<Variant, Json>
         {
-            static constexpr auto rereading = std::array<bool, sizeof...(Ts)>{type_reaches<std::variant<Ts...>, Ts>...};
-            static constexpr auto kinds = std::array<std::uint16_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
+            static constexpr std::size_t size = std::variant_size_v<Variant>;
+            static constexpr auto rereading = []<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
+                return std::array<bool, sizeof...(Ts)>{type_reaches<Variant, Ts>...};
+            }(std::type_identity<variant_base_t<Variant>>{});
+            static constexpr auto kinds = []<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
+                return std::array<std::uint16_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
+            }(std::type_identity<variant_base_t<Variant>>{});
             // 1 when not counted, 0 when the limit stops it, and the factor in `variant_rereads` otherwise
             std::size_t n_ = 1;
 
@@ -21204,7 +21506,7 @@ namespace yyjson
             explicit variant_reread_guard(std::uint16_t kind) noexcept
             {
                 auto n = std::size_t{0};
-                for (std::size_t i = 0; i < sizeof...(Ts); ++i) n += rereading[i] && (kinds[i] & kind) != 0;
+                for (std::size_t i = 0; i < size; ++i) n += rereading[i] && (kinds[i] & kind) != 0;
                 if (n < 2) return;
                 if (variant_rereads > variant_reread_limit / n)
                 {
@@ -21364,13 +21666,43 @@ namespace yyjson
                 return count_true<ranked_struct<std::remove_cv_t<Ts>>...> != 0;
         }();
 
-        // How an untagged variant ranks its keyed struct alternatives for a JSON object, tried before the others:
-        // those with one of their keys, all keys that they require and no key that they reject, more keys first and
-        // then in the order of the variant.  The keys of the object are looked up once among the keys of all of them.
-        template <typename Variant>
+        template <union_variant V>
+        inline constexpr bool ranks_keyed_alternatives<V> = ranks_keyed_alternatives<variant_base_t<V>>;
+
+        // Whether `yyjson::alt` closes the alternative I of the union V, a keyed struct T, with
+        // `yyjson::additional_properties(false)`, and the fields whose keys it then takes: those that its
+        // `yyjson::field` names, as its read takes them.  The keys of the tags are taken apart from them.
+        template <typename V, std::size_t I, typename T>
+        consteval bool union_alternative_closed()
+        {
+            if constexpr (constrained_union_alternative<V, I> && keyed_struct<T>)
+                return union_alternative_schema<V, I>::node.closed;
+            else
+                return false;
+        }
+        template <typename V, std::size_t I, typename T>
+        consteval auto union_alternative_named()
+        {
+            auto result = std::array<bool, struct_key_list<T>::keys.size()>{};
+            for (auto& r : result) r = true;
+            if constexpr (union_alternative_closed<V, I, T>())
+            {
+                using Schema = union_alternative_schema<V, I>;
+                constexpr auto named = members_key_mask<T>(Schema::tree, Schema::node.members);
+                for (std::size_t k = 0; k < result.size(); ++k) result[k] = named[k];
+            }
+            return result;
+        }
+        template <typename V, std::size_t I, typename T>
+        inline constexpr auto union_alternative_named_v = union_alternative_named<V, I, T>();
+
+        // How an untagged variant ranks its keyed struct alternatives for an object, tried first: those with one of
+        // their keys, all required keys and no rejected key, more keys first and then in order.  A `Union` also
+        // closes the alternatives that `yyjson::additional_properties(false)` of `yyjson::alt` closes.
+        template <typename Variant, typename Union = void>
         struct untagged_key_ranking;
-        template <typename... Ts>
-        struct untagged_key_ranking<std::variant<Ts...>>
+        template <typename... Ts, typename Union>
+        struct untagged_key_ranking<std::variant<Ts...>, Union>
         {
             static constexpr std::size_t n = sizeof...(Ts);
             static constexpr std::size_t size = count_true<ranked_struct<std::remove_cv_t<Ts>>...>;
@@ -21387,8 +21719,31 @@ namespace yyjson
                 std::span<const bool>(key_list<Ts>::required)...};
             static constexpr std::array<std::span<const std::string_view>, n> alternative_tags = {
                 std::span<const std::string_view>(key_list<Ts>::tags)...};
-            static constexpr std::array<bool, n> alternative_closed = {key_list<Ts>::closed...};
-            static constexpr std::array<bool, n> alternative_closable = {key_list<Ts>::closable...};
+            template <std::size_t... Is>
+            static consteval std::array<bool, n> union_closed(std::index_sequence<Is...>)
+            {
+                return {union_alternative_closed<Union, Is, std::remove_cv_t<Ts>>()...};
+            }
+            template <std::size_t... Is>
+            static consteval std::array<std::span<const bool>, n> union_named(std::index_sequence<Is...>)
+            {
+                return {std::span<const bool>(union_alternative_named_v<Union, Is, std::remove_cv_t<Ts>>)...};
+            }
+            static constexpr std::array<bool, n> alternative_union_closed =
+                union_closed(std::index_sequence_for<Ts...>{});
+            // the fields whose keys each alternative takes when it is closed
+            static constexpr std::array<std::span<const bool>, n> alternative_named =
+                union_named(std::index_sequence_for<Ts...>{});
+            static constexpr std::array<bool, n> alternative_closed = [] {
+                auto result = std::array<bool, n>{key_list<Ts>::closed...};
+                for (std::size_t i = 0; i < n; ++i) result[i] = result[i] || alternative_union_closed[i];
+                return result;
+            }();
+            static constexpr std::array<bool, n> alternative_closable = [] {
+                auto result = std::array<bool, n>{key_list<Ts>::closable...};
+                for (std::size_t i = 0; i < n; ++i) result[i] = result[i] || alternative_union_closed[i];
+                return result;
+            }();
             static constexpr std::size_t field_entry_count = (key_list<Ts>::keys.size() + ... + 0);
             static constexpr std::size_t entry_count = field_entry_count + (key_list<Ts>::tags.size() + ... + 0);
 
@@ -21402,6 +21757,7 @@ namespace yyjson
                 std::array<std::size_t, entry_count> alternative = {};
                 std::array<bool, entry_count> required = {};
                 std::array<bool, entry_count> tag = {};
+                std::array<bool, entry_count> named = {};
             };
             // A function rather than a lambda, as in `field_keys`.  The keys are told apart by a hash table, which
             // takes fewer constant evaluation steps than comparing each with all before it.
@@ -21436,6 +21792,7 @@ namespace yyjson
                             result.alternative[e] = k;
                             result.required[e] = pass == 0 && alternative_required[i][f];
                             result.tag[e] = pass == 1;
+                            result.named[e] = pass == 1 || alternative_named[i][f];
                         }
                         ++k;
                     }
@@ -21468,11 +21825,11 @@ namespace yyjson
             using seen_keys = bit_array<key_count + 1>;
             // Whether a keyed alternative may reject a key of the object that it does not know, for which the
             // object's keys outside `keys` are noted.
-            static constexpr bool may_close = count_true<key_list<Ts>::closable...> != 0;
+            static constexpr bool may_close = std::ranges::any_of(alternative_closable, std::identity{});
 
         private:
             // the keys that each keyed alternative has, those that it requires, and those that it takes with the
-            // keys of its adjacent tags
+            // keys of its adjacent tags, of which one that `yyjson::alt` closes takes only those it names
             static constexpr auto declared = [] {
                 auto result = std::array<seen_keys, size>{};
                 for (std::size_t e = 0; e < entry_count; ++e)
@@ -21491,7 +21848,10 @@ namespace yyjson
             }();
             static constexpr auto accepted = [] {
                 auto result = std::array<seen_keys, size>{};
-                for (std::size_t e = 0; e < entry_count; ++e) result[table.alternative[e]].set(table.key[e]);
+                for (std::size_t e = 0; e < entry_count; ++e)
+                {
+                    if (table.named[e]) result[table.alternative[e]].set(table.key[e]);
+                }
                 return result;
             }();
             // the index among the keyed alternatives of each alternative, or `size`
@@ -21655,6 +22015,11 @@ namespace yyjson
             }
         };
 
+        template <union_variant V>
+        struct untagged_key_ranking<V> : untagged_key_ranking<variant_base_t<V>, V>
+        {
+        };
+
         // Reads the fields of the first keyed alternative that `Ranking` ranks and records in `seen` the keys of the
         // object `open`, by their index in `Ranking::keys`.  The keys of that alternative come first there, in the
         // order of its fields, so the index of each of its keys is the index of its field.
@@ -21682,6 +22047,192 @@ namespace yyjson
         // is `id`.
         inline void insert_variant_tag(writer::value_ref& val, std::string_view key, std::string_view id,
                                        std::string_view type);
+    }  // namespace detail
+
+    namespace detail
+    {
+        // Thrown when the value of an alternative of a union does not satisfy its settings, and caught at once to
+        // try the next alternative.
+        struct alternative_rejected
+        {
+        };
+
+        // Reads an untagged variant V, a `std::variant` or a union, from a JSON value: its alternatives that
+        // `untagged_key_ranking` ranks for an object first, and then in order the first that reads the value.
+        template <typename V, typename Base = variant_base_t<V>>
+        struct untagged_variant_cast;
+        template <typename V, typename... Ts>
+        struct untagged_variant_cast<V, std::variant<Ts...>>
+        {
+            template <typename Json>
+            static constexpr auto alternative_kinds =
+                std::array<std::uint16_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
+            // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
+            template <typename Json>
+            static consteval auto make_later_kinds()
+            {
+                auto result = std::array<std::uint16_t, sizeof...(Ts)>{};
+                for (auto i = sizeof...(Ts) - 1; i > 0; --i)
+                    result[i - 1] = static_cast<std::uint16_t>(result[i] | alternative_kinds<Json>[i]);
+                return result;
+            }
+            template <typename Json>
+            static constexpr auto later_kinds = make_later_kinds<Json>();
+
+            // the alternatives that are keyed structs, which are tried first for an object
+            using key_ranking = untagged_key_ranking<V>;
+
+            template <typename Json>
+            static V from_untagged(const Json& json)
+            {
+                const auto kind = json_kind_of(json);
+                const auto rereads = variant_reread_guard<V, Json>(kind);
+                if constexpr (json_value_of_document<Json> && ranks_keyed_alternatives<V>)
+                {
+                    if (kind == json_kind_object)
+                    {
+                        const auto obj = *json.as_object();
+                        if (obj.size() >= key_ranking::members_to_rank)
+                        {
+                            const void* const raw = dependent_t<writer::detail::json_value_access, Json>::get(json);
+                            return from_ranked(
+                                json, key_ranking::rank_object(obj, raw, (read_policies & unknown_keys_policy) != 0), 0,
+                                rereads);
+                        }
+                    }
+                }
+                return from_alternative<0>(json, kind, rereads);
+            }
+
+            // `may_cast` for the alternative I, which is checked before it is cast when another alternative
+            // may be tried.  False fails the alternative as a failed cast does.
+            template <std::size_t I, typename Json, typename Guard>
+            static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads)
+            {
+                using T = std::variant_alternative_t<I, V>;
+                if constexpr (may_reject_nested<std::remove_cvref_t<T>>())
+                {
+                    if (!yyjson::detail::may_cast<std::remove_cvref_t<T>>(json, kind))
+                    {
+                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // Constructs the variant as the alternative I cast from the JSON value.  A function of its own: clang 17
+            // and 18 returned a garbage variant from `from_alternative` at -O1 and above when it constructed the
+            // variant in its `return` statement within the `try` block.
+            template <std::size_t I, typename Json>
+            static V cast_alternative(const Json& json)
+            {
+                using T = std::variant_alternative_t<I, V>;
+                if constexpr (constrained_union_alternative<V, I>)
+                {
+                    using Schema = union_alternative_schema<V, I>;
+                    auto value = cast_nested<T>(json);
+                    if (constraint_violation<Schema, true>(value, input_for<Schema, T>(&json)) != constraint_kind::none)
+                        throw alternative_rejected{};
+                    return V(std::in_place_index<I>, std::move(value));
+                }
+                else
+                    return V(std::in_place_index<I>, cast_nested<T>(json));
+            }
+
+            // Casts the JSON object to the keyed alternative ranked at `pos` in `ranked`, or to the first after it that
+            // reads the object, and then to the first other alternative that does as `from_alternative` does.
+            template <typename Json, typename Ranking, typename Guard>
+            static V from_ranked(const Json& json, const Ranking& ranked, std::size_t pos, const Guard& rereads)
+            {
+                if (pos == ranked.count) return from_alternative<0>(json, json_kind_object, rereads, ranked);
+                return from_keyed<0>(json, ranked, pos, rereads);
+            }
+
+            // `from_ranked` for the keyed alternative K, by its index among them, if `ranked` has it at `pos`.  A keyed
+            // struct is not checked with `may_cast`, which checks nothing in a struct.
+            template <std::size_t K, typename Json, typename Ranking, typename Guard>
+            static V from_keyed(const Json& json, const Ranking& ranked, std::size_t pos, const Guard& rereads)
+            {
+                if constexpr (K + 1 < key_ranking::size)
+                {
+                    if (ranked.order[pos] != K) return from_keyed<K + 1>(json, ranked, pos, rereads);
+                }
+                constexpr auto i = key_ranking::alternatives[K];
+                using T = std::variant_alternative_t<i, V>;
+                auto limit = std::exception_ptr();
+                try
+                {
+                    return cast_alternative<i>(json);
+                }
+                catch (const recursion_limit_error&)
+                {
+                    limit = std::current_exception();
+                }
+                catch (const std::bad_alloc&)
+                {
+                    limit = std::current_exception();
+                }
+                catch (...)
+                {
+                }
+                if (limit) std::rethrow_exception(limit);
+                if (rereads.template stops_after<i>()) throw_variant_reread_limit<V, T>();
+                return from_ranked(json, ranked, pos + 1, rereads);
+            }
+
+            // Casts the JSON value to the alternative I, or to the first alternative after it that accepts the value.
+            // The variant is returned as it is constructed: one held in a `std::optional` until the end made GCC warn
+            // with `-Wmaybe-uninitialized` where it was moved out.  With `ranked`, the alternatives that it ranked
+            // have been tried and failed already, and the others are tried for the object.
+            template <std::size_t I, typename Json, typename Guard, typename... Ranked>
+            static V from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads,
+                                      const Ranked&... ranked)
+            {
+                if constexpr (I == sizeof...(Ts))
+                    throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", type_name<V>());
+                else
+                {
+                    using T = std::variant_alternative_t<I, V>;
+                    if ((alternative_kinds<Json>[I] & kind) != 0 && !(ranked.has(I) || ...) &&
+                        (!may_follow<I, Json>(kind, ranked...) || may_cast<I>(json, kind, rereads)))
+                    {
+                        // The limit is thrown again after the handler.  On Windows a handler runs on top of the frames
+                        // that threw, so a throw from the handler at every level of a nested value keeps all of those
+                        // frames until the stack overflows.
+                        auto limit = std::exception_ptr();
+                        try
+                        {
+                            return cast_alternative<I>(json);
+                        }
+                        catch (const recursion_limit_error&)
+                        {
+                            limit = std::current_exception();
+                        }
+                        catch (const std::bad_alloc&)
+                        {
+                            limit = std::current_exception();
+                        }
+                        catch (...)
+                        {
+                        }
+                        if (limit) std::rethrow_exception(limit);
+                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                    }
+                    return from_alternative<I + 1>(json, kind, rereads, ranked...);
+                }
+            }
+
+            // Whether an alternative after I may be tried for a value of `kind` if I fails.
+            template <std::size_t I, typename Json, typename... Ranked>
+            static bool may_follow(std::uint16_t kind, const Ranked&... ranked) noexcept
+            {
+                if constexpr (sizeof...(Ranked) == 0)
+                    return (later_kinds<Json>[I] & kind) != 0;
+                else
+                    return (ranked.others_after(I) && ...);
+            }
+        };
     }  // namespace detail
 
     template <typename... Ts>
@@ -21715,52 +22266,10 @@ namespace yyjson
                 return detail::cast_alternative<V>(index, json);
             }
             else
-                return from_untagged(json);
+                return detail::untagged_variant_cast<V>::from_untagged(json);
         }
 
     private:
-        template <typename Json>
-        static constexpr auto alternative_kinds =
-            std::array<std::uint16_t, sizeof...(Ts)>{detail::accepted_json_kinds<Ts, Json>()...};
-        // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
-        template <typename Json>
-        static consteval auto make_later_kinds()
-        {
-            auto result = std::array<std::uint16_t, sizeof...(Ts)>{};
-            for (auto i = sizeof...(Ts) - 1; i > 0; --i)
-                result[i - 1] = static_cast<std::uint16_t>(result[i] | alternative_kinds<Json>[i]);
-            return result;
-        }
-        template <typename Json>
-        static constexpr auto later_kinds = make_later_kinds<Json>();
-
-        // the alternatives that are keyed structs, which are tried first for an object
-        using key_ranking = detail::untagged_key_ranking<std::variant<Ts...>>;
-
-        template <typename Json>
-        static std::variant<Ts...> from_untagged(const Json& json)
-        {
-            const auto kind = detail::json_kind_of(json);
-            const auto rereads = detail::variant_reread_guard<std::variant<Ts...>, Json>(kind);
-            if constexpr (detail::json_value_of_document<Json> &&
-                          detail::ranks_keyed_alternatives<std::variant<Ts...>>)
-            {
-                if (kind == detail::json_kind_object)
-                {
-                    const auto obj = *json.as_object();
-                    if (obj.size() >= key_ranking::members_to_rank)
-                    {
-                        const void* const raw = detail::dependent_t<writer::detail::json_value_access, Json>::get(json);
-                        return from_ranked(json,
-                                           key_ranking::rank_object(
-                                               obj, raw, (detail::read_policies & detail::unknown_keys_policy) != 0),
-                                           0, rereads);
-                    }
-                }
-            }
-            return from_alternative<0>(json, kind, rereads);
-        }
-
         // Writes the tag of an alternative that `internal_tag` names first in its object, unless the object has a
         // member of the tag already, which has to name the alternative.
         static void write_internal_tag(writer::value_ref& val, std::size_t index)
@@ -21811,129 +22320,51 @@ namespace yyjson
                 std::move(t));
             if constexpr (detail::internally_tagged<std::variant<Ts...>>) write_internal_tag(val, index);
         }
+    };
 
-    private:
-        // `detail::may_cast` for the alternative I, which is checked before it is cast when another alternative
-        // may be tried.  False fails the alternative as a failed cast does.
-        template <std::size_t I, typename Json, typename Guard>
-        static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads)
+    // A union is read as its `std::variant` without tags, but an alternative with settings reads only a value
+    // that satisfies them.  It is written as the alternative that it holds.
+    template <typename... As>
+    struct caster<any_of_variant<As...>> : detail::builtin_caster
+    {
+        using V = any_of_variant<As...>;
+
+        template <typename Json>
+        requires (castable<Json, detail::alternative_type_t<As>> && ...)
+        static V from_json(const Json& json)
         {
-            using T = std::variant_alternative_t<I, std::variant<Ts...>>;
-            if constexpr (detail::may_reject_nested<std::remove_cvref_t<T>>())
-            {
-                if (!detail::may_cast<std::remove_cvref_t<T>>(json, kind))
-                {
-                    if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
-                    return false;
-                }
-            }
-            return true;
+            static_assert(!detail::internally_tagged<V>);
+            return detail::untagged_variant_cast<V>::from_untagged(json);
         }
 
-        // Constructs the variant as the alternative I cast from the JSON value.  A function of its own: clang 17
-        // and 18 returned a garbage variant from `from_alternative` at -O1 and above when it constructed the
-        // variant in its `return` statement within the `try` block.
-        template <std::size_t I, typename Json>
-        static std::variant<Ts...> cast_alternative(const Json& json)
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 (detail::variant_alternative_writable<detail::alternative_type_t<As>, V> && ...)
+        static void to_json(writer::value_ref& val, const V& t, Args...)
         {
-            using T = std::variant_alternative_t<I, std::variant<Ts...>>;
-            return std::variant<Ts...>(std::in_place_index<I>, detail::cast_nested<T>(json));
+            std::visit(
+                [&val](const auto& v) {
+                    if constexpr (sizeof...(Args) != 0)
+                        val = std::pair<decltype(v), copy_string_t>(v, copy_string);
+                    else
+                        val = v;
+                },
+                detail::as_std_variant(t));
         }
 
-        // Casts the JSON object to the keyed alternative ranked at `pos` in `ranked`, or to the first after it that
-        // reads the object, and then to the first other alternative that does as `from_alternative` does.
-        template <typename Json, typename Ranking, typename Guard>
-        static std::variant<Ts...> from_ranked(const Json& json, const Ranking& ranked, std::size_t pos,
-                                               const Guard& rereads)
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 (detail::variant_alternative_writable<detail::alternative_type_t<As>, V> && ...)
+        static void to_json(writer::value_ref& val, V&& t, Args...)
         {
-            if (pos == ranked.count) return from_alternative<0>(json, detail::json_kind_object, rereads, ranked);
-            return from_keyed<0>(json, ranked, pos, rereads);
-        }
-
-        // `from_ranked` for the keyed alternative K, by its index among them, if `ranked` has it at `pos`.  A keyed
-        // struct is not checked with `may_cast`, which checks nothing in a struct.
-        template <std::size_t K, typename Json, typename Ranking, typename Guard>
-        static std::variant<Ts...> from_keyed(const Json& json, const Ranking& ranked, std::size_t pos,
-                                              const Guard& rereads)
-        {
-            if constexpr (K + 1 < key_ranking::size)
-            {
-                if (ranked.order[pos] != K) return from_keyed<K + 1>(json, ranked, pos, rereads);
-            }
-            constexpr auto i = key_ranking::alternatives[K];
-            using T = std::variant_alternative_t<i, std::variant<Ts...>>;
-            auto limit = std::exception_ptr();
-            try
-            {
-                return cast_alternative<i>(json);
-            }
-            catch (const detail::recursion_limit_error&)
-            {
-                limit = std::current_exception();
-            }
-            catch (const std::bad_alloc&)
-            {
-                limit = std::current_exception();
-            }
-            catch (...)
-            {
-            }
-            if (limit) std::rethrow_exception(limit);
-            if (rereads.template stops_after<i>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
-            return from_ranked(json, ranked, pos + 1, rereads);
-        }
-
-        // Casts the JSON value to the alternative I, or to the first alternative after it that accepts the value.
-        // The variant is returned as it is constructed: one held in a `std::optional` until the end made GCC warn
-        // with `-Wmaybe-uninitialized` where it was moved out.  With `ranked`, the alternatives that it ranked
-        // have been tried and failed already, and the others are tried for the object.
-        template <std::size_t I, typename Json, typename Guard, typename... Ranked>
-        static std::variant<Ts...> from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads,
-                                                    const Ranked&... ranked)
-        {
-            if constexpr (I == sizeof...(Ts))
-                detail::throw_bad_cast_at(detail::target_of(json), "{} is not constructible from JSON",
-                                          detail::type_name<std::variant<Ts...>>());
-            else
-            {
-                using T = std::variant_alternative_t<I, std::variant<Ts...>>;
-                if ((alternative_kinds<Json>[I] & kind) != 0 && !(ranked.has(I) || ...) &&
-                    (!may_follow<I, Json>(kind, ranked...) || may_cast<I>(json, kind, rereads)))
-                {
-                    // The limit is thrown again after the handler.  On Windows a handler runs on top of the frames
-                    // that threw, so a throw from the handler at every level of a nested value keeps all of those
-                    // frames until the stack overflows.
-                    auto limit = std::exception_ptr();
-                    try
-                    {
-                        return cast_alternative<I>(json);
-                    }
-                    catch (const detail::recursion_limit_error&)
-                    {
-                        limit = std::current_exception();
-                    }
-                    catch (const std::bad_alloc&)
-                    {
-                        limit = std::current_exception();
-                    }
-                    catch (...)
-                    {
-                    }
-                    if (limit) std::rethrow_exception(limit);
-                    if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
-                }
-                return from_alternative<I + 1>(json, kind, rereads, ranked...);
-            }
-        }
-
-        // Whether an alternative after I may be tried for a value of `kind` if I fails.
-        template <std::size_t I, typename Json, typename... Ranked>
-        static bool may_follow(std::uint16_t kind, const Ranked&... ranked) noexcept
-        {
-            if constexpr (sizeof...(Ranked) == 0)
-                return (later_kinds<Json>[I] & kind) != 0;
-            else
-                return (ranked.others_after(I) && ...);
+            std::visit(
+                [&val](auto&& v) {
+                    if constexpr (sizeof...(Args) != 0)
+                        val = std::pair<decltype(v), copy_string_t>(std::move(v), copy_string);
+                    else
+                        val = std::move(v);
+                },
+                detail::as_std_variant(std::move(t)));
         }
     };
 
@@ -22447,6 +22878,10 @@ namespace yyjson
         };
         template <typename... Ts>
         struct is_variant<std::variant<Ts...>> : std::true_type
+        {
+        };
+        template <typename... As>
+        struct is_variant<yyjson::any_of_variant<As...>> : std::true_type
         {
         };
 
@@ -24953,7 +25388,8 @@ namespace yyjson
                     if constexpr (yyjson::detail::internally_tagged<U>)
                         write_internally_tagged(std::forward<T>(t));
                     else
-                        std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
+                        std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); },
+                                   yyjson::detail::as_std_variant(std::forward<T>(t)));
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>)
@@ -29286,7 +29722,8 @@ namespace yyjson
                 constexpr auto first = ranking::alternatives[0];
                 using first_type = std::remove_cv_t<std::variant_alternative_t<first, T>>;
                 if constexpr (yyjson::detail::keyed_struct<first_type> &&
-                              !yyjson::detail::type_reaches<std::remove_cv_t<T>, first_type>)
+                              !yyjson::detail::type_reaches<std::remove_cv_t<T>, first_type> &&
+                              !yyjson::detail::constrained_union_alternative<T, first>)
                 {
                     auto seen = typename ranking::seen_keys{};
                     if (read_watched_alternative<T, first, ranking>(make, &seen))
@@ -29434,7 +29871,8 @@ namespace yyjson
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
                 if constexpr (std::is_arithmetic_v<alternative> && !std::same_as<alternative, bool> &&
-                              !from_json_val_usr_defined<alternative>)
+                              !from_json_val_usr_defined<alternative> &&
+                              !yyjson::detail::constrained_union_alternative<T, I>)
                 {
                     using dc = yyjson::detail::default_caster<alternative>;
                     try
@@ -29513,7 +29951,12 @@ namespace yyjson
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
                 constexpr auto index = std::in_place_index<I>;
-                if constexpr (yyjson::detail::default_string<alternative>)
+                if constexpr (yyjson::detail::constrained_union_alternative<T, I>)
+                {
+                    read_checked_alternative<T, I>(make);
+                    return;
+                }
+                else if constexpr (yyjson::detail::default_string<alternative>)
                 {
                     if (*cur_ == '"')
                     {
@@ -29538,6 +29981,53 @@ namespace yyjson
                     }
                 }
                 make(index, read_value<alternative>());
+            }
+
+            // Reads the value at `cur_` into the alternative I of the union T, which fails unless the value
+            // satisfies the settings of the alternative.  These count the JSON value itself, not the value read.
+            template <typename T, std::size_t I, typename Make>
+            void read_checked_alternative(Make& make)
+            {
+                namespace d = yyjson::detail;
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                using schema = d::union_alternative_schema<T, I>;
+                if constexpr (d::counts_input<schema, alternative>())
+                {
+                    const char* const open = cur_;
+                    auto rec = d::record_t<alternative>();
+                    auto value = read_recorded<alternative>(rec);
+                    if (recorded_alternative_violated<schema>(value, rec, open, tags_)) [[unlikely]]
+                        fail();
+                    make(std::in_place_index<I>, std::move(value));
+                }
+                else
+                {
+                    auto value = read_value<alternative>();
+                    if (d::constraint_violation<schema, true>(value) != d::constraint_kind::none) [[unlikely]]
+                        fail();
+                    make(std::in_place_index<I>, std::move(value));
+                }
+            }
+
+            // Whether `value`, read from the object at `open` with its record `rec`, does not satisfy `Schema`.  The
+            // copy of the object in `rec` takes the keys of the tags in `tags` of the object at `open`.
+            template <typename Schema, typename A, typename Rec>
+            static bool recorded_alternative_violated(const A& value, Rec& rec, const char* open,
+                                                      const tag_context* tags)
+            {
+                namespace d = yyjson::detail;
+                if constexpr (requires { rec.root; })
+                {
+                    for (; tags != nullptr; tags = tags->outer)
+                    {
+                        if (tags->object != open || rec.root == nullptr) continue;
+                        const auto key =
+                            d::internal_tag_key(writer::detail::json_value_access::get(*rec.root), tags->key);
+                        return recorded_alternative_violated<Schema>(value, rec, open, tags->outer);
+                    }
+                }
+                return d::constraint_violation<Schema, true>(value, d::input_for<Schema, A>(&rec)) !=
+                       d::constraint_kind::none;
             }
 
             // Whether the reader default-constructs the variant T and emplaces the alternative into it instead of
@@ -29583,7 +30073,7 @@ namespace yyjson
             template <typename V>
             static constexpr bool alternative_policies = []<typename... As>(std::type_identity<std::variant<As...>>) {
                 return ((yyjson::detail::struct_policies<As> != 0) || ...);
-            }(std::type_identity<V>{});
+            }(std::type_identity<yyjson::detail::variant_base_t<V>>{});
 
             // Reads the value at `cur_` into `target` as `target = read_value<T>()` does, but writes a string into
             // the buffer `target` already has.

@@ -1128,6 +1128,7 @@ static_assert(!yyjson::writer::detail::members_emplaceable<EmittedPair>);
 static_assert(!yyjson::writer::detail::members_emplaceable<AnyRefCaster>);
 static_assert(!yyjson::writer::detail::members_emplaceable<yyjson::object>);
 static_assert(!yyjson::writer::detail::members_emplaceable<std::variant<MemberCircle, MemberRect>>);
+static_assert(!yyjson::writer::detail::members_emplaceable<yyjson::any_of_variant<MemberCircle, MemberRect>>);
 
 TEST(Writer, EmitterMembers)
 {

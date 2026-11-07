@@ -361,8 +361,28 @@ struct TrVariantMap
 };
 template <>
 inline constexpr auto yyjson::annotations<TrVariantMap> = yyjson::annotate(yyjson::transparent);
+// the alternatives of `yyjson::any_of_variant` hold the struct again, and one of them has settings
+struct TrUnion;
+using TrUnionValue = yyjson::any_of_variant<std::int64_t, TrUnion>;
+struct TrUnion
+{
+    yyjson::any_of_variant<yyjson::alt<std::string, yyjson::max_length(3)>, yyjson::indirect<TrUnionValue>> value;
+    bool operator==(const TrUnion&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrUnion> = yyjson::annotate(yyjson::transparent);
+struct TrUnionMap;
+using TrUnionMapValue = yyjson::any_of_variant<std::monostate, std::string, TrUnionMap>;
+struct TrUnionMap
+{
+    std::map<std::string, TrUnionMapValue> value;
+    bool operator==(const TrUnionMap&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrUnionMap> = yyjson::annotate(yyjson::transparent);
 static_assert(yyjson::readable<TrNest> && yyjson::writable<TrNest>);
 static_assert(yyjson::readable<TrVariantMap> && yyjson::writable<TrVariantMap>);
+static_assert(yyjson::readable<TrUnionMap> && yyjson::writable<TrUnionMap>);
 static_assert(yyjson::readable<TrHolder> && yyjson::writable<TrHolder>);
 static_assert(yyjson::readable<TrPtr> && yyjson::writable<TrPtr>);
 static_assert(std::is_constructible_v<yyjson::object, const TrMap&>);
@@ -622,6 +642,12 @@ TEST(Reader, RecursiveTransparent)
     expect_recursive<TrVisitable>("[[],[[]]]");
     expect_recursive<TrHolder>(R"({"nest":[["x"]],"ind":"y","maps":[{"a":{}}]})");
     expect_recursive<TrVariantMap>(R"({"a":"x","b":{"c":null,"d":{}}})");
+    expect_recursive<TrUnion>(R"("abc")");
+    expect_recursive<TrUnion>("1");
+    expect_recursive<TrUnionMap>(R"({"a":"x","b":{"c":null,"d":{}}})");
+    // a string longer than the alternative allows reads into no alternative at any level
+    EXPECT_THROW((void)yyjson::read<TrUnion>(R"("abcd")"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"("abcd")").cast<TrUnion>(), yyjson::bad_cast);
 
     // an error is at the path of the value in the innermost struct
     for (const auto dom : {false, true})

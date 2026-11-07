@@ -4352,6 +4352,196 @@ TEST(Constraints, PatternPropertiesWrite)
               pattern_conflict("PatternMaps", "ab"));
 }
 
+// The alternatives of `yyjson::any_of_variant`, with settings given as values and through a pointer
+constexpr std::string_view union_id_regex = "^[a-z]+$";
+constexpr auto union_id_pattern = yyjson::pattern(union_id_regex);
+constexpr bool union_even(int v) { return v % 2 == 0; }
+using UnionValues = yyjson::any_of_variant<
+    yyjson::alt<int, yyjson::minimum(0), yyjson::maximum(9), yyjson::satisfies<union_even>>,
+    yyjson::alt<int, yyjson::minimum(100), yyjson::enum_(100, 200)>,
+    yyjson::alt<std::string, &union_id_pattern, yyjson::max_length(8)>,
+    yyjson::alt<std::vector<int>, yyjson::items(yyjson::minimum(1)), yyjson::contains(yyjson::maximum(3))>,
+    std::tuple<int, std::string>>;
+struct UnionPoint
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const UnionPoint&) const = default;
+};
+struct UnionLabel
+{
+    std::string label;
+    bool operator==(const UnionLabel&) const = default;
+};
+struct UnionClosed
+{
+    int x = 0;
+    bool operator==(const UnionClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<UnionClosed> = yyjson::annotate(yyjson::additional_properties(false));
+using UnionMap = std::map<std::string, int>;
+struct UnionShape
+{
+    std::string kind;
+    double size = 0;
+    bool operator==(const UnionShape&) const = default;
+};
+constexpr auto union_y_needs_x = yyjson::dependent_required("y", {"x"});
+// The tag of the variant that holds a union is a key of the object of its alternative.
+using UnionTagged = std::variant<
+    yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::field("x"), yyjson::additional_properties(false)>>>;
+template <>
+inline constexpr auto yyjson::annotations<UnionTagged> = yyjson::annotate(yyjson::internal_tag("kind", {"p"}));
+// A union takes no tag of the std::variant that stores its alternatives.
+using UnionStorage = std::variant<yyjson::value>;
+template <>
+inline constexpr auto yyjson::annotations<UnionStorage> = yyjson::annotate(yyjson::internal_tag("kind", {"v"}));
+struct UnionFields
+{
+    UnionValues v;
+    yyjson::any_of_variant<UnionPoint, std::string> p;
+    bool operator==(const UnionFields&) const = default;
+};
+
+namespace
+{
+    // the message of a value that no alternative of V reads
+    template <typename V>
+    std::string read_by_none()
+    {
+        return std::format("{} is not constructible from JSON", yyjson::detail::type_name<V>());
+    }
+
+    // `json` is read into the alternative `index` of V, with and without a document
+    template <typename V, typename... Policies>
+    void expect_alternative(std::string_view json, std::size_t index, Policies... policies)
+    {
+        EXPECT_EQ(yyjson::read<V>(json, policies...).index(), index) << json;
+        EXPECT_EQ(yyjson::read(json).cast<V>(policies...).index(), index) << json;
+    }
+}  // namespace
+
+TEST(Constraints, UnionTypes)
+{
+    // the alternatives of one type are told apart by the index
+    auto a = UnionValues(std::in_place_index<1>, 200);
+    EXPECT_EQ(a.index(), 1);
+    EXPECT_EQ(std::get<1>(a), 200);
+    a = std::string("abc");
+    EXPECT_TRUE(std::holds_alternative<std::string>(a));
+    EXPECT_EQ(std::visit([](const auto& v) { return sizeof(v); }, a), sizeof(std::string));
+    const auto b = a;
+    EXPECT_EQ(a, b);
+    a.emplace<0>(4);
+    EXPECT_NE(a, b);
+    EXPECT_EQ(*std::get_if<0>(&a), 4);
+    static_assert(std::is_same_v<yyjson::any_of_variant<yyjson::alt<int>>::variant_type, std::variant<int>>);
+}
+
+TEST(Constraints, UnionReading)
+{
+    // the first alternative whose type reads the value and whose settings it satisfies
+    expect_accepted<UnionValues>("4", UnionValues(std::in_place_index<0>, 4));
+    expect_accepted<UnionValues>("200", UnionValues(std::in_place_index<1>, 200));
+    expect_accepted<UnionValues>(R"("abc")", UnionValues(std::string("abc")));
+    expect_accepted<UnionValues>("[3,1]", UnionValues(std::vector{3, 1}));
+    expect_accepted<UnionValues>(R"([5,"a"])", UnionValues(std::tuple(5, std::string("a"))));
+    for (const auto json : {"5", "150", R"("ABC")", R"("abcdefghi")", "[5,6]", "1.5", "null"})
+        expect_rejected<UnionValues>(json, read_by_none<UnionValues>(), "");
+    expect_rejected<UnionFields>(R"({"v":5})", read_by_none<UnionValues>(), "/v");
+
+    // an earlier alternative of the same type may read the value that a later one held
+    using Ints = yyjson::any_of_variant<int, yyjson::alt<int, yyjson::minimum(0)>>;
+    EXPECT_EQ(yyjson::read<Ints>(yyjson::write(Ints(std::in_place_index<1>, 5))).index(), 0);
+
+    // the keys of an object rank the structs as those of a std::variant
+    using PointOrLabel = yyjson::any_of_variant<UnionPoint, UnionLabel>;
+    expect_alternative<PointOrLabel>(R"({"label":"a"})", 1);
+    expect_alternative<PointOrLabel>(R"({"x":1})", 0);
+    using ClosedOrPoint = yyjson::any_of_variant<UnionClosed, UnionPoint>;
+    expect_alternative<ClosedOrPoint>(R"({"x":1})", 0);
+    expect_alternative<ClosedOrPoint>(R"({"x":1,"y":2})", 1);
+    using PointOrMap = yyjson::any_of_variant<UnionPoint, UnionMap>;
+    expect_alternative<PointOrMap>(R"({"x":1,"k":2})", 0);
+    expect_alternative<PointOrMap>(R"({"x":1,"k":2})", 1, yyjson::reject_unknown_keys);
+    // the settings of a struct alternative check the keys of the object after the struct reads it
+    using CountedOrMap = yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::min_properties(2)>, UnionMap>;
+    expect_alternative<CountedOrMap>(R"({"x":1,"y":2})", 0);
+    expect_alternative<CountedOrMap>(R"({"x":1})", 1);
+    // in an alternative, additional_properties(false) accepts only the keys of the tags, as at a field
+    using ClosedAltOrMap =
+        yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::additional_properties(false)>, UnionMap>;
+    expect_alternative<ClosedAltOrMap>("{}", 0);
+    expect_alternative<ClosedAltOrMap>(R"({"x":1})", 1);
+    expect_alternative<ClosedAltOrMap>(R"({"k":1})", 1);
+
+    // yyjson::field in an alternative constrains a member, as in a field that holds a struct
+    using Shapes = yyjson::any_of_variant<yyjson::alt<UnionShape, yyjson::field("kind", yyjson::const_("circle"))>,
+                                          yyjson::alt<UnionShape, yyjson::field("kind", yyjson::const_("square"))>>;
+    expect_alternative<Shapes>(R"({"kind":"square","size":2})", 1);
+    expect_alternative<Shapes>(R"({"kind":"circle"})", 0);
+    expect_rejected<Shapes>(R"({"kind":"hexagon"})", read_by_none<Shapes>(), "");
+    using RequiredX = yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::field("x", yyjson::required)>, UnionPoint>;
+    expect_alternative<RequiredX>(R"({"x":1})", 0);
+    expect_alternative<RequiredX>(R"({"y":1})", 1);
+    // additional_properties(false) takes only the keys that yyjson::field names, also when it ranks the structs
+    using NamedX = yyjson::any_of_variant<
+        yyjson::alt<UnionPoint, yyjson::field("x", yyjson::minimum(0)), yyjson::additional_properties(false)>,
+        UnionMap>;
+    expect_alternative<NamedX>(R"({"x":1})", 0);
+    expect_alternative<NamedX>(R"({"x":1,"y":2})", 1);
+    expect_alternative<NamedX>(R"({"x":-1})", 1);
+    // a setting that holds pointers to strings is given through a pointer before C++26
+    using YNeedsX = yyjson::any_of_variant<yyjson::alt<UnionPoint, &union_y_needs_x>, UnionMap>;
+    expect_alternative<YNeedsX>(R"({"x":1,"y":2})", 0);
+    expect_alternative<YNeedsX>(R"({"y":2})", 1);
+    // additional_properties(false) also accepts the tag of the variant that holds the union
+    expect_alternative<UnionTagged>(R"({"kind":"p","x":1})", 0);
+    expect_alternative<UnionTagged>(R"({"x":1,"kind":"p"})", 0);
+    expect_rejected<UnionTagged>(R"({"kind":"p","x":1,"z":1})",
+                                 read_by_none<std::variant_alternative_t<0, UnionTagged>>(), "");
+
+    // read_into and merge_into replace the value
+    auto fields = UnionFields{UnionValues(std::in_place_index<0>, 2), UnionPoint{1, 2}};
+    yyjson::merge_into(R"({"p":{"x":5}})", fields);
+    EXPECT_EQ(fields.p, (yyjson::any_of_variant<UnionPoint, std::string>(UnionPoint{5, 0})));
+    yyjson::read_into(R"({"v":"id","p":{"y":3}})", fields);
+    EXPECT_EQ(fields, (UnionFields{UnionValues(std::string("id")), UnionPoint{0, 3}}));
+
+    // written as the alternative held, in both writers
+    fields = UnionFields{UnionValues(std::in_place_index<1>, 100), std::string("s")};
+    EXPECT_EQ(std::string(yyjson::write(fields)), R"({"v":100,"p":"s"})");
+    EXPECT_EQ(std::string(yyjson::object(fields).write()), R"({"v":100,"p":"s"})");
+    EXPECT_EQ(std::string(yyjson::value(UnionValues(std::in_place_index<0>, 99)).write()), "99");
+}
+
+TEST(Constraints, UnionDomValues)
+{
+    // yyjson::matches is a setting of an alternative of a value of the DOM
+    using ListOrText =
+        yyjson::any_of_variant<yyjson::alt<yyjson::value, yyjson::matches<std::vector<int>>>, std::string>;
+    EXPECT_EQ(yyjson::read("[1,2]").cast<ListOrText>().index(), 0);
+    EXPECT_EQ(yyjson::read(R"("a")").cast<ListOrText>().index(), 1);
+    EXPECT_THROW((void)yyjson::read(R"([1,"a"])").cast<ListOrText>(), yyjson::bad_cast);
+
+    // the union reads any value, though the std::variant that stores it reads only an object
+    static_assert(std::same_as<yyjson::any_of_variant<yyjson::value>::variant_type, UnionStorage>);
+    using ValueOrText = std::variant<yyjson::any_of_variant<yyjson::value>, std::string>;
+    expect_alternative<ValueOrText>("1", 0);
+    expect_alternative<ValueOrText>(R"("a")", 0);
+}
+
+#if defined(__cpp_lib_define_static)
+TEST(Constraints, UnionStringViewSettings)
+{
+    // a setting made from a std::string_view is a template argument
+    using Id = yyjson::any_of_variant<yyjson::alt<std::string, yyjson::pattern(union_id_regex)>, int>;
+    expect_alternative<Id>(R"("abc")", 0);
+    EXPECT_THROW((void)yyjson::read<Id>(R"("ABC")"), yyjson::bad_cast);
+}
+#endif
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {

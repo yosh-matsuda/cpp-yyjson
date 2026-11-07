@@ -31,7 +31,7 @@ auto map = cast<std::map<std::string, double>>(obj);
 The sections of this document:
 
 1.  [Conversion rules](#conversion-rules): numbers, strings, containers, maps and sets, and the types that do not convert.
-2.  [Standard library types](#standard-library-types): `std::optional`, smart pointers, `std::variant` and tuples, and how an [untagged variant](#untagged-variants) chooses its alternative.
+2.  [Standard library types](#standard-library-types): `std::optional`, smart pointers, `std::variant` and tuples, and how an [untagged variant](#untagged-variants) chooses its alternative. A variant whose [alternatives have constraints](#alternatives-with-constraints) is in the same section.
 3.  [Structs](#structs): converted by [reflection](#reflection) with no registration, or registered with [`VISITABLE_STRUCT`](#visitable_struct).
 4.  [Annotations](#annotations): JSON keys other than the field names, and skipped fields.
 5.  [Enumerations](#enumerations), by the names of their enumerators or by their integers.
@@ -245,6 +245,68 @@ Two cases need care:
 
 *   A struct none of whose keys the object has, such as an empty struct, is not a candidate and keeps its place in the order, so an empty object is read as the first alternative that reads it.
 *   A catch-all alternative, such as a map or a `yyjson::value`, placed before a struct of `std::optional` fields, holds every object that has none of the keys of the struct. Put catch-all alternatives last, or use a [tagged variant](#tagged-variants) when objects must be told apart reliably.
+
+### Alternatives with constraints
+
+`yyjson::any_of_variant<As...>` is a variant whose alternatives can have [constraints](validation.md#constraints), as `anyOf` of JSON Schema. Each template argument is a type `T` or `yyjson::alt<T, s...>`. The settings `s` are those that a field of `T` takes for its value. `yyjson::alt<T>` with no settings is `T`.
+
+```cpp
+using Id = yyjson::any_of_variant<
+    yyjson::alt<int, yyjson::minimum(1)>,
+    yyjson::alt<std::string, yyjson::min_length(1), yyjson::max_length(8)>>;
+
+auto num = yyjson::read<Id>("7");          // -> holds the int 7, index() is 0
+auto text = yyjson::read<Id>(R"("ab")");   // -> holds the std::string "ab", index() is 1
+yyjson::read<Id>("0");
+// throws yyjson::bad_cast: yyjson::any_of_variant<...> is not constructible from JSON (line 1, column 1, pos 0)
+```
+
+`yyjson::any_of_variant<As...>` derives from the `std::variant` of the types of `As`, and has its constructors and assignments. `index()`, `std::get`, `std::holds_alternative` and `std::visit` work on it. Two alternatives can have the same type. Their indexes tell them apart, and `std::in_place_index` constructs a value of one of them.
+
+A read uses the steps of an [untagged variant](#untagged-variants), with the same candidates in the same order. An alternative reads a JSON value only if the value converts to `T` and satisfies the settings of the alternative. If not, the next alternative tries the value. If no alternative reads the value, the read throws `yyjson::bad_cast`.
+
+*   The settings of a struct alternative that apply to an object, such as `yyjson::min_properties`, check the keys of the JSON object. They check them after the struct reads the object.
+*   `yyjson::field(k, s...)` in an alternative constrains the member `k` of the object, as for [a field that holds a struct](validation.md#keywords-of-an-object-at-a-field). Its settings `s` are `yyjson::required` and the settings of the value of that member. `T` takes it where a field of `T` takes it: `T` is a struct, `yyjson::value`, `yyjson::object` or a `std::variant` whose struct alternatives have the key `k`. Thus a field with a constant can choose the alternative:
+
+    ```cpp
+    struct Shape
+    {
+        std::string kind;
+        double size = 0;
+    };
+    using Shapes = yyjson::any_of_variant<yyjson::alt<Shape, yyjson::field("kind", yyjson::const_("circle"))>,
+                                          yyjson::alt<Shape, yyjson::field("kind", yyjson::const_("square"))>>;
+
+    yyjson::read<Shapes>(R"({"kind":"square","size":2})").index();  // -> 1
+    ```
+*   `yyjson::additional_properties(false)` in an alternative accepts only the keys that `yyjson::field` names in the same alternative, and the keys of the tags. It also makes the struct closed in step 1, with the same keys.
+*   Two alternatives of the same type can read the same value. Then the read gives the first of them. A value written from one alternative can thus read back as an earlier one:
+
+    ```cpp
+    using Count = yyjson::any_of_variant<int, yyjson::alt<int, yyjson::minimum(0)>>;
+    auto json = yyjson::write(Count(std::in_place_index<1>, 5));  // -> 5
+    yyjson::read<Count>(json).index();                            // -> 0
+    ```
+*   `yyjson::read_into` and `yyjson::merge_into` replace the whole value, as for an untagged `std::variant`.
+*   `yyjson::write` and the DOM write the alternative that the value holds. They do not check its settings.
+
+The settings are template arguments. Before C++26, some settings cannot be template arguments:
+
+*   A setting made from a `std::string_view` variable, such as `yyjson::pattern(regex)`.
+*   `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required`. They keep pointers to their strings.
+
+Give a pointer to a `constexpr` variable that holds such a setting instead: `yyjson::alt<std::string, &id_pattern>`. Other settings made from string literals are template arguments, such as `yyjson::pattern("^a")`, `yyjson::const_("a")` and `yyjson::field("key", ...)`.
+
+These are compile errors:
+
+*   `yyjson::alt` at any position other than a template argument of `yyjson::any_of_variant`, and `yyjson::alt` in `yyjson::alt`.
+*   A setting of the key of a field, such as `yyjson::required`, directly in `yyjson::alt`.
+*   A setting that declares a member, such as `yyjson::rename`, in `yyjson::field` in `yyjson::alt`.
+*   `yyjson::field` in an alternative where a field of `T` does not take it, such as `yyjson::field` that names no field of a struct `T`.
+*   A setting that is a compile error at a field of `T`. Examples are a constraint of a JSON kind that `T` does not write, and settings that leave no value to read.
+*   [`yyjson::internal_tag` and `yyjson::adjacent_tag`](#tagged-variants) on a `yyjson::any_of_variant`.
+
+The setting [`yyjson::any_of`](reference.md#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) is a different feature. It constrains the value of one field with subschemas, and does not choose a type.
 
 ## Structs
 
