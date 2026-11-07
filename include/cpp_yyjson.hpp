@@ -2392,6 +2392,10 @@ namespace yyjson
         concept caster_assigns_from_json =
             requires(T& t, const Json& v) { caster<T>::from_json(t, v); } ||
             requires(T& t, const typename json_value_of_copy<Json>::other& v) { caster<T>::from_json(t, v); };
+        // `caster<T>::from_json(json)` that returns a `T` from the JSON value `json` or from its copy.
+        template <typename T, typename Json>
+        concept caster_from_json_or_copy =
+            caster_from_json<T, Json> || caster_from_json<T, typename json_value_of_copy<Json>::other>;
         template <typename T, typename Json>
         void caster_assign_from_json(T& t, const Json& json)
         {
@@ -10235,9 +10239,7 @@ namespace yyjson
                 // also a value of a mutable document, of which the caster is given a view of a copy
                 return json_kind_all;
             }
-            else if constexpr (requires(const Json& json) {
-                                   { caster<T>::from_json(json) } -> std::same_as<T>;
-                               })
+            else if constexpr (caster_from_json_or_copy<T, Json>)
             {
                 if constexpr (!std::derived_from<caster<T>, builtin_caster>)
                     return json_kind_all;
@@ -10330,9 +10332,7 @@ namespace yyjson
         struct nested_casts
         {
             using json = reader::const_value_ref;
-            static constexpr bool builtin_cast = requires(const json& v) {
-                { caster<T>::from_json(v) } -> std::same_as<T>;
-            };
+            static constexpr bool builtin_cast = caster_from_json_or_copy<T, json>;
             static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
                                           (owning_pointer<T> || is_std_optional<T>::value);
             static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;

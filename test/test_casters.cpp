@@ -50,6 +50,24 @@ struct WithMutableJsonForm
 {
     int a = 0;
 };
+// strings read by the casters that take the value of one DOM API, as alternatives of variants
+struct ReaderString
+{
+    std::string s;
+    bool operator==(const ReaderString&) const = default;
+};
+struct MutableString
+{
+    std::string s;
+    bool operator==(const MutableString&) const = default;
+};
+// a range and a map that such a caster reads in place of their elements and values
+struct MutableRange : std::vector<int>
+{
+};
+struct MutableMap : std::map<std::string, int>
+{
+};
 // read by the casters that take the value of one DOM API, which return the value or fill it in place
 struct FromReaderValue
 {
@@ -204,6 +222,38 @@ struct yyjson::caster<WithMutableJsonForm>
     static WithMutableJsonForm from_json(const yyjson::writer::const_value_ref& v) { return {v.cast<int>() + 300}; }
 };
 template <>
+struct yyjson::caster<ReaderString>
+{
+    static ReaderString from_json(const yyjson::reader::const_value_ref& v) { return {v.cast<std::string>()}; }
+};
+template <>
+struct yyjson::caster<MutableString>
+{
+    static MutableString from_json(const yyjson::writer::const_value_ref& v) { return {v.cast<std::string>()}; }
+};
+template <>
+struct yyjson::caster<MutableRange>
+{
+    static MutableRange from_json(const yyjson::writer::const_value_ref& v)
+    {
+        if (!v.is_array()) throw yyjson::bad_cast("not an array");
+        auto result = MutableRange();
+        result.push_back(7);
+        return result;
+    }
+};
+template <>
+struct yyjson::caster<MutableMap>
+{
+    static MutableMap from_json(const yyjson::writer::const_value_ref& v)
+    {
+        if (!v.is_object()) throw yyjson::bad_cast("not an object");
+        auto result = MutableMap();
+        result.emplace("k", 7);
+        return result;
+    }
+};
+template <>
 struct yyjson::caster<FromReaderValue>
 {
     static FromReaderValue from_json(const yyjson::reader::const_value_ref& v)
@@ -320,6 +370,32 @@ TEST(Reader, TranslatorFromJson)
         auto into = BothDomApis();
         yyjson::read_into(json, into);
         EXPECT_EQ(into, expected);
+    }
+    {
+        // a variant takes such a caster as an alternative that reads any value
+        using mutable_or_int = std::variant<int, MutableString>;
+        using reader_or_int = std::variant<int, ReaderString>;
+        const auto* json = R"("a")";
+        EXPECT_EQ(yyjson::read(json).cast<mutable_or_int>(), mutable_or_int(MutableString{"a"}));
+        EXPECT_EQ(yyjson::value(yyjson::read(json)).cast<mutable_or_int>(), mutable_or_int(MutableString{"a"}));
+        EXPECT_EQ(yyjson::read<mutable_or_int>(json), mutable_or_int(MutableString{"a"}));
+        EXPECT_EQ(yyjson::read(json).cast<reader_or_int>(), reader_or_int(ReaderString{"a"}));
+        EXPECT_EQ(yyjson::value(yyjson::read(json)).cast<reader_or_int>(), reader_or_int(ReaderString{"a"}));
+        EXPECT_EQ(yyjson::read<reader_or_int>(json), reader_or_int(ReaderString{"a"}));
+        EXPECT_EQ(yyjson::read<std::variant<MutableString>>(json), std::variant<MutableString>(MutableString{"a"}));
+        EXPECT_EQ(yyjson::read<std::vector<mutable_or_int>>(R"([1,"b"])"),
+                  (std::vector<mutable_or_int>{1, MutableString{"b"}}));
+        EXPECT_EQ(yyjson::read(R"([1,"b"])").cast<std::vector<mutable_or_int>>(),
+                  (std::vector<mutable_or_int>{1, MutableString{"b"}}));
+        EXPECT_EQ(yyjson::value(yyjson::read(R"([1,"b"])")).cast<std::vector<reader_or_int>>(),
+                  (std::vector<reader_or_int>{1, ReaderString{"b"}}));
+        // such a caster of a range or a map reads values that the elements or the values cannot
+        using range_or_strings = std::variant<MutableRange, std::vector<std::string>>;
+        using map_or_strings = std::variant<MutableMap, std::map<std::string, std::string>>;
+        EXPECT_EQ(yyjson::read<range_or_strings>(R"(["x"])").index(), 0);
+        EXPECT_EQ(yyjson::read(R"(["x"])").cast<range_or_strings>().index(), 0);
+        EXPECT_EQ(yyjson::read<map_or_strings>(R"({"a":"x"})").index(), 0);
+        EXPECT_EQ(yyjson::read(R"({"a":"x"})").cast<map_or_strings>().index(), 0);
     }
     EXPECT_EQ(yyjson::read("1").cast<TemplateJsonForm>().a, 201);
     EXPECT_EQ(yyjson::read<std::vector<TemplateJsonForm>>("[1]")[0].a, 201);
