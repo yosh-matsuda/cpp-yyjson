@@ -207,7 +207,7 @@ jobs:
         - { name: "Clang 20", os: "macos-latest", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
         - { name: "Clang 21", os: "macos-latest", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
         - { name: "Clang 22", os: "macos-latest", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
-        - { name: "AppleClang16", os: "macos-14", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_16.2.app" }
+        - { name: "AppleClang16", os: "macos-15", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_16.2.app" }
         - { name: "AppleClang17", os: "macos-15", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_26.3.app" }
         - { name: "AppleClang21", os: "macos-26", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_26.6.app" }
     name: MacOS - ${{ matrix.compiler.name }}
