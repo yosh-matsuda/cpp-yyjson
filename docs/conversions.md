@@ -208,6 +208,8 @@ A `std::variant` is read by trying its alternatives, unless a member of the JSON
 
 A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. If a JSON array has another number of elements than a tuple or a `std::array`, the variant skips that alternative in the same way. If the array is longer than the [fixed capacity](#values-that-do-not-convert) of a range, the variant skips the range too. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
 
+If no alternative reads the value, the read throws `yyjson::bad_cast`. The message gives the reason of each alternative, in the order of the template arguments. The path and the position of the variant follow once, at the end. For example, `yyjson::read<std::variant<int, Point>>(R"({"x":"a"})")` throws `std::variant<int, Point> is not constructible from JSON: alternative 0 (int): reads no JSON object; alternative 1 (Point): int is not constructible from JSON string (line 1, column 1, pos 0)`. The reason of an alternative does not hold a path. A variant within an alternative gives only `... is not constructible from JSON` as its reason.
+
 A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
 
 1.  The candidates are the structs that pass these checks:
@@ -258,12 +260,14 @@ using Id = yyjson::any_of_variant<
 auto num = yyjson::read<Id>("7");          // -> holds the int 7, index() is 0
 auto text = yyjson::read<Id>(R"("ab")");   // -> holds the std::string "ab", index() is 1
 yyjson::read<Id>("0");
-// throws yyjson::bad_cast: yyjson::any_of_variant<...> is not constructible from JSON (line 1, column 1, pos 0)
+// throws yyjson::bad_cast: yyjson::any_of_variant<int, std::__cxx11::basic_string<char>> is not constructible from
+// JSON: alternative 0 (int): the value is less than the minimum 1; alternative 1 (std::__cxx11::basic_string<char>):
+// reads no JSON number (line 1, column 1, pos 0)
 ```
 
 `yyjson::any_of_variant<As...>` derives from the `std::variant` of the types of `As`, and has its constructors and assignments. `index()`, `std::get`, `std::holds_alternative` and `std::visit` work on it. Two alternatives can have the same type. Their indexes tell them apart, and `std::in_place_index` constructs a value of one of them.
 
-A read uses the steps of an [untagged variant](#untagged-variants), with the same candidates in the same order. An alternative reads a JSON value only if the value converts to `T` and satisfies the settings of the alternative. If not, the next alternative tries the value. If no alternative reads the value, the read throws `yyjson::bad_cast`.
+A read uses the steps of an [untagged variant](#untagged-variants), with the same candidates in the same order. An alternative reads a JSON value only if the value converts to `T` and satisfies the settings of the alternative. If not, the next alternative tries the value. If no alternative reads the value, the read throws `yyjson::bad_cast` with the reason of each alternative, as for an [untagged variant](#untagged-variants). The reason of a setting that the value does not satisfy has the subject `the value`. The message names the variant by the types of its alternatives, without their settings.
 
 *   The settings of a struct alternative that apply to an object, such as `yyjson::min_properties`, check the keys of the JSON object. They check them after the struct reads the object.
 *   `yyjson::field(k, s...)` in an alternative constrains the member `k` of the object, as for [a field that holds a struct](validation.md#keywords-of-an-object-at-a-field). Its settings `s` are `yyjson::required` and the settings of the value of that member. `T` takes it where a field of `T` takes it: `T` is a struct, `yyjson::value`, `yyjson::object` or a `std::variant` whose struct alternatives have the key `k`. Thus a field with a constant can choose the alternative:
@@ -334,7 +338,7 @@ A read counts the alternatives that match the JSON value. The schema of the type
 
 *   An alternative matches if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. Thus a field without a default must be in the object. A struct that takes other keys matches an object with more keys, also when the call gives `yyjson::reject_unknown_keys`.
 *   If exactly one alternative matches, the read gives that alternative. The read then applies the policies of the call to it, and throws `yyjson::bad_cast` if they reject the value.
-*   If no alternative matches, the read throws `yyjson::bad_cast` with `... is not constructible from JSON`. If two alternatives match, the read throws `yyjson::bad_cast` with the indexes of the two.
+*   If no alternative matches, the read throws `yyjson::bad_cast` with `... is not constructible from JSON` and the reason of each alternative. Each reason comes from a read under the policies that count the matches. If two alternatives match, the read throws `yyjson::bad_cast` with the indexes of the two.
 
 A struct can match an object that has none of its keys, if all its fields have defaults:
 

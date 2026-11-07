@@ -7764,6 +7764,62 @@ namespace yyjson
         template <typename V>
         using variant_base_t = typename variant_base<V>::type;
 
+        template <typename V>
+        constexpr std::string_view variant_name() noexcept;
+
+        // The name of the `std::variant` or union V in a message, joined from the names of the types of its
+        // alternatives.  `type_name<V>()` spells out the settings of each `yyjson::alt` and the default arguments.
+        template <typename V>
+        consteval std::string_view variant_name_prefix()
+        {
+            if constexpr (is_one_of_variant<std::remove_cv_t<V>>)
+                return "yyjson::one_of_variant<";
+            else if constexpr (union_variant<V>)
+                return "yyjson::any_of_variant<";
+            else
+                return "std::variant<";
+        }
+        template <typename... Ts>
+        consteval auto alternative_type_names(std::type_identity<std::variant<Ts...>>)
+        {
+            return std::array<std::string_view, sizeof...(Ts)>{variant_name<Ts>()...};
+        }
+        template <typename V>
+        inline constexpr auto alternative_names_of =
+            alternative_type_names(std::type_identity<variant_base_t<std::remove_cv_t<V>>>{});
+        template <typename V>
+        consteval std::size_t variant_name_size()
+        {
+            auto n = variant_name_prefix<V>().size() + 1;
+            for (const auto name : alternative_names_of<V>) n += name.size() + 2;
+            return alternative_names_of<V>.empty() ? n : n - 2;
+        }
+        template <typename V>
+        inline constexpr auto variant_name_chars = [] {
+            auto result = std::array<char, variant_name_size<V>()>{};
+            auto out = std::ranges::copy(variant_name_prefix<V>(), result.begin()).out;
+            for (std::size_t i = 0; i < alternative_names_of<V>.size(); ++i)
+            {
+                if (i != 0) out = std::ranges::copy(std::string_view{", "}, out).out;
+                out = std::ranges::copy(alternative_names_of<V>[i], out).out;
+            }
+            *out = '>';
+            return result;
+        }();
+        // A tagged variant keeps `type_name<V>()`, the name in its own messages.
+        template <typename V>
+        constexpr std::string_view variant_name() noexcept
+        {
+            if constexpr (!requires {
+                              alternative_type_names(std::type_identity<variant_base_t<std::remove_cv_t<V>>>{});
+                          })
+                return type_name<V>();
+            else if constexpr (!union_variant<V> && internally_tagged<V>)
+                return type_name<V>();
+            else
+                return {variant_name_chars<V>.data(), variant_name_chars<V>.size()};
+        }
+
         // Whether the alternative I of the union V has settings, which a read checks.
         template <typename V, std::size_t I>
         concept constrained_union_alternative =
@@ -22314,6 +22370,9 @@ namespace yyjson
         // nested in the variant are read up to this many times.
         inline constinit thread_local std::size_t variant_rereads = 1;
         inline constexpr std::size_t variant_reread_limit = 256;
+        // The recursive variants that this thread reads now.  One that fails inside another gives no reasons of
+        // its alternatives, which the outer one discards, so that a failure costs time linear in the depth.
+        inline constinit thread_local std::size_t recursive_variant_reads = 0;
 
         // Counts a variant in `variant_rereads` while it is read, unless this would exceed `variant_reread_limit`.
         // The variant then fails as soon as one of its alternatives that hold it again fails, without trying those
@@ -22329,6 +22388,41 @@ namespace yyjson
             {
                 return false;
             }
+            // Whether a recursive variant that reads this one discards its failure.
+            [[nodiscard]] static bool nested() noexcept { return recursive_variant_reads != 0; }
+            struct selecting
+            {
+            };
+            [[nodiscard]] static selecting select() noexcept { return {}; }
+        };
+
+        // Counts a recursive variant in `recursive_variant_reads` while it is read.
+        class recursive_variant_read
+        {
+            bool nested_ = recursive_variant_reads++ != 0;
+
+        public:
+            recursive_variant_read() noexcept = default;
+            recursive_variant_read(const recursive_variant_read&) = delete;
+            recursive_variant_read& operator=(const recursive_variant_read&) = delete;
+            ~recursive_variant_read() { --recursive_variant_reads; }
+            [[nodiscard]] bool nested() const noexcept { return nested_; }
+        };
+
+        // Passes on the failure of the alternative that a `yyjson::one_of_variant` selects, which is not nested in
+        // another read, with the reasons of the variants in it.
+        class recursive_variant_select
+        {
+            std::size_t outer_ = recursive_variant_reads;
+
+        public:
+            explicit recursive_variant_select(bool nested) noexcept
+            {
+                if (!nested) recursive_variant_reads = 0;
+            }
+            recursive_variant_select(const recursive_variant_select&) = delete;
+            recursive_variant_select& operator=(const recursive_variant_select&) = delete;
+            ~recursive_variant_select() { recursive_variant_reads = outer_; }
         };
         template <typename Variant, typename Json>
         requires recursive_type<Variant> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0) &&
@@ -22344,6 +22438,7 @@ namespace yyjson
             }(std::type_identity<variant_base_t<Variant>>{});
             // 1 when not counted, 0 when the limit stops it, and the factor in `variant_rereads` otherwise
             std::size_t n_ = 1;
+            recursive_variant_read read_;
 
         public:
             explicit variant_reread_guard(std::uint16_t kind) noexcept
@@ -22387,6 +22482,35 @@ namespace yyjson
             [[nodiscard]] bool stops_after() const noexcept
             {
                 return rereading[I] && n_ == 0;
+            }
+            [[nodiscard]] bool nested() const noexcept { return read_.nested(); }
+            [[nodiscard]] recursive_variant_select select() const noexcept
+            {
+                return recursive_variant_select(read_.nested());
+            }
+        };
+        // Without a limit, a recursive variant counts only in `recursive_variant_reads`.
+        template <typename Variant, typename Json>
+        requires recursive_type<Variant> && (CPPYYJSON_RECURSION_DEPTH_LIMIT == 0) &&
+                 (union_variant<Variant> || std::same_as<Variant, variant_base_t<Variant>>)
+        class variant_reread_guard<Variant, Json>
+        {
+            recursive_variant_read read_;
+
+        public:
+            explicit variant_reread_guard(std::uint16_t) noexcept {}
+            variant_reread_guard(std::uint16_t, std::size_t) noexcept {}
+            variant_reread_guard(const variant_reread_guard&) = delete;
+            variant_reread_guard& operator=(const variant_reread_guard&) = delete;
+            template <std::size_t I>
+            [[nodiscard]] static constexpr bool stops_after() noexcept
+            {
+                return false;
+            }
+            [[nodiscard]] bool nested() const noexcept { return read_.nested(); }
+            [[nodiscard]] recursive_variant_select select() const noexcept
+            {
+                return recursive_variant_select(read_.nested());
             }
         };
 
@@ -23208,7 +23332,120 @@ namespace yyjson
         // try the next alternative.
         struct alternative_rejected
         {
+            constraint_kind kind;
         };
+
+        // Whether this thread reads the alternatives of a failed untagged read again to find their reasons.  A
+        // variant that fails within that read gives no reasons, so that the work stays bounded at each depth.
+        inline constinit thread_local bool collecting_alternative_reasons = false;
+
+        class alternative_reasons_scope
+        {
+            bool outer_;
+
+        public:
+            alternative_reasons_scope() noexcept : outer_(collecting_alternative_reasons)
+            {
+                collecting_alternative_reasons = true;
+            }
+            alternative_reasons_scope(const alternative_reasons_scope&) = delete;
+            alternative_reasons_scope& operator=(const alternative_reasons_scope&) = delete;
+            ~alternative_reasons_scope() { collecting_alternative_reasons = outer_; }
+        };
+
+        // The reason of an alternative that does not read a JSON value of `kind`.
+        inline std::string no_kind_reason(std::uint16_t kind)
+        {
+            const auto text = (kind & json_kind_null) != 0     ? "null"
+                              : (kind & json_kind_bool) != 0   ? "bool"
+                              : (kind & json_kind_string) != 0 ? "string"
+                              : (kind & json_kind_array) != 0  ? "array"
+                              : (kind & json_kind_object) != 0 ? "object"
+                                                               : "number";
+            return std::format("reads no JSON {}", text);
+        }
+
+        // The reason of the exception that the read of an alternative threw, which this handles, or the empty
+        // text and its keyword in `rejected` for `alternative_rejected`.  It throws the limits again.
+        CPPYYJSON_COLD inline std::string caught_alternative_reason(constraint_kind& rejected)
+        {
+            auto limit = std::exception_ptr();
+            try
+            {
+                throw;
+            }
+            catch (const recursion_limit_error&)
+            {
+                limit = std::current_exception();
+            }
+            catch (const std::bad_alloc&)
+            {
+                limit = std::current_exception();
+            }
+            catch (const bad_cast& e)
+            {
+                // without the path, which the message gives once for the variant
+                return e.std::runtime_error::what();
+            }
+            catch (const alternative_rejected& e)
+            {
+                rejected = e.kind;
+                return {};
+            }
+            catch (const std::exception& e)
+            {
+                return e.what();
+            }
+            catch (...)
+            {
+                return "throws an exception that is not a std::exception";
+            }
+            std::rethrow_exception(limit);
+        }
+
+        // Reads the alternative I of a variant again from the JSON value at `json`, and gives the reason why it
+        // fails, or none if it reads the value.
+        using alternative_reason = std::optional<std::string> (*)(const void* json);
+
+        // Throws at `at` that no alternative of the variant `variant` reads the value, with the reason of each.
+        [[noreturn]] CPPYYJSON_COLD inline void throw_alternative_reasons(cast_target at, std::string_view variant,
+                                                                          std::span<const std::string_view> names,
+                                                                          std::span<const std::string> reasons)
+        {
+            auto what = std::format("{} is not constructible from JSON", variant);
+            for (std::size_t i = 0; i < reasons.size(); ++i)
+                what += std::format("{} alternative {} ({}): {}", i == 0 ? ":" : ";", i, names[i], reasons[i]);
+            auto e = bad_cast(std::move(what));
+            bad_cast_access::set_target(e, at.value(), at.mutable_value());
+            throw e;
+        }
+
+        // Throws at `at` that no alternative of the untagged variant `variant` reads the JSON value at `json` of
+        // `kind`, with the reason of each, which `reasons_of` finds, unless a variant that reads it discards it.
+        [[noreturn]] CPPYYJSON_COLD inline void throw_untagged_reasons(cast_target at, std::string_view variant,
+                                                                       std::span<const std::string_view> names,
+                                                                       std::span<const std::uint16_t> kinds,
+                                                                       std::span<const alternative_reason> reasons_of,
+                                                                       const void* json, std::uint16_t kind,
+                                                                       bool nested)
+        {
+            if (nested || collecting_alternative_reasons)
+                throw_bad_cast_at(at, "{} is not constructible from JSON", variant);
+            auto reasons = std::vector<std::string>(names.size());
+            {
+                const auto collecting = alternative_reasons_scope();
+                for (std::size_t i = 0; i < reasons.size(); ++i)
+                {
+                    if ((kinds[i] & kind) == 0)
+                        reasons[i] = no_kind_reason(kind);
+                    else if (auto reason = reasons_of[i](json))
+                        reasons[i] = std::move(*reason);
+                    else
+                        reasons[i] = "reads the value when read again";
+                }
+            }
+            throw_alternative_reasons(at, variant, names, reasons);
+        }
 
         // Reads an untagged variant V, a `std::variant` or a union, from a JSON value: its alternatives that
         // `untagged_key_ranking` ranks for an object first, and then in order the first that reads the value.
@@ -23285,12 +23522,50 @@ namespace yyjson
                 {
                     using Schema = union_alternative_schema<V, I>;
                     auto value = cast_nested<T>(json);
-                    if (constraint_violation<Schema, true>(value, input_for<Schema, T>(&json)) != constraint_kind::none)
-                        throw alternative_rejected{};
+                    if (const auto kind = constraint_violation<Schema, true>(value, input_for<Schema, T>(&json));
+                        kind != constraint_kind::none)
+                        throw alternative_rejected{kind};
                     return V(std::in_place_index<I>, std::move(value));
                 }
                 else
                     return V(std::in_place_index<I>, cast_nested<T>(json));
+            }
+
+            // `alternative_reason` for the alternative I.
+            template <std::size_t I, typename Json>
+            static std::optional<std::string> failure_reason(const void* json)
+            {
+                auto rejected = constraint_kind::none;
+                auto reason = std::string();
+                try
+                {
+                    static_cast<void>(cast_alternative<I>(*static_cast<const Json*>(json)));
+                    return std::nullopt;
+                }
+                catch (...)
+                {
+                    reason = caught_alternative_reason(rejected);
+                }
+                if constexpr (constrained_union_alternative<V, I>)
+                {
+                    if (rejected != constraint_kind::none)
+                        return "the value " + constraint_what<union_alternative_schema<V, I>>(rejected);
+                }
+                return reason;
+            }
+            template <typename Json>
+            static constexpr auto failure_reasons = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<alternative_reason, sizeof...(Ts)>{&failure_reason<Is, Json>...};
+            }(std::index_sequence_for<Ts...>{});
+            static constexpr auto alternative_names =
+                std::array<std::string_view, sizeof...(Ts)>{variant_name<Ts>()...};
+
+            // Throws for the JSON value that no alternative reads, with the reason of each unless `nested`.
+            template <typename Json>
+            [[noreturn]] CPPYYJSON_COLD static void throw_no_match(const Json& json, bool nested)
+            {
+                throw_untagged_reasons(target_of(json), variant_name<V>(), alternative_names, alternative_kinds<Json>,
+                                       failure_reasons<Json>, &json, json_kind_of(json), nested);
             }
 
             // Casts the JSON object to the keyed alternative ranked at `pos` in `ranked`, or to the first after it that
@@ -23343,7 +23618,7 @@ namespace yyjson
                                       const Ranked&... ranked)
             {
                 if constexpr (I == sizeof...(Ts))
-                    throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", type_name<V>());
+                    throw_no_match(json, rereads.nested());
                 else
                 {
                     using T = std::variant_alternative_t<I, V>;
@@ -23413,7 +23688,7 @@ namespace yyjson
         template <typename V>
         [[noreturn]] CPPYYJSON_COLD void throw_one_of_matches(cast_target at, std::size_t i, std::size_t j)
         {
-            throw_bad_cast_at(at, "the value matches the alternatives {} and {} of {}", i, j, type_name<V>());
+            throw_bad_cast_at(at, "the value matches the alternatives {} and {} of {}", i, j, variant_name<V>());
         }
 
         // Reads a `yyjson::one_of_variant` V: counts the alternatives that read the value under the policies of
@@ -23447,10 +23722,58 @@ namespace yyjson
             // `yyjson::reject_duplicates`, so it applies only to the alternative that the count selects.
             static constexpr std::uint8_t counting_policies = missing_keys_policy | null_as_missing_policy;
 
+            // The alternatives that the keys of the JSON value, an object, prove to fail.
             template <typename Json>
-            [[noreturn]] static void throw_no_match(const Json& json)
+            static bit_array<size> failing_alternatives(const Json& json, std::uint16_t kind)
             {
-                throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", type_name<V>());
+                auto failing = bit_array<size>{};
+                if constexpr (json_value_of_document<Json> && key_ranking::size != 0)
+                {
+                    if (kind == json_kind_object)
+                    {
+                        const void* const raw = dependent_t<writer::detail::json_value_access, Json>::get(json);
+                        const auto failures = key_ranking::object_schema_failures(*json.as_object(), raw);
+                        for (std::size_t k = 0; k < key_ranking::size; ++k)
+                        {
+                            if (failures.test(k)) failing.set(key_ranking::alternatives[k]);
+                        }
+                    }
+                }
+                return failing;
+            }
+
+            // Throws for the JSON value that no alternative reads under the counting policies, or that the
+            // alternative `selected` does not read under those of the call, with the reason of each alternative
+            // unless `nested`.
+            template <typename Json>
+            [[noreturn]] CPPYYJSON_COLD static void throw_no_match(const Json& json, bool nested,
+                                                                   std::size_t selected = size)
+            {
+                if (nested || collecting_alternative_reasons)
+                    throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", variant_name<V>());
+                const auto kind = json_kind_of(json);
+                const auto failing = failing_alternatives(json, kind);
+                auto reasons = std::array<std::string, size>{};
+                {
+                    const auto collecting = alternative_reasons_scope();
+                    const auto reason = [&](std::size_t i) -> std::string {
+                        if (auto r = alternative_cast::template failure_reasons<Json>[i](&json)) return std::move(*r);
+                        return failing.test(i) ? "lacks a key that it requires or has a key that it rejects"
+                                               : "reads the value when read again";
+                    };
+                    if (selected != size) reasons[selected] = reason(selected);
+                    const auto scope = exact_policy_scope(counting_policies);
+                    for (std::size_t i = 0; i < size; ++i)
+                    {
+                        if (i == selected) continue;
+                        if ((alternative_cast::template alternative_kinds<Json>[i] & kind) == 0)
+                            reasons[i] = no_kind_reason(kind);
+                        else
+                            reasons[i] = reason(i);
+                    }
+                }
+                throw_alternative_reasons(target_of(json), variant_name<V>(), alternative_cast::alternative_names,
+                                          reasons);
             }
 
             // Reads the alternative I into `out`, or returns false if it does not read the value.
@@ -23487,12 +23810,13 @@ namespace yyjson
                     throw_variant_reread_limit<V, std::variant_alternative_t<I, V>>();
                 try
                 {
+                    [[maybe_unused]] const auto selecting = rereads.select();
                     return alternative_cast::template cast_alternative<I>(json);
                 }
                 catch (const alternative_rejected&)
                 {
                 }
-                throw_no_match(json);
+                throw_no_match(json, rereads.nested(), I);
             }
 
             template <typename Json>
@@ -23504,20 +23828,7 @@ namespace yyjson
                 constexpr auto counting = counting_policies;
                 const bool reuse = !sensitive && (call & ~counting) == 0;
                 const auto rereads = guard<Json>(kind, reuse ? 0 : 1);
-                // the alternatives that the keys of an object prove to fail
-                auto failing = bit_array<size>{};
-                if constexpr (json_value_of_document<Json> && key_ranking::size != 0)
-                {
-                    if (kind == json_kind_object)
-                    {
-                        const void* const raw = dependent_t<writer::detail::json_value_access, Json>::get(json);
-                        const auto failures = key_ranking::object_schema_failures(*json.as_object(), raw);
-                        for (std::size_t k = 0; k < key_ranking::size; ++k)
-                        {
-                            if (failures.test(k)) failing.set(key_ranking::alternatives[k]);
-                        }
-                    }
-                }
+                const auto failing = failing_alternatives(json, kind);
                 auto pairs = &overlap;
                 if constexpr (tag_sensitive)
                 {
@@ -23539,7 +23850,7 @@ namespace yyjson
                         first = i;
                     }
                 }
-                if (first == size) throw_no_match(json);
+                if (first == size) throw_no_match(json, rereads.nested());
                 if (reuse) return std::move(*value);
                 return tables<Json>::selects[first](json, rereads);
             }
@@ -30216,6 +30527,25 @@ namespace yyjson
                 view_number_ = val;
             }
 
+            // Throws the `yyjson::bad_cast` of a document of the value at `start`, which gives the reason of each
+            // alternative of the variant T that did not read it, unless the read of T under `rereads` is nested.
+            template <typename T, typename Guard>
+            [[noreturn]] CPPYYJSON_COLD void fail_variant(const char* start, const Guard& rereads)
+            {
+                cur_ = start;
+                [[maybe_unused]] const auto scope = rereads.select();
+                try
+                {
+                    (void)const_value_ref(view_document(start)).template cast<std::remove_cv_t<T>>();
+                }
+                catch (yyjson::bad_cast& e)
+                {
+                    yyjson::detail::bad_cast_access::set_text_value(e, start);
+                    throw;
+                }
+                fail(mismatch::value, name<T>, start);
+            }
+
             // The value at `p` in a document that is kept until the outermost caster that takes a view returns,
             // and in `end` the end of the value.
             yyjson_val* view_document(const char* p, const char*& end)
@@ -31030,7 +31360,7 @@ namespace yyjson
                              read_alternative<T, Is>(make, start, (later[Is] & kind) != 0, rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found) fail(mismatch::value, name<T>, start);
+                if (!found) fail_variant<T>(start, rereads);
             }
 
             // Reads the value at `cur_` into the `yyjson::one_of_variant` T as `one_of_variant_cast` does, when the
@@ -31272,7 +31602,7 @@ namespace yyjson
                              read_alternative<T, Is>(make, start, ranked.others_after(Is), rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found) fail(mismatch::value, name<T>, start);
+                if (!found) fail_variant<T>(start, rereads);
             }
 
             // Reads the object at `cur_` into the keyed alternative I of the variant T, recording its keys in
@@ -31357,11 +31687,7 @@ namespace yyjson
                              read_number_alternative<T, Is>(make, n, start, end, (later[Is] & n.kind) != 0, rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found)
-                {
-                    cur_ = start;
-                    fail(mismatch::value, name<T>, start);
-                }
+                if (!found) fail_variant<T>(start, rereads);
             }
 
             template <typename T, std::size_t I, typename Make, typename Guard>

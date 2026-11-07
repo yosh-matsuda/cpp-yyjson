@@ -4410,7 +4410,7 @@ namespace
     template <typename V>
     std::string read_by_none()
     {
-        return std::format("{} is not constructible from JSON", yyjson::detail::type_name<V>());
+        return std::format("{} is not constructible from JSON", yyjson::detail::variant_name<V>());
     }
 
     // `json` is read into the alternative `index` of V, with and without a document
@@ -4778,7 +4778,8 @@ namespace
     template <typename V>
     std::string read_by_two(std::size_t i, std::size_t j)
     {
-        return std::format("the value matches the alternatives {} and {} of {}", i, j, yyjson::detail::type_name<V>());
+        return std::format("the value matches the alternatives {} and {} of {}", i, j,
+                           yyjson::detail::variant_name<V>());
     }
 
     // reading `json` into V under `policies` throws `bad_cast` with `message`, with and without a document
@@ -4860,6 +4861,130 @@ TEST(Constraints, OneOfReading)
     fields.p = OneOfX{3};
     EXPECT_EQ(std::string(yyjson::write(fields)), R"({"n":-2,"p":{"x":3}})");
     EXPECT_EQ(std::string(yyjson::value(OneOfInts(std::in_place_index<0>, 5)).write()), "5");
+}
+
+struct UnionReasonField
+{
+    std::variant<int, UnionPoint> v;
+};
+struct UnionReasonNode
+{
+    std::variant<int, OneOfX> v;
+    yyjson::one_of_variant<std::nullptr_t, yyjson::indirect<UnionReasonNode>> next;
+};
+
+namespace
+{
+    // the message of a value that no alternative of V reads, with the reason of each alternative
+    template <typename V>
+    std::string read_by_none_because(std::initializer_list<std::string_view> reasons)
+    {
+        const auto names = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            return std::array{yyjson::detail::variant_name<std::variant_alternative_t<Is, V>>()...};
+        }(std::make_index_sequence<std::variant_size_v<V>>());
+        auto message = read_by_none<V>();
+        for (auto i = std::size_t(0); const auto reason : reasons)
+        {
+            message += std::format("{} alternative {} ({}): {}", i == 0 ? ":" : ";", i, names[i], reason);
+            ++i;
+        }
+        return message;
+    }
+
+    // reading `json` into T under `policies` throws `bad_cast` with exactly `message` about the value at `path`,
+    // with and without a document
+    template <typename T, typename... Policies>
+    void expect_reasons(std::string_view json, std::string_view message, std::string_view path, Policies... policies)
+    {
+        const auto check = [&](const yyjson::bad_cast& e) {
+            EXPECT_EQ(std::string(e.std::runtime_error::what()), message) << json;
+            EXPECT_EQ(e.path(), path) << json;
+        };
+        check(bad_cast_of([&] { (void)yyjson::read<T>(json, policies...); }));
+        check(bad_cast_of([&] { (void)yyjson::read(json).cast<T>(policies...); }));
+    }
+}  // namespace
+
+TEST(Constraints, UnionFailureReasons)
+{
+    // a message names the union by the types of its alternatives, without their settings
+    EXPECT_EQ((yyjson::detail::variant_name<std::variant<int, bool>>()), "std::variant<int, bool>");
+    EXPECT_EQ((yyjson::detail::variant_name<yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>, bool>>()),
+              "yyjson::any_of_variant<int, bool>");
+    EXPECT_EQ((yyjson::detail::variant_name<const yyjson::one_of_variant<int, bool>>()),
+              "yyjson::one_of_variant<int, bool>");
+    expect_reasons<yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(1)>, bool>>(
+        "0",
+        "yyjson::one_of_variant<int, bool> is not constructible from JSON: alternative 0 (int): the value is "
+        "less than the minimum 1; alternative 1 (bool): reads no JSON number",
+        "");
+    // a union inside a union has the same name in the label of its alternative and in its reason
+    expect_reasons<yyjson::any_of_variant<yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>, bool>, bool>>(
+        "0",
+        "yyjson::any_of_variant<yyjson::any_of_variant<int, bool>, bool> is not constructible from JSON: alternative 0 "
+        "(yyjson::any_of_variant<int, bool>): yyjson::any_of_variant<int, bool> is not constructible from JSON; "
+        "alternative 1 (bool): reads no JSON number",
+        "");
+    expect_reasons<std::variant<std::variant<int, bool>, bool>>(
+        "null",
+        "std::variant<std::variant<int, bool>, bool> is not constructible from JSON: alternative 0 "
+        "(std::variant<int, bool>): reads no JSON null; alternative 1 (bool): reads no JSON null",
+        "");
+
+    // each alternative that does not read the kind of the value
+    using Kinds = std::variant<int, std::string, UnionPoint>;
+    const auto no_bool = "reads no JSON bool";
+    expect_reasons<Kinds>("true", read_by_none_because<Kinds>({no_bool, no_bool, no_bool}), "");
+    const auto no_null = "reads no JSON null";
+    expect_reasons<std::vector<Kinds>>(R"([1,"a",null])", read_by_none_because<Kinds>({no_null, no_null, no_null}),
+                                       "/2");
+    // the reason of a struct gives the value within it without its path, and the path of the variant ends the
+    // message once
+    using IntOrPoint = std::variant<int, UnionPoint>;
+    const auto point_reasons =
+        read_by_none_because<IntOrPoint>({"reads no JSON object", "int is not constructible from JSON string"});
+    expect_reasons<IntOrPoint>(R"({"x":"a"})", point_reasons, "");
+    expect_reasons<UnionReasonField>(R"({"v":{"x":"a"}})", point_reasons, "/v");
+    try
+    {
+        (void)yyjson::read<UnionReasonField>(R"({"v":{"x":"a"}})");
+        ADD_FAILURE();
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_EQ(std::string(e.what()), point_reasons + " at /v (line 1, column 6, pos 5)");
+    }
+
+    // the setting of an alternative that the value does not satisfy
+    using NonNegative = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(0)>, std::string>;
+    expect_reasons<NonNegative>(
+        "-1", read_by_none_because<NonNegative>({"the value is less than the minimum 0", "reads no JSON number"}), "");
+
+    // the alternatives of yyjson::one_of_variant under the policies that count the matches, the one that the keys
+    // of the object prove to fail too
+    using ClosedOrXZ = yyjson::one_of_variant<OneOfClosedX, OneOfXZ>;
+    expect_reasons<ClosedOrXZ>(
+        R"({"z":1})",
+        read_by_none_because<ClosedOrXZ>(
+            {R"(OneOfClosedX has the key "z", which yyjson::additional_properties(false) rejects)",
+             R"(OneOfXZ is not constructible from JSON without the key "x")"}),
+        "");
+    // the one that matches under those policies and fails under the policies of the call gives its own failure
+    using XOrText = yyjson::one_of_variant<OneOfX, std::string>;
+    expect_reasons<XOrText>(R"({"x":1,"k":2})", R"(OneOfX has no field of the key "k")", "/k",
+                            yyjson::reject_unknown_keys);
+    // also a variant within it, which gives the reasons of its alternatives
+    using IntOrX = std::variant<int, OneOfX>;
+    expect_reasons<UnionReasonNode>(
+        R"({"v":1,"next":{"v":{"x":1,"k":2},"next":null}})",
+        read_by_none_because<IntOrX>({"reads no JSON object", R"(OneOfX has no field of the key "k")"}), "/next/v",
+        yyjson::reject_unknown_keys);
+
+    // a variant within an alternative gives no reasons of its own alternatives, which bounds the work
+    using Nested = std::variant<int, std::variant<std::string, std::variant<bool, UnionPoint>>>;
+    using Inner = std::variant_alternative_t<1, Nested>;
+    expect_reasons<Nested>(R"({"x":"a"})",
+                           read_by_none_because<Nested>({"reads no JSON object", read_by_none<Inner>()}), "");
 }
 
 TEST(Constraints, OneOfBounds)

@@ -2598,6 +2598,7 @@ struct any_of_variant : std::variant</* T of each A */...>
 *   The settings of `yyjson::alt` are those of the value of a field of `T`: the [constraints](#constraints), the [constraints of elements](#constraints-of-elements), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), [`yyjson::matches<T>`](#yyjsonmatchest), and the keywords of an object for a struct. For a struct, `yyjson::value`, `yyjson::object` and a `std::variant` with struct alternatives, `yyjson::field("key", s...)` constrains a member as at [a field that holds a struct](validation.md#keywords-of-an-object-at-a-field). Each setting is a value, or a pointer to a `constexpr` variable that holds it. Before C++26, a setting made from a `std::string_view` variable needs the pointer. So do `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required`.
 *   `yyjson::additional_properties(false)` in `yyjson::alt` accepts only the keys that `yyjson::field` names in it, and the keys of the tags.
 *   A read tries the alternatives as an untagged `std::variant` does. An alternative reads a value only if the value converts to `T` and satisfies its settings. `write` does not check the settings.
+*   If no alternative reads the value, the read throws `yyjson::bad_cast`. The message gives the reason of each alternative, as in [Untagged variants](conversions.md#untagged-variants).
 *   These are compile errors: `yyjson::alt` at another position, `yyjson::alt` in `yyjson::alt`, `yyjson::required` directly in `yyjson::alt`, `yyjson::rename` in `yyjson::field` in `yyjson::alt`, and `yyjson::internal_tag` or `yyjson::adjacent_tag` on the variant.
 
 The setting [`yyjson::any_of`](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) is a different feature, which constrains the value of a field.
@@ -2627,7 +2628,7 @@ struct one_of_variant : std::variant</* T of each A */...>
 
 *   The template arguments, `yyjson::alt`, the write and the compile errors are those of [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt).
 *   An alternative matches a value if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. The policies of the call do not change the match. Thus a plain read of an alternative alone can accept a value that the variant rejects.
-*   The read gives the only alternative that matches, and applies the policies of the call to it. If no alternative or two alternatives match, the read throws `yyjson::bad_cast`.
+*   The read gives the only alternative that matches, and applies the policies of the call to it. If no alternative or two alternatives match, the read throws `yyjson::bad_cast`. If no alternative matches, the message gives the reason of each alternative.
 *   An alternative can read only values that another alternative reads. When the library proves it, the alternative is a compile error. The library compares null, booleans, numbers, strings and arrays by their bounds. It compares structs by their keys and the bounds of their fields, and other types by their kinds of JSON values. It does not compare the elements of arrays. The setting `yyjson::one_of` takes such subschemas.
 
 ```cpp
