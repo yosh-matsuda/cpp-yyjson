@@ -7610,9 +7610,9 @@ namespace yyjson
         using field_schema = node_schema<field_tree<S, R>, 0>;
     }  // namespace detail
 
-    // An alternative of `yyjson::any_of_variant`: T with the settings of the value of a field of T, but not its key.
-    // A setting is a template argument, or a pointer to a constexpr variable that holds one.  `alt<T>` is T.
-    // Never defined, because argument-dependent lookup completes the arguments of a union, as `a == b` does.
+    // An alternative of `yyjson::any_of_variant` and `one_of_variant`: T with the settings of the value of a field
+    // of T, but not its key.  A setting is a template argument, or a pointer to a constexpr variable that holds one.
+    // `alt<T>` is T.  Never defined, because argument-dependent lookup completes the arguments of a union.
     template <typename T, auto... Settings>
     struct alt;
 
@@ -7702,6 +7702,20 @@ namespace yyjson
         using variant_type::operator=;
     };
 
+    // A value of one of the types of the alternatives As, as JSON Schema's `oneOf`: a JSON value is read only if
+    // exactly one alternative reads it under the schema of the type, which rejects missing keys and null as missing.
+    // The alternative that reads it is then read under the policies of the call.  The rest is as `any_of_variant`.
+    template <typename... As>
+    struct one_of_variant : std::variant<detail::alternative_type_t<As>...>
+    {
+        static_assert(sizeof...(As) != 0, "yyjson::one_of_variant needs an alternative");
+        static_assert(detail::check_alternatives<As...>());
+
+        using variant_type = std::variant<detail::alternative_type_t<As>...>;
+        using variant_type::variant_type;
+        using variant_type::operator=;
+    };
+
     namespace detail
     {
         // Whether V is a union of alternatives with settings, such as `yyjson::any_of_variant`, and its parts:
@@ -7719,6 +7733,19 @@ namespace yyjson
             template <std::size_t I>
             using alternative = std::tuple_element_t<I, std::tuple<As...>>;
         };
+        template <typename... As>
+        struct union_traits<one_of_variant<As...>>
+        {
+            static constexpr bool value = true;
+            using base = std::variant<alternative_type_t<As>...>;
+            template <std::size_t I>
+            using alternative = std::tuple_element_t<I, std::tuple<As...>>;
+        };
+        // Whether V is a `yyjson::one_of_variant`, which reads a value that exactly one alternative reads.
+        template <typename V>
+        inline constexpr bool is_one_of_variant = false;
+        template <typename... As>
+        inline constexpr bool is_one_of_variant<one_of_variant<As...>> = true;
         template <typename V>
         concept union_variant = union_traits<std::remove_cv_t<V>>::value;
 
@@ -7764,6 +7791,11 @@ namespace yyjson
         {
             using type = type_list<alternative_type_t<As>...>;
         };
+        template <typename... As>
+        struct template_type_args<one_of_variant<As...>>
+        {
+            using type = type_list<alternative_type_t<As>...>;
+        };
     }  // namespace detail
 }  // namespace yyjson
 
@@ -7775,6 +7807,16 @@ struct std::variant_size<yyjson::any_of_variant<As...>>
 template <std::size_t I, typename... As>
 struct std::variant_alternative<I, yyjson::any_of_variant<As...>>
     : std::variant_alternative<I, typename yyjson::any_of_variant<As...>::variant_type>
+{
+};
+template <typename... As>
+struct std::variant_size<yyjson::one_of_variant<As...>>
+    : std::variant_size<typename yyjson::one_of_variant<As...>::variant_type>
+{
+};
+template <std::size_t I, typename... As>
+struct std::variant_alternative<I, yyjson::one_of_variant<As...>>
+    : std::variant_alternative<I, typename yyjson::one_of_variant<As...>::variant_type>
 {
 };
 
@@ -21193,6 +21235,769 @@ namespace yyjson
             return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
+        // The JSON values that an alternative of `yyjson::one_of_variant` reads, bounded at compile time.  A bound
+        // gives each kind of JSON values as none of them, a subset of the values that it describes (`partial`), or
+        // exactly those values (`exact`).
+        enum class bound_extent : std::uint8_t
+        {
+            none,
+            partial,
+            exact
+        };
+
+        // The number of the numbers or the strings that a bound lists; more of them make it list none.
+        inline constexpr std::size_t bound_capacity = 32;
+
+        constexpr bound_number sint_number(std::int64_t v) noexcept
+        {
+            auto n = bound_number{};
+            n.sint = v;
+            return n;
+        }
+        constexpr bound_number uint_number(std::uint64_t v) noexcept
+        {
+            auto n = bound_number{};
+            n.kind = bound_number::kind_t::uint;
+            n.uint = v;
+            return n;
+        }
+        constexpr bound_number real_number(double v) noexcept
+        {
+            auto n = bound_number{};
+            n.kind = bound_number::kind_t::real;
+            n.real = v;
+            return n;
+        }
+        // The number n as the double nearest to it.
+        constexpr double bound_to_double(const bound_number& n) noexcept
+        {
+            return n.kind == bound_number::kind_t::sint   ? static_cast<double>(n.sint)
+                   : n.kind == bound_number::kind_t::uint ? static_cast<double>(n.uint)
+                                                          : n.real;
+        }
+        constexpr bool number_less(const bound_number& a, const bound_number& b) noexcept
+        {
+            return std::is_lt(compare_bounds(a, b));
+        }
+        constexpr bool number_equal(const bound_number& a, const bound_number& b) noexcept
+        {
+            return std::is_eq(compare_bounds(a, b));
+        }
+
+        // Steps the integer n to the next one up or down, in [-2^63, 2^64), or returns false if there is none.
+        constexpr bool step_integer(bound_number& n, bool up) noexcept
+        {
+            if (up)
+            {
+                if (n.kind == bound_number::kind_t::uint)
+                {
+                    if (n.uint == std::numeric_limits<std::uint64_t>::max()) return false;
+                    ++n.uint;
+                }
+                else if (n.sint == std::numeric_limits<std::int64_t>::max())
+                    n = uint_number(std::uint64_t{1} << 63U);
+                else
+                    ++n.sint;
+            }
+            else if (n.kind == bound_number::kind_t::sint)
+            {
+                if (n.sint == std::numeric_limits<std::int64_t>::min()) return false;
+                --n.sint;
+            }
+            else if (n.uint == 0)
+                n = sint_number(-1);
+            else
+                --n.uint;
+            return true;
+        }
+
+        // The least integer in [-2^63, 2^64) at least the number b (`up`), or the greatest at most b; with `open`,
+        // greater or less than b.
+        struct integer_step
+        {
+            bool exists = false;
+            bound_number value;
+        };
+        constexpr integer_step integer_beyond(const bound_number& b, bool up, bool open) noexcept
+        {
+            if (b.kind != bound_number::kind_t::real)
+            {
+                auto n = b;
+                return {!open || step_integer(n, up), n};
+            }
+            const double r = b.real;
+            if (r < -9223372036854775808.0) return {up, sint_number(std::numeric_limits<std::int64_t>::min())};
+            if (r >= 18446744073709551616.0) return {!up, uint_number(std::numeric_limits<std::uint64_t>::max())};
+            // `n` is r rounded toward zero
+            auto n = r < 0 ? sint_number(static_cast<std::int64_t>(r)) : uint_number(static_cast<std::uint64_t>(r));
+            const auto order = compare_bounds(n, b);
+            if (std::is_eq(order) ? open : up == std::is_lt(order)) step_integer(n, up);
+            return {true, n};
+        }
+
+        // Whether the number n is below 2^53 in magnitude, where a double holds every integer, or is infinite.
+        constexpr bool double_exact_range(const bound_number& n) noexcept
+        {
+            if (n.kind == bound_number::kind_t::real && (n.real == std::numeric_limits<double>::infinity() ||
+                                                         n.real == -std::numeric_limits<double>::infinity()))
+                return true;
+            return number_less(n, real_number(9007199254740992.0)) && number_less(real_number(-9007199254740992.0), n);
+        }
+
+        // The numbers of a bound: integers if `integral`, else the doubles that the JSON numbers are read as.  They
+        // are the `count` `points` if `listed`, else the numbers from `low` to `high`, which are never empty, and
+        // in integers are never open.
+        struct number_bound
+        {
+            bound_extent extent = bound_extent::none;
+            bool integral = false;
+            bool listed = false;
+            bool low_open = false;
+            bool high_open = false;
+            bound_number low;
+            bound_number high;
+            std::size_t count = 0;
+            std::array<bound_number, bound_capacity> points = {};
+        };
+        // The lengths of strings in code points, or the numbers of the elements of arrays, from `low` to `high`.
+        struct count_range
+        {
+            std::size_t low = 0;
+            std::size_t high = std::numeric_limits<std::size_t>::max();
+        };
+        constexpr bool counts_hold(const count_range& a, const count_range& b) noexcept
+        {
+            return a.low <= b.low && b.high <= a.high;
+        }
+        constexpr bool counts_meet(const count_range& a, const count_range& b) noexcept
+        {
+            return a.low <= b.high && b.low <= a.high;
+        }
+        constexpr bool has_count(const count_range& r, std::size_t n) noexcept { return r.low <= n && n <= r.high; }
+
+        // The strings of a bound: the `count` `strings` if `listed`, else those whose lengths are within `lengths`.
+        struct string_bound
+        {
+            bound_extent extent = bound_extent::none;
+            bool listed = false;
+            std::size_t count = 0;
+            std::array<std::string_view, bound_capacity> strings = {};
+            count_range lengths;
+        };
+        // A subset or all of the arrays, or the objects, whose numbers of elements or members are within `counts`.
+        struct container_bound
+        {
+            bound_extent extent = bound_extent::none;
+            count_range counts;
+        };
+        // The bound of each kind of JSON values; `booleans` has the bit 0 for false and the bit 1 for true.
+        struct json_bound
+        {
+            bound_extent null = bound_extent::none;
+            bound_extent boolean = bound_extent::none;
+            std::uint8_t booleans = 0;
+            number_bound number;
+            string_bound string;
+            container_bound array;
+            container_bound object;
+        };
+
+        constexpr void make_partial(bound_extent& e) noexcept
+        {
+            if (e == bound_extent::exact) e = bound_extent::partial;
+        }
+        constexpr json_bound partial_bound(json_bound b) noexcept
+        {
+            make_partial(b.null);
+            make_partial(b.boolean);
+            make_partial(b.number.extent);
+            make_partial(b.string.extent);
+            make_partial(b.array.extent);
+            make_partial(b.object.extent);
+            return b;
+        }
+        // All the integers that a JSON number can be read as, or all the doubles.
+        constexpr number_bound all_numbers(bool integral, bound_extent extent) noexcept
+        {
+            auto n = number_bound{};
+            n.extent = extent;
+            n.integral = integral;
+            if (integral)
+            {
+                n.low = sint_number(std::numeric_limits<std::int64_t>::min());
+                n.high = uint_number(std::numeric_limits<std::uint64_t>::max());
+            }
+            else
+            {
+                n.low = real_number(-std::numeric_limits<double>::infinity());
+                n.high = real_number(std::numeric_limits<double>::infinity());
+                n.low_open = n.high_open = true;
+            }
+            return n;
+        }
+        // A subset of the JSON values of the kinds, a mask of `json_kind`.
+        constexpr json_bound kinds_bound(std::uint16_t kinds) noexcept
+        {
+            constexpr auto partial = bound_extent::partial;
+            auto b = json_bound{};
+            if ((kinds & json_kind_null) != 0) b.null = partial;
+            if ((kinds & json_kind_bool) != 0)
+            {
+                b.boolean = partial;
+                b.booleans = 3;
+            }
+            if ((kinds & json_kind_number) != 0) b.number = all_numbers((kinds & json_kind_real) == 0, partial);
+            if ((kinds & json_kind_string) != 0) b.string.extent = partial;
+            if ((kinds & json_kind_array) != 0) b.array.extent = partial;
+            if ((kinds & json_kind_object) != 0) b.object.extent = partial;
+            return b;
+        }
+
+        // The numbers of n that are single points: those listed, or the one of an interval from a number to itself.
+        constexpr std::size_t point_count(const number_bound& n) noexcept
+        {
+            if (n.listed) return n.count;
+            return !n.low_open && !n.high_open && number_equal(n.low, n.high) ? 1 : 0;
+        }
+        constexpr const bound_number& point_at(const number_bound& n, std::size_t i) noexcept
+        {
+            return n.listed ? n.points[i] : n.low;
+        }
+        // Whether the numbers n, in the domain of p, have p.
+        constexpr bool has_number(const number_bound& n, const bound_number& p) noexcept
+        {
+            if (n.listed)
+            {
+                for (std::size_t i = 0; i < n.count; ++i)
+                    if (number_equal(p, n.points[i])) return true;
+                return false;
+            }
+            const auto low = compare_bounds(p, n.low);
+            const auto high = compare_bounds(p, n.high);
+            return (std::is_gt(low) || (std::is_eq(low) && !n.low_open)) &&
+                   (std::is_lt(high) || (std::is_eq(high) && !n.high_open));
+        }
+        // Whether the interval of the numbers a holds that of b, with the ends compared exactly.
+        constexpr bool interval_holds(const number_bound& a, const number_bound& b) noexcept
+        {
+            const auto low = compare_bounds(a.low, b.low);
+            const auto high = compare_bounds(a.high, b.high);
+            return (std::is_lt(low) || (std::is_eq(low) && (!a.low_open || b.low_open))) &&
+                   (std::is_gt(high) || (std::is_eq(high) && (!a.high_open || b.high_open)));
+        }
+        // The integers n as the doubles that they are read as.
+        constexpr number_bound as_reals(number_bound n) noexcept
+        {
+            if (!n.integral) return n;
+            n.integral = false;
+            for (std::size_t i = 0; i < n.count; ++i) n.points[i] = real_number(bound_to_double(n.points[i]));
+            n.low = real_number(bound_to_double(n.low));
+            n.high = real_number(bound_to_double(n.high));
+            return n;
+        }
+
+        // Whether each number of b, in the domain of b, is a number of a, which has them exactly.
+        constexpr bool numbers_contain(const number_bound& a, const number_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none) return true;
+            if (a.extent != bound_extent::exact) return false;
+            const std::size_t points = point_count(b);
+            if (a.integral == b.integral || !a.integral)
+            {
+                // a double reads an integer as the double nearest to it
+                const auto read = [&a, &b](const bound_number& p) {
+                    return a.integral == b.integral ? p : real_number(bound_to_double(p));
+                };
+                if (points != 0)
+                {
+                    for (std::size_t i = 0; i < points; ++i)
+                        if (!has_number(a, read(point_at(b, i)))) return false;
+                    return true;
+                }
+                if (a.listed) return false;
+                // the doubles nearest to the integers between two ends of a are between them too only where
+                // doubles hold every integer
+                if (a.integral != b.integral && (!double_exact_range(a.low) || !double_exact_range(a.high)))
+                    return false;
+                return interval_holds(a, b);
+            }
+            // An integer type reads the JSON number p that a double reads if p is an integer that only p gives.
+            if (points == 0) return false;
+            for (std::size_t i = 0; i < points; ++i)
+            {
+                const auto& p = point_at(b, i);
+                const auto n = integer_beyond(p, true, false);
+                if (!double_exact_range(p) || !n.exists || !number_equal(n.value, p) || !has_number(a, n.value))
+                    return false;
+            }
+            return true;
+        }
+        // Whether no JSON number is read as a number of a and also as one of b.
+        constexpr bool numbers_disjoint(const number_bound& a, const number_bound& b) noexcept
+        {
+            if (a.extent == bound_extent::none || b.extent == bound_extent::none) return true;
+            if (a.integral != b.integral) return numbers_disjoint(as_reals(a), as_reals(b));
+            if (const std::size_t points = point_count(a); points != 0)
+            {
+                for (std::size_t i = 0; i < points; ++i)
+                    if (has_number(b, point_at(a, i))) return false;
+                return true;
+            }
+            if (point_count(b) != 0) return numbers_disjoint(b, a);
+            const auto below = [](const number_bound& x, const number_bound& y) {
+                const auto o = compare_bounds(x.high, y.low);
+                return std::is_lt(o) || (std::is_eq(o) && (x.high_open || y.low_open));
+            };
+            return below(a, b) || below(b, a);
+        }
+
+        constexpr bool has_string(const string_bound& s, std::string_view v) noexcept
+        {
+            for (std::size_t i = 0; i < s.count; ++i)
+                if (s.strings[i] == v) return true;
+            return false;
+        }
+        // Adds the string v, whose length is within `s.lengths`, to the listed strings s.
+        constexpr void add_string(string_bound& s, std::string_view v) noexcept
+        {
+            if (has_string(s, v)) return;
+            if (s.count == bound_capacity)
+            {
+                // too many to list
+                s = {bound_extent::partial, false, 0, {}, s.lengths};
+                return;
+            }
+            s.strings[s.count++] = v;
+        }
+        // Whether each string of b is a string of a, which has them exactly.
+        constexpr bool strings_contain(const string_bound& a, const string_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none) return true;
+            if (a.extent != bound_extent::exact) return false;
+            if (a.listed)
+            {
+                if (!b.listed) return false;
+                for (std::size_t i = 0; i < b.count; ++i)
+                    if (!has_string(a, b.strings[i])) return false;
+                return true;
+            }
+            if (!b.listed) return counts_hold(a.lengths, b.lengths);
+            for (std::size_t i = 0; i < b.count; ++i)
+                if (!has_count(a.lengths, code_points(b.strings[i]))) return false;
+            return true;
+        }
+        // Whether no string is one of a and also one of b.
+        constexpr bool strings_disjoint(const string_bound& a, const string_bound& b) noexcept
+        {
+            if (a.extent == bound_extent::none || b.extent == bound_extent::none) return true;
+            if (!counts_meet(a.lengths, b.lengths)) return true;
+            if (!a.listed && !b.listed) return false;
+            const auto& listed = a.listed ? a : b;
+            const auto& other = a.listed ? b : a;
+            for (std::size_t i = 0; i < listed.count; ++i)
+                if (other.listed ? has_string(other, listed.strings[i])
+                                 : has_count(other.lengths, code_points(listed.strings[i])))
+                    return false;
+            return true;
+        }
+
+        // Whether each array, or object, of b is one of a, which has them exactly.
+        constexpr bool containers_contain(const container_bound& a, const container_bound& b) noexcept
+        {
+            return b.extent == bound_extent::none ||
+                   (a.extent == bound_extent::exact && counts_hold(a.counts, b.counts));
+        }
+        constexpr bool containers_disjoint(const container_bound& a, const container_bound& b) noexcept
+        {
+            return a.extent == bound_extent::none || b.extent == bound_extent::none || !counts_meet(a.counts, b.counts);
+        }
+
+        // Whether each JSON value of b is one of a, which has them exactly.
+        constexpr bool bound_contains(const json_bound& a, const json_bound& b) noexcept
+        {
+            const auto holds = [](bound_extent x, bound_extent y) {
+                return y == bound_extent::none || x == bound_extent::exact;
+            };
+            if (!holds(a.null, b.null) || !containers_contain(a.array, b.array) ||
+                !containers_contain(a.object, b.object))
+                return false;
+            if (b.boolean != bound_extent::none &&
+                (a.boolean != bound_extent::exact || (b.booleans & ~a.booleans) != 0))
+                return false;
+            return strings_contain(a.string, b.string) && numbers_contain(a.number, b.number);
+        }
+        // Whether no JSON value is one of a and also one of b.
+        constexpr bool bounds_disjoint(const json_bound& a, const json_bound& b) noexcept
+        {
+            const auto both = [](bound_extent x, bound_extent y) {
+                return x != bound_extent::none && y != bound_extent::none;
+            };
+            if (both(a.null, b.null) || !containers_disjoint(a.array, b.array) ||
+                !containers_disjoint(a.object, b.object))
+                return false;
+            if (both(a.boolean, b.boolean) && (a.booleans & b.booleans) != 0) return false;
+            return strings_disjoint(a.string, b.string) && numbers_disjoint(a.number, b.number);
+        }
+
+        // The settings of a value without settings, as `node_schema` gives them.
+        struct no_settings_level
+        {
+            static constexpr schema_node node = {};
+            static constexpr field_constraints constraints = {};
+            static constexpr std::array<json_scalar, 0> values = {};
+            static constexpr std::array<std::string_view, 0> patterns = {};
+        };
+        inline constexpr std::uint32_t listing_settings = constraint_bit<const_<>> | constraint_bit<enum_<0>>;
+        inline constexpr std::uint32_t length_settings = constraint_bit<min_length> | constraint_bit<max_length>;
+        inline constexpr std::uint32_t count_settings = constraint_bit<min_items> | constraint_bit<max_items>;
+        inline constexpr std::uint32_t number_settings = listing_settings | constraint_bit<minimum> |
+                                                         constraint_bit<maximum> | constraint_bit<exclusive_minimum> |
+                                                         constraint_bit<exclusive_maximum>;
+        // Whether the settings of the level are only those of `described`, which a bound gives exactly.
+        template <typename Level>
+        consteval bool level_within(std::uint32_t described)
+        {
+            constexpr const schema_node& n = Level::node;
+            return n.combinators == 0 && n.members == 0 && n.items == 0 && n.properties == 0 && n.keys == 0 &&
+                   n.contains == 0 && n.prefix_count == 0 && !n.closed &&
+                   (n.constraints.bits & ~(described | constraint_bit<format<>>)) == 0;
+        }
+        // Whether the level lists a `yyjson::json_text`, whose value a bound does not give.
+        template <typename Level>
+        consteval bool lists_json_text()
+        {
+            for (const json_scalar& s : Level::values)
+                if (s.kind == json_scalar::kind_t::json) return true;
+            return false;
+        }
+
+        // Calls `f` with each value of `yyjson::const_` and `yyjson::enum_` of the level that a value can equal,
+        // as `eq` compares them: the constant if it is among the values of `enum_`, else each value of `enum_`.
+        template <typename Level, typename Eq, typename F>
+        consteval void for_each_listed(Eq eq, F f)
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
+            if constexpr (constants != 0)
+            {
+                bool listed = !c.has<enum_<0>>();
+                for (std::size_t i = 1; i < Level::values.size(); ++i)
+                    listed = listed || eq(Level::values[0], Level::values[i]);
+                if (listed) f(Level::values[0]);
+            }
+            else
+                for (const json_scalar& s : Level::values) f(s);
+        }
+        // The booleans that a `bool` reads with the listed values of the level, as the bits of `json_bound`.
+        template <typename Level>
+        consteval std::uint8_t listed_booleans()
+        {
+            if constexpr ((Level::constraints.bits & listing_settings) == 0)
+                return 3;
+            else
+            {
+                std::uint8_t booleans = 0;
+                for_each_listed<Level>(
+                    [](const json_scalar& x, const json_scalar& y) {
+                        return x.kind == json_scalar::kind_t::boolean && y.kind == x.kind && x.boolean == y.boolean;
+                    },
+                    [&booleans](const json_scalar& s) {
+                        if (s.kind == json_scalar::kind_t::boolean)
+                            booleans |= static_cast<std::uint8_t>(s.boolean ? 2U : 1U);
+                    });
+                return booleans;
+            }
+        }
+        // The lengths, or the numbers of elements, that the settings of the level allow.
+        template <typename Level, bool Lengths>
+        consteval count_range level_counts()
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            auto r = count_range{};
+            if constexpr (Lengths)
+            {
+                if constexpr (c.has<min_length>()) r.low = c.min_length;
+                if constexpr (c.has<max_length>()) r.high = c.max_length;
+            }
+            else
+            {
+                if constexpr (c.has<min_items>()) r.low = c.min_items;
+                if constexpr (c.has<max_items>()) r.high = c.max_items;
+            }
+            return r;
+        }
+        // The strings that a string reads with the listed values and the lengths of the level.
+        template <typename Level>
+        consteval string_bound listed_strings()
+        {
+            auto b = string_bound{};
+            b.lengths = level_counts<Level, true>();
+            if (b.lengths.high < b.lengths.low) return {};
+            b.extent = bound_extent::exact;
+            if constexpr ((Level::constraints.bits & listing_settings) != 0)
+            {
+                b.listed = true;
+                for_each_listed<Level>(
+                    [](const json_scalar& x, const json_scalar& y) {
+                        return x.kind == json_scalar::kind_t::string && y.kind == x.kind && x.string() == y.string();
+                    },
+                    [&b](const json_scalar& s) {
+                        if (s.kind == json_scalar::kind_t::string && has_count(b.lengths, code_points(s.string())))
+                            add_string(b, s.string());
+                    });
+                if (b.listed && b.count == 0) b = {};
+            }
+            return b;
+        }
+
+        // The numbers that the arithmetic type T, other than `bool`, reads with the number settings of the level.
+        template <typename T, typename Level>
+        consteval number_bound arithmetic_bound()
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            constexpr bool integral = std::integral<T>;
+            // other floating-point types round the JSON number or the settings, which the bound does not follow
+            if constexpr (std::floating_point<T> && !std::same_as<T, double>)
+                return all_numbers(false, bound_extent::partial);
+            else
+            {
+                auto n = all_numbers(integral, bound_extent::exact);
+                if constexpr (integral)
+                {
+                    using limits = std::numeric_limits<T>;
+                    n.low = std::is_signed_v<T> ? sint_number(limits::min()) : uint_number(limits::min());
+                    n.high = std::is_signed_v<T> ? sint_number(limits::max()) : uint_number(limits::max());
+                }
+                bool empty = false;
+                const auto bound = [&](const bound_number& b, bool up, bool open) {
+                    bound_number& end = up ? n.low : n.high;
+                    bool& end_open = up ? n.low_open : n.high_open;
+                    if constexpr (integral)
+                    {
+                        const auto step = integer_beyond(b, up, open);
+                        if (!step.exists)
+                            empty = true;
+                        else if (up ? number_less(end, step.value) : number_less(step.value, end))
+                            end = step.value;
+                    }
+                    else
+                    {
+                        const auto o = compare_bounds(b, end);
+                        if ((up ? std::is_gt(o) : std::is_lt(o)) || (std::is_eq(o) && open && !end_open))
+                        {
+                            end = b;
+                            end_open = open;
+                        }
+                    }
+                };
+                if constexpr (c.has<minimum>()) bound(c.minimum, true, false);
+                if constexpr (c.has<exclusive_minimum>()) bound(c.exclusive_minimum, true, true);
+                if constexpr (c.has<maximum>()) bound(c.maximum, false, false);
+                if constexpr (c.has<exclusive_maximum>()) bound(c.exclusive_maximum, false, true);
+                const auto order = compare_bounds(n.low, n.high);
+                if (empty || std::is_gt(order) || (std::is_eq(order) && (n.low_open || n.high_open))) return {};
+                if constexpr ((c.bits & listing_settings) != 0)
+                {
+                    // an integer type equals a value of its own, and a double the double nearest to it
+                    const auto value_of = [](const json_scalar& s, bound_number& v) {
+                        if (s.kind != json_scalar::kind_t::number) return false;
+                        if constexpr (integral)
+                        {
+                            const auto step = integer_beyond(s.number, true, false);
+                            v = step.value;
+                            return step.exists && number_equal(v, s.number);
+                        }
+                        else
+                        {
+                            v = real_number(bound_to_double(s.number));
+                            return true;
+                        }
+                    };
+                    auto listed = n;
+                    listed.listed = true;
+                    for_each_listed<Level>(
+                        [&](const json_scalar& x, const json_scalar& y) {
+                            auto v = bound_number{};
+                            auto w = bound_number{};
+                            return value_of(x, v) && value_of(y, w) && number_equal(v, w);
+                        },
+                        [&](const json_scalar& s) {
+                            auto v = bound_number{};
+                            if (!value_of(s, v) || !has_number(n, v) || has_number(listed, v)) return;
+                            if (listed.count == bound_capacity)
+                                listed.extent = bound_extent::partial;
+                            else
+                                listed.points[listed.count++] = v;
+                        });
+                    if (listed.count == 0) return {};
+                    if (listed.extent == bound_extent::exact) return listed;
+                    n.extent = bound_extent::partial;
+                }
+                return n;
+            }
+        }
+
+        // The JSON values that a value of the type T reads with the settings of `Level`, a `node_schema` or
+        // `no_settings_level`, or more of them.  A struct, a map, a DOM value, a variant and a type of a caster
+        // of the user give only their kinds; a bound of the keys of a struct goes here.
+        template <typename T, typename Level>
+        consteval json_bound bound_of()
+        {
+            using U = std::remove_cv_t<T>;
+            constexpr bool settings = Level::node.constraints.bits != 0 || Level::node.combinators != 0 ||
+                                      Level::node.members != 0 || Level::node.closed;
+            const auto bound = [](json_bound b, bool described) { return described ? b : partial_bound(b); };
+            if constexpr (lists_json_text<Level>())
+                return partial_bound(bound_of<T, no_settings_level>());
+            else if constexpr (!reads_by_default<U>)
+                return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
+            else if constexpr (std::same_as<U, std::monostate> || std::same_as<U, std::nullptr_t>)
+            {
+                auto b = json_bound{};
+                b.null = settings ? bound_extent::partial : bound_extent::exact;
+                return b;
+            }
+            else if constexpr (is_std_optional<U>::value || nullable_value<U> || owning_pointer<U>)
+            {
+                auto b = json_bound{};
+                if constexpr (owning_pointer<U>)
+                    b = bound_of<typename is_owning_pointer<U>::value_type, Level>();
+                else
+                    b = bound_of<typename U::value_type, Level>();
+                // an empty value satisfies bounds, lengths and counts, but a listing, a predicate, `yyjson::matches`
+                // or a combinator may reject it
+                constexpr auto empty_satisfies = (number_settings | length_settings | count_settings) & ~listing_settings;
+                const bool exact = !owning_pointer<U> && level_within<Level>(empty_satisfies);
+                b.null = exact ? bound_extent::exact : bound_extent::partial;
+                return b;
+            }
+            else if constexpr (indirect_value<U>)
+                return bound_of<typename U::value_type, Level>();
+            else if constexpr (std::same_as<U, bool>)
+            {
+                auto b = json_bound{};
+                b.boolean = level_within<Level>(listing_settings) ? bound_extent::exact : bound_extent::partial;
+                b.booleans = listed_booleans<Level>();
+                if (b.booleans == 0) b.boolean = bound_extent::none;
+                return b;
+            }
+            else if constexpr (std::is_arithmetic_v<U>)
+            {
+                auto b = json_bound{};
+                b.number = arithmetic_bound<U, Level>();
+                return bound(b, level_within<Level>(number_settings));
+            }
+            else if constexpr (std::same_as<U, std::string> || std::same_as<U, std::string_view>)
+            {
+                auto b = json_bound{};
+                b.string = listed_strings<Level>();
+                return bound(b, level_within<Level>(listing_settings | length_settings));
+            }
+            else if constexpr (accepted_json_kinds<U, reader::const_value_ref>() == json_kind_array)
+            {
+                // the numbers of the elements, but not the elements
+                auto b = kinds_bound(json_kind_array);
+                constexpr auto r = level_counts<Level, false>();
+                b.array.counts = r;
+                if (r.high < r.low) b.array = {};
+                return b;
+            }
+            else
+                return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
+        }
+
+        // The settings of the alternative I of the union V, as `bound_of` takes them.
+        template <typename V, std::size_t I>
+        struct union_alternative_level
+        {
+            using type = no_settings_level;
+        };
+        template <typename V, std::size_t I>
+        requires constrained_union_alternative<V, I>
+        struct union_alternative_level<V, I>
+        {
+            using type = union_alternative_schema<V, I>;
+        };
+
+        // Of the alternatives of the `yyjson::one_of_variant` V: the bounds of the values that each one reads,
+        // whether two of them may read one value, and the first one whose values another one reads all of.
+        template <typename V>
+        struct one_of_relations
+        {
+            using traits = union_traits<std::remove_cv_t<V>>;
+            static constexpr std::size_t size = std::variant_size_v<V>;
+            static constexpr std::array<json_bound, size> bounds = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<json_bound, size>{
+                    bound_of<std::variant_alternative_t<Is, V>, typename union_alternative_level<V, Is>::type>()...};
+            }(std::make_index_sequence<size>{});
+
+            // The alternative before J that J contains or that contains J, as a pair of the contained one and the
+            // other one; each J is a constant evaluation of its own to stay within the limits of a compiler.
+            struct alternative_pair
+            {
+                std::size_t contained = size;
+                std::size_t container = size;
+            };
+            template <std::size_t J>
+            static constexpr alternative_pair contained_by_earlier = [] {
+                using A = typename traits::template alternative<J>;
+                for (std::size_t i = 0; i < J; ++i)
+                {
+                    if (bound_contains(bounds[i], bounds[J])) return alternative_pair{J, i};
+                    if (bound_contains(bounds[J], bounds[i])) return alternative_pair{i, J};
+                }
+                const auto same = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array<bool, J + 1>{std::same_as<typename traits::template alternative<Is>, A>...};
+                }(std::make_index_sequence<J + 1>{});
+                for (std::size_t i = 0; i < J; ++i)
+                    if (same[i]) return alternative_pair{J, i};
+                return alternative_pair{};
+            }();
+            static constexpr alternative_pair contained = []<std::size_t... Js>(std::index_sequence<Js...>) {
+                const auto pairs = std::array<alternative_pair, size>{contained_by_earlier<Js>...};
+                for (const auto& p : pairs)
+                    if (p.contained != size) return p;
+                return alternative_pair{};
+            }(std::make_index_sequence<size>{});
+
+            // `overlapping<J>[i]`: whether the alternatives i and J may both read a JSON value
+            template <std::size_t J>
+            static constexpr std::array<bool, size> overlapping = [] {
+                auto column = std::array<bool, size>{};
+                for (std::size_t i = 0; i < size; ++i) column[i] = i != J && !bounds_disjoint(bounds[i], bounds[J]);
+                return column;
+            }();
+            template <std::size_t J>
+            static constexpr bool overlaps_any = [] {
+                for (const bool b : overlapping<J>)
+                    if (b) return true;
+                return false;
+            }();
+        };
+
+        // The compile error of `check_one_of_bounds`, whose template arguments, which the compiler shows, are the
+        // indices of the alternatives.
+        template <std::size_t Contained, std::size_t Container>
+        struct one_of_alternative_contained
+        {
+            static_assert(Contained == Container,
+                          "an alternative of yyjson::one_of_variant reads only JSON values that another alternative "
+                          "reads, so it is never the only one to read a value; remove it or narrow the other one "
+                          "(the template arguments of one_of_alternative_contained are the indices of the "
+                          "alternative and the other one)");
+        };
+        // Fails to compile if an alternative of the `yyjson::one_of_variant` V reads only values that another one
+        // reads, and returns true otherwise.  It is checked where V is read or written, not where V is defined,
+        // where the types of its alternatives may be incomplete.
+        template <typename V>
+        consteval bool check_one_of_bounds()
+        {
+            using relations = one_of_relations<V>;
+            if constexpr (relations::contained.contained != relations::size)
+                (void)one_of_alternative_contained<relations::contained.contained, relations::contained.container>{};
+            return true;
+        }
+
         template <>
         inline constexpr dom_kind dom_kind_of<writer::value> = dom_kind::value;
         template <>
@@ -21481,6 +22286,7 @@ namespace yyjson
         {
         public:
             explicit variant_reread_guard(std::uint16_t) noexcept {}
+            variant_reread_guard(std::uint16_t, std::size_t) noexcept {}
             template <std::size_t I>
             [[nodiscard]] static constexpr bool stops_after() noexcept
             {
@@ -21507,6 +22313,22 @@ namespace yyjson
             {
                 auto n = std::size_t{0};
                 for (std::size_t i = 0; i < size; ++i) n += rereading[i] && (kinds[i] & kind) != 0;
+                if (n < 2) return;
+                if (variant_rereads > variant_reread_limit / n)
+                {
+                    n_ = 0;
+                    return;
+                }
+                variant_rereads *= n;
+                n_ = n;
+            }
+            // Counts `extra` more reads, of the alternative that a `yyjson::one_of_variant` selects, when one of
+            // the alternatives may read the value.
+            variant_reread_guard(std::uint16_t kind, std::size_t extra) noexcept
+            {
+                auto n = std::size_t{0};
+                for (std::size_t i = 0; i < size; ++i) n += rereading[i] && (kinds[i] & kind) != 0;
+                if (n != 0) n += extra;
                 if (n < 2) return;
                 if (variant_rereads > variant_reread_limit / n)
                 {
@@ -22013,6 +22835,48 @@ namespace yyjson
                 }
                 return rank(seen, call_closed, internal_tags);
             }
+
+        private:
+            // The keyed alternatives that reject a key that they do not know under any policies of the call and
+            // have no field that takes other keys, so that such a key proves that they fail.
+            static constexpr auto rejecting_alternatives = [] {
+                auto closed = std::array<bool, n>{key_list<Ts>::closable...};
+                for (std::size_t i = 0; i < n; ++i) closed[i] = closed[i] && alternative_closed[i];
+                return closed_by(closed);
+            }();
+
+        public:
+            // The keyed alternatives that fail for an object of the keys `seen` under `yyjson::reject_missing_keys`
+            // and their own policies: the object lacks a key that one requires, or has a key that one rejects.
+            static bit_array<size> schema_failures(const seen_keys& seen, const seen_keys& internal_tags) noexcept
+            {
+                auto result = bit_array<size>{};
+                for (std::size_t k = 0; k < size; ++k)
+                {
+                    if (!seen.covers(required[k]) ||
+                        (rejecting_alternatives.test(k) && seen.exceeds(accepted[k], internal_tags)))
+                        result.set(k);
+                }
+                return result;
+            }
+            // `schema_failures` for the JSON object `obj` of a document at `raw`.
+            template <typename Object>
+            static bit_array<size> object_schema_failures(const Object& obj, const void* raw)
+            {
+                auto seen = seen_keys{};
+                for (auto&& kv : obj)
+                {
+                    const auto i = matcher.find(kv.first, 0);
+                    if (i < key_count)
+                        seen.set(i);
+                    else if (!seen.test(key_count) && !internal_tag_key::contains(raw, kv.first))
+                        seen.set(key_count);
+                }
+                auto internal_tags = seen_keys{};
+                const auto note = [&](std::string_view key) { note_internal_tag(internal_tags, key); };
+                internal_tag_key::for_each_key(raw, note);
+                return schema_failures(seen, internal_tags);
+            }
         };
 
         template <union_variant V>
@@ -22233,6 +23097,162 @@ namespace yyjson
                     return (ranked.others_after(I) && ...);
             }
         };
+
+        // Whether the value that T reads may depend on the policies of the call even when the read succeeds under
+        // stricter ones: a `std::variant` and a `yyjson::any_of_variant` try their alternatives in an order that the
+        // policies change, and a caster of the user may read them.
+        template <typename T>
+        inline constexpr bool reads_by_policies =
+            caster_names_from_json<T> && !std::derived_from<caster<T>, builtin_caster>;
+        template <typename... Ts>
+        inline constexpr bool reads_by_policies<std::variant<Ts...>> = true;
+        template <typename... As>
+        inline constexpr bool reads_by_policies<any_of_variant<As...>> = true;
+        template <typename T>
+        struct policy_read_type_node;
+        template <typename... Us>
+        auto policy_read_type_nodes(type_list<read_type_node<Us>...>) -> type_list<policy_read_type_node<Us>...>;
+        template <typename T>
+        struct policy_read_type_node
+        {
+            using edges = decltype(policy_read_type_nodes(typename read_type_node<T>::edges{}));
+            static constexpr bool marked = reads_by_policies<T>;
+        };
+        template <typename T>
+        constexpr bool policy_sensitive = graph_search(&graph_node<policy_read_type_node<std::remove_cv_t<T>>>);
+
+        template <typename V>
+        [[noreturn]] CPPYYJSON_COLD void throw_one_of_matches(cast_target at, std::size_t i, std::size_t j)
+        {
+            throw_bad_cast_at(at, "the value matches the alternatives {} and {} of {}", i, j, type_name<V>());
+        }
+
+        // Reads a `yyjson::one_of_variant` V: counts the alternatives that read the value under the policies of
+        // their schema, `yyjson::reject_missing_keys` and `yyjson::reject_null_as_missing` with their own, and
+        // reads the only one that does under the policies of the call.
+        template <typename V, typename Base = variant_base_t<V>>
+        struct one_of_variant_cast;
+        template <typename V, typename... Ts>
+        struct one_of_variant_cast<V, std::variant<Ts...>>
+        {
+            static constexpr std::size_t size = sizeof...(Ts);
+            using key_ranking = untagged_key_ranking<V>;
+            using alternative_cast = untagged_variant_cast<V>;
+            template <typename Json>
+            using guard = variant_reread_guard<V, Json>;
+
+            // `overlap[j][i]`: whether the alternatives i and j may both read a JSON value
+            static constexpr auto overlap = []<std::size_t... Js>(std::index_sequence<Js...>) {
+                return std::array<std::array<bool, size>, size>{one_of_relations<V>::template overlapping<Js>...};
+            }(std::index_sequence_for<Ts...>{});
+            // whether a value read under the counting policies may differ from one read under those of the call
+            static constexpr bool sensitive = count_true<policy_sensitive<Ts>...> != 0;
+
+            // The policies under which the alternatives are counted.  A schema does not hold
+            // `yyjson::reject_duplicates`, so it applies only to the alternative that the count selects.
+            static constexpr std::uint8_t counting_policies = missing_keys_policy | null_as_missing_policy;
+
+            template <typename Json>
+            [[noreturn]] static void throw_no_match(const Json& json)
+            {
+                throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", type_name<V>());
+            }
+
+            // Reads the alternative I into `out`, or returns false if it does not read the value.
+            template <std::size_t I, typename Json>
+            static bool trial(const Json& json, std::optional<V>& out, const guard<Json>& rereads)
+            {
+                using T = std::variant_alternative_t<I, V>;
+                auto limit = std::exception_ptr();
+                try
+                {
+                    out.emplace(alternative_cast::template cast_alternative<I>(json));
+                    return true;
+                }
+                catch (const recursion_limit_error&)
+                {
+                    limit = std::current_exception();
+                }
+                catch (const std::bad_alloc&)
+                {
+                    limit = std::current_exception();
+                }
+                catch (...)
+                {
+                }
+                if (limit) std::rethrow_exception(limit);
+                if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                return false;
+            }
+            // Reads the alternative I, the only one that matches, under the policies of the call.
+            template <std::size_t I, typename Json>
+            static V select(const Json& json, const guard<Json>& rereads)
+            {
+                if (rereads.template stops_after<I>())
+                    throw_variant_reread_limit<V, std::variant_alternative_t<I, V>>();
+                try
+                {
+                    return alternative_cast::template cast_alternative<I>(json);
+                }
+                catch (const alternative_rejected&)
+                {
+                }
+                throw_no_match(json);
+            }
+
+            template <typename Json>
+            static V from_json(const Json& json)
+            {
+                constexpr auto kinds = std::array<std::uint16_t, size>{accepted_json_kinds<Ts, Json>()...};
+                const auto kind = json_kind_of(json);
+                const auto call = read_policies;
+                constexpr auto counting = counting_policies;
+                const bool reuse = !sensitive && (call & ~counting) == 0;
+                const auto rereads = guard<Json>(kind, reuse ? 0 : 1);
+                // the alternatives that the keys of an object prove to fail
+                auto failing = bit_array<size>{};
+                if constexpr (json_value_of_document<Json> && key_ranking::size != 0)
+                {
+                    if (kind == json_kind_object)
+                    {
+                        const void* const raw = dependent_t<writer::detail::json_value_access, Json>::get(json);
+                        const auto failures = key_ranking::object_schema_failures(*json.as_object(), raw);
+                        for (std::size_t k = 0; k < key_ranking::size; ++k)
+                        {
+                            if (failures.test(k)) failing.set(key_ranking::alternatives[k]);
+                        }
+                    }
+                }
+                auto value = std::optional<V>();
+                auto other = std::optional<V>();
+                auto first = size;
+                {
+                    const auto scope = exact_policy_scope(counting);
+                    for (std::size_t i = 0; i < size; ++i)
+                    {
+                        if ((kinds[i] & kind) == 0 || failing.test(i) || (first != size && !overlap[first][i]))
+                            continue;
+                        if (!tables<Json>::trials[i](json, first == size ? value : other, rereads)) continue;
+                        if (first != size) throw_one_of_matches<V>(target_of(json), first, i);
+                        first = i;
+                    }
+                }
+                if (first == size) throw_no_match(json);
+                if (reuse) return std::move(*value);
+                return tables<Json>::selects[first](json, rereads);
+            }
+
+        private:
+            template <typename Json, typename Is = std::index_sequence_for<Ts...>>
+            struct tables;
+            template <typename Json, std::size_t... Is>
+            struct tables<Json, std::index_sequence<Is...>>
+            {
+                static constexpr std::array<bool (*)(const Json&, std::optional<V>&, const guard<Json>&), size> trials{
+                    &trial<Is, Json>...};
+                static constexpr std::array<V (*)(const Json&, const guard<Json>&), size> selects{&select<Is, Json>...};
+            };
+        };
     }  // namespace detail
 
     template <typename... Ts>
@@ -22357,6 +23377,55 @@ namespace yyjson
                  (detail::variant_alternative_writable<detail::alternative_type_t<As>, V> && ...)
         static void to_json(writer::value_ref& val, V&& t, Args...)
         {
+            std::visit(
+                [&val](auto&& v) {
+                    if constexpr (sizeof...(Args) != 0)
+                        val = std::pair<decltype(v), copy_string_t>(std::move(v), copy_string);
+                    else
+                        val = std::move(v);
+                },
+                detail::as_std_variant(std::move(t)));
+        }
+    };
+
+    // A union of exactly one match reads the only alternative that reads the value under the policies of its
+    // schema, and then reads it under the policies of the call.  It is written as the alternative that it holds.
+    template <typename... As>
+    struct caster<one_of_variant<As...>> : detail::builtin_caster
+    {
+        using V = one_of_variant<As...>;
+
+        template <typename Json>
+        requires (castable<Json, detail::alternative_type_t<As>> && ...)
+        static V from_json(const Json& json)
+        {
+            static_assert(!detail::internally_tagged<V>);
+            static_assert(detail::check_one_of_bounds<V>());
+            return detail::one_of_variant_cast<V>::from_json(json);
+        }
+
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 (detail::variant_alternative_writable<detail::alternative_type_t<As>, V> && ...)
+        static void to_json(writer::value_ref& val, const V& t, Args...)
+        {
+            static_assert(detail::check_one_of_bounds<V>());
+            std::visit(
+                [&val](const auto& v) {
+                    if constexpr (sizeof...(Args) != 0)
+                        val = std::pair<decltype(v), copy_string_t>(v, copy_string);
+                    else
+                        val = v;
+                },
+                detail::as_std_variant(t));
+        }
+
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 (detail::variant_alternative_writable<detail::alternative_type_t<As>, V> && ...)
+        static void to_json(writer::value_ref& val, V&& t, Args...)
+        {
+            static_assert(detail::check_one_of_bounds<V>());
             std::visit(
                 [&val](auto&& v) {
                     if constexpr (sizeof...(Args) != 0)
@@ -22882,6 +23951,10 @@ namespace yyjson
         };
         template <typename... As>
         struct is_variant<yyjson::any_of_variant<As...>> : std::true_type
+        {
+        };
+        template <typename... As>
+        struct is_variant<yyjson::one_of_variant<As...>> : std::true_type
         {
         };
 
@@ -28664,6 +29737,22 @@ namespace yyjson
                 ~policy_guard() { r_.policies_ = outer_; }
             };
 
+            // Sets the read policies of the reader to `policies` until it ends.
+            class exact_policy_guard
+            {
+                direct_reader& r_;
+                std::uint8_t outer_;
+
+            public:
+                exact_policy_guard(direct_reader& r, std::uint8_t policies) noexcept : r_(r), outer_(r.policies_)
+                {
+                    r.policies_ = policies;
+                }
+                exact_policy_guard(const exact_policy_guard&) = delete;
+                exact_policy_guard& operator=(const exact_policy_guard&) = delete;
+                ~exact_policy_guard() { r_.policies_ = outer_; }
+            };
+
         private:
             // Adds the key of the tag of the object at `object` to `tags_` until it ends.
             class tag_guard
@@ -29608,6 +30697,11 @@ namespace yyjson
             template <typename T, typename Make>
             void read_untagged_variant(Make&& make)
             {
+                if constexpr (yyjson::detail::is_one_of_variant<std::remove_cv_t<T>>)
+                {
+                    read_one_of_variant<T>(make);
+                    return;
+                }
                 const char* const start = cur_;
                 const auto kind = kind_at();
                 if constexpr (partial_number_alternative<T>())
@@ -29635,6 +30729,101 @@ namespace yyjson
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
                 if (!found) fail(mismatch::value, name<T>, start);
+            }
+
+            // Reads the value at `cur_` into the `yyjson::one_of_variant` T as `one_of_variant_cast` does, when the
+            // first alternative that reads it under the policies of the call and of counting is the only one that
+            // may read it.  It leaves the value to a document otherwise.
+            template <typename T, typename Make>
+            void read_one_of_variant(Make& make)
+            {
+                using V = std::remove_cv_t<T>;
+                using cast = yyjson::detail::one_of_variant_cast<V>;
+                using ranking = yyjson::detail::untagged_key_ranking<V>;
+                constexpr auto size = std::variant_size_v<V>;
+                static_assert(yyjson::detail::check_one_of_bounds<V>());
+                if constexpr (cast::sensitive)
+                    unsupported();
+                else
+                {
+                    const char* const start = cur_;
+                    const auto kind = kind_at();
+                    constexpr auto counting = cast::counting_policies;
+                    const bool proven = (policies_ & ~counting) == 0;
+                    auto failing = yyjson::detail::bit_array<size>{};
+                    if constexpr (ranking::size != 0)
+                    {
+                        if (kind == yyjson::detail::json_kind_object)
+                        {
+                            const auto seen = scan_members<ranking>();
+                            cur_ = start;
+                            const auto failures = ranking::schema_failures(seen, internal_tags_of<ranking>(start));
+                            for (std::size_t k = 0; k < ranking::size; ++k)
+                            {
+                                if (failures.test(k)) failing.set(ranking::alternatives[k]);
+                            }
+                        }
+                    }
+                    for (std::size_t i = 0; i < size; ++i)
+                    {
+                        if ((alternative_kinds<T>[i] & kind) == 0) failing.set(i);
+                    }
+                    const auto rereads = yyjson::detail::variant_reread_guard<V, const_value_ref>(kind);
+                    const auto scope = exact_policy_guard(*this, static_cast<std::uint8_t>(policies_ | counting));
+                    // whether an alternative after I that the value may not fail may read it too
+                    const auto overlapped = [&](std::size_t i) {
+                        for (auto j = i + 1; j < size; ++j)
+                        {
+                            if (cast::overlap[i][j] && !failing.test(j)) return true;
+                        }
+                        return false;
+                    };
+                    const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return (
+                            (!failing.test(Is) && read_matching<T, Is>(make, start, proven, overlapped(Is), rereads)) ||
+                            ...);
+                    }(std::make_index_sequence<size>{});
+                    if (!found) fail();
+                }
+            }
+
+            // Reads the value at `start` into the alternative I of the `yyjson::one_of_variant` T, or gives false
+            // if it does not read it.  A failure under policies other than those of counting proves nothing, and a
+            // read proves nothing if an `overlapped` alternative after I may read the value too.
+            template <typename T, std::size_t I, typename Make, typename Guard>
+            bool read_matching(Make& make, const char* start, bool proven, bool overlapped, const Guard& rereads)
+            {
+                if (read_alternative<T, I>(make, start, false, rereads))
+                {
+                    if (overlapped) unsupported();
+                    return true;
+                }
+                if (!proven) unsupported();
+                return false;
+            }
+
+            // Notes the keys of the object at `cur_` as `rank_members` does, and moves past the object.
+            template <typename Ranking>
+            typename Ranking::seen_keys scan_members()
+            {
+                const char* const open = cur_;
+                auto seen = typename Ranking::seen_keys{};
+                auto hint = std::size_t{0};
+                read_members([&] {
+                    const char* const key_at = cur_;
+                    auto i = expected_field(Ranking::matcher, hint);
+                    if (i == Ranking::key_count) i = find_field(Ranking::matcher, hint);
+                    if (i < Ranking::key_count)
+                    {
+                        seen.set(i);
+                        hint = i + 1;
+                    }
+                    else
+                        note_unknown_key<Ranking>(seen, open, key_at);
+                    read_colon();
+                    skip_brackets();
+                });
+                return seen;
             }
 
             // Ranks the keys of the object at `cur_` as `untagged_key_ranking` does, and moves past the object.

@@ -4532,6 +4532,255 @@ TEST(Constraints, UnionDomValues)
     expect_alternative<ValueOrText>(R"("a")", 0);
 }
 
+// The alternatives of `yyjson::one_of_variant`
+struct OneOfX
+{
+    int x = 0;
+    bool operator==(const OneOfX&) const = default;
+};
+struct OneOfXZ
+{
+    int x = 0;
+    int z = 0;
+    bool operator==(const OneOfXZ&) const = default;
+};
+struct OneOfMaybeX
+{
+    std::optional<int> x;
+    bool operator==(const OneOfMaybeX&) const = default;
+};
+struct OneOfY
+{
+    int y = 0;
+    bool operator==(const OneOfY&) const = default;
+};
+struct OneOfClosedX
+{
+    int x = 0;
+    bool operator==(const OneOfClosedX&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneOfClosedX> = yyjson::annotate(yyjson::additional_properties(false));
+// a caster of the user that takes only a value of the mutable document, which the read gives a copy of
+struct OneOfOtherCode
+{
+    int n = 0;
+};
+template <>
+struct yyjson::caster<OneOfOtherCode>
+{
+    static OneOfOtherCode from_json(const yyjson::writer::const_value_ref& json)
+    {
+        if (!json.is_string()) throw yyjson::bad_cast("not a string");
+        return {1};
+    }
+};
+// a range and a map of this file that such a caster reads in place of their elements and values
+struct OtherCodeRange : std::vector<int>
+{
+};
+template <>
+struct yyjson::caster<OtherCodeRange>
+{
+    static OtherCodeRange from_json(const yyjson::writer::const_value_ref& json)
+    {
+        if (!json.is_array()) throw yyjson::bad_cast("not an array");
+        auto result = OtherCodeRange();
+        result.push_back(7);
+        return result;
+    }
+};
+struct OtherCodeMap : std::map<std::string, int>
+{
+};
+template <>
+struct yyjson::caster<OtherCodeMap>
+{
+    static OtherCodeMap from_json(const yyjson::writer::const_value_ref& json)
+    {
+        if (!json.is_object()) throw yyjson::bad_cast("not an object");
+        auto result = OtherCodeMap();
+        result.emplace("k", 7);
+        return result;
+    }
+};
+using OneOfInts = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
+inline bool one_of_has_value(const yyjson::nullable<int>& v) { return v.has_value(); }
+inline constexpr auto one_of_present = yyjson::satisfies<one_of_has_value>;
+inline constexpr auto one_of_object = yyjson::matches<yyjson::object>;
+struct OneOfFields
+{
+    OneOfInts n;
+    yyjson::one_of_variant<OneOfX, std::string> p;
+    bool operator==(const OneOfFields&) const = default;
+};
+
+namespace
+{
+    // the message of a value that the alternatives i and j of V both read
+    template <typename V>
+    std::string read_by_two(std::size_t i, std::size_t j)
+    {
+        return std::format("the value matches the alternatives {} and {} of {}", i, j, yyjson::detail::type_name<V>());
+    }
+
+    // reading `json` into V under `policies` throws `bad_cast` with `message`, with and without a document
+    template <typename V, typename... Policies>
+    void expect_rejected_under(std::string_view json, std::string_view message, Policies... policies)
+    {
+        const auto check = [&](const yyjson::bad_cast& e) {
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        };
+        check(bad_cast_of([&] { (void)yyjson::read<V>(json, policies...); }));
+        check(bad_cast_of([&] { (void)yyjson::read(json).cast<V>(policies...); }));
+    }
+
+    // whether an alternative of the `yyjson::one_of_variant` V reads only values that another one reads
+    template <typename V>
+    constexpr bool one_of_contained =
+        yyjson::detail::one_of_relations<V>::contained.contained != std::variant_size_v<V>;
+    // whether the alternatives I and J of V may both read a value
+    template <typename V, std::size_t I, std::size_t J>
+    constexpr bool one_of_overlapping = yyjson::detail::one_of_relations<V>::template overlapping<J>[I];
+}  // namespace
+
+TEST(Constraints, OneOfReading)
+{
+    // the struct that misses a key without a default under yyjson::reject_missing_keys does not match
+    using XOrXZ = yyjson::one_of_variant<OneOfX, OneOfXZ>;
+    expect_accepted<XOrXZ>(R"({"x":1})", XOrXZ(OneOfX{1}));
+    // both match an object of both keys, since OneOfX takes other keys, and the policies of the call do not
+    // change the match
+    expect_rejected<XOrXZ>(R"({"x":1,"z":2,"w":0})", read_by_two<XOrXZ>(0, 1), "");
+    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})", read_by_two<XOrXZ>(0, 1));
+    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})", read_by_two<XOrXZ>(0, 1), yyjson::reject_unknown_keys);
+    // an alternative may match with none of its keys
+    using MaybeXOrY = yyjson::one_of_variant<OneOfMaybeX, OneOfY>;
+    expect_rejected<MaybeXOrY>(R"({"y":1})", read_by_two<MaybeXOrY>(0, 1), "");
+    expect_accepted<MaybeXOrY>(R"({"x":1})", MaybeXOrY(OneOfMaybeX{1}));
+    expect_accepted<MaybeXOrY>("{}", MaybeXOrY(OneOfMaybeX{}));
+    // a closed struct does not match an object of other keys
+    using ClosedOrXZ = yyjson::one_of_variant<OneOfClosedX, OneOfXZ>;
+    expect_accepted<ClosedOrXZ>(R"({"x":1,"z":2})", ClosedOrXZ(OneOfXZ{1, 2}));
+    expect_accepted<ClosedOrXZ>(R"({"x":1})", ClosedOrXZ(OneOfClosedX{1}));
+    expect_rejected<ClosedOrXZ>(R"({"z":1})", read_by_none<ClosedOrXZ>(), "");
+
+    // the policies of the call apply to the alternative that matches
+    using XOrText = yyjson::one_of_variant<OneOfX, std::string>;
+    expect_alternative<XOrText>(R"({"x":1,"k":2})", 0);
+    EXPECT_THROW((void)yyjson::read<XOrText>(R"({"x":1,"k":2})", yyjson::reject_unknown_keys), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"x":1,"k":2})").cast<XOrText>(yyjson::reject_unknown_keys), yyjson::bad_cast);
+    expect_alternative<XOrText>(R"({"x":1})", 0, yyjson::reject_unknown_keys);
+    expect_alternative<XOrText>(R"("a")", 1, yyjson::reject_unknown_keys);
+    // a schema does not reject a repeated element or key, so yyjson::reject_duplicates does not change the count
+    using SetOrList = yyjson::one_of_variant<std::set<int>, std::vector<int>>;
+    expect_rejected_under<SetOrList>("[1,1]", read_by_two<SetOrList>(0, 1), yyjson::reject_duplicates);
+    EXPECT_THROW((void)yyjson::read<XOrText>(R"({"x":1,"x":2})", yyjson::reject_duplicates), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"x":1,"x":2})").cast<XOrText>(yyjson::reject_duplicates), yyjson::bad_cast);
+
+    // the settings of an alternative decide whether it matches
+    using SignedX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::field("x", yyjson::minimum(0))>,
+                                           yyjson::alt<OneOfX, yyjson::field("x", yyjson::maximum(-1))>>;
+    expect_alternative<SignedX>(R"({"x":1})", 0);
+    expect_alternative<SignedX>(R"({"x":-1})", 1);
+    expect_accepted<OneOfInts>("-1", OneOfInts(std::in_place_index<1>, -1));
+    // the reader without a document leaves a value to it when a later alternative may read it too
+    expect_accepted<OneOfInts>("11", OneOfInts(std::in_place_index<0>, 11), false);
+    expect_rejected<OneOfInts>("5", read_by_two<OneOfInts>(0, 1), "");
+    expect_rejected<OneOfInts>("1.5", read_by_none<OneOfInts>(), "");
+    expect_rejected<OneOfFields>(R"({"n":5,"p":"a"})", read_by_two<OneOfInts>(0, 1), "/n");
+
+    // read_into and merge_into replace the value
+    auto fields = OneOfFields{OneOfInts(std::in_place_index<0>, 20), OneOfX{1}};
+    yyjson::merge_into(R"({"p":{"x":5}})", fields);
+    EXPECT_EQ(fields.p, (yyjson::one_of_variant<OneOfX, std::string>(OneOfX{5})));
+    yyjson::read_into(R"({"n":-2,"p":"s"})", fields);
+    EXPECT_EQ(fields, (OneOfFields{OneOfInts(std::in_place_index<1>, -2), std::string("s")}));
+
+    // written as the alternative held, in both writers
+    EXPECT_EQ(std::string(yyjson::write(fields)), R"({"n":-2,"p":"s"})");
+    EXPECT_EQ(std::string(yyjson::object(fields).write()), R"({"n":-2,"p":"s"})");
+    fields.p = OneOfX{3};
+    EXPECT_EQ(std::string(yyjson::write(fields)), R"({"n":-2,"p":{"x":3}})");
+    EXPECT_EQ(std::string(yyjson::value(OneOfInts(std::in_place_index<0>, 5)).write()), "5");
+}
+
+TEST(Constraints, OneOfBounds)
+{
+    // alternatives that read no value in common are not both read
+    using Signs = yyjson::one_of_variant<yyjson::alt<int, yyjson::maximum(0)>, yyjson::alt<int, yyjson::minimum(1)>>;
+    static_assert(!one_of_overlapping<Signs, 0, 1> && !one_of_contained<Signs>);
+    expect_accepted<Signs>("-3", Signs(std::in_place_index<0>, -3));
+    expect_accepted<Signs>("5", Signs(std::in_place_index<1>, 5));
+    using Kinds = yyjson::one_of_variant<int, std::string, bool, std::vector<int>, std::nullptr_t>;
+    static_assert(!one_of_overlapping<Kinds, 0, 1> && !one_of_overlapping<Kinds, 1, 3> && !one_of_contained<Kinds>);
+    expect_accepted<Kinds>("[1]", Kinds(std::vector{1}));
+    expect_accepted<Kinds>("true", Kinds(true));
+    using Words = yyjson::one_of_variant<yyjson::alt<std::string, yyjson::enum_("a", "b")>,
+                                         yyjson::alt<std::string, yyjson::min_length(2)>>;
+    static_assert(!one_of_overlapping<Words, 0, 1>);
+    expect_accepted<Words>(R"("ab")", Words(std::in_place_index<1>, "ab"));
+    using Lists = yyjson::one_of_variant<yyjson::alt<std::vector<int>, yyjson::max_items(2)>,
+                                         yyjson::alt<std::vector<int>, yyjson::min_items(3)>>;
+    static_assert(!one_of_overlapping<Lists, 0, 1>);
+    expect_accepted<Lists>("[1,2,3]", Lists(std::in_place_index<1>, std::vector{1, 2, 3}));
+    // a combinator may reject the empty value of a nullable alternative
+    using NonNull = yyjson::one_of_variant<yyjson::alt<yyjson::nullable<int>, yyjson::not_(yyjson::const_(nullptr))>,
+                                           std::nullptr_t>;
+    static_assert(!one_of_contained<NonNull>);
+    static_assert(!one_of_contained<yyjson::one_of_variant<yyjson::alt<yyjson::nullable<int>, &one_of_present>,
+                                                           std::nullptr_t>>);
+    static_assert(!one_of_contained<yyjson::one_of_variant<
+                      yyjson::alt<yyjson::nullable<yyjson::object>, &one_of_object>, std::nullptr_t>>);
+    static_assert(one_of_contained<
+                  yyjson::one_of_variant<yyjson::alt<yyjson::nullable<int>, yyjson::minimum(0)>, std::nullptr_t>>);
+    expect_alternative<NonNull>("null", 1);
+    expect_alternative<NonNull>("1", 0);
+    using Owned = yyjson::one_of_variant<std::unique_ptr<int>, std::string>;
+    expect_alternative<Owned>("1", 0);
+    expect_alternative<Owned>(R"("a")", 1);
+
+    // alternatives that may read a value in common are counted
+    static_assert(one_of_overlapping<OneOfInts, 0, 1> && !one_of_contained<OneOfInts>);
+    using Wide = yyjson::one_of_variant<std::int64_t, std::uint64_t>;
+    static_assert(one_of_overlapping<Wide, 0, 1> && !one_of_contained<Wide>);
+    expect_accepted<Wide>("-1", Wide(std::int64_t{-1}), false);
+    expect_accepted<Wide>("18446744073709551615", Wide(std::uint64_t{18446744073709551615u}));
+    expect_rejected<Wide>("1", read_by_two<Wide>(0, 1), "");
+    using Steps =
+        yyjson::one_of_variant<yyjson::alt<int, yyjson::multiple_of(2)>, yyjson::alt<int, yyjson::multiple_of(3)>>;
+    static_assert(one_of_overlapping<Steps, 0, 1> && !one_of_contained<Steps>);
+    expect_accepted<Steps>("4", Steps(std::in_place_index<0>, 4), false);
+    expect_rejected<Steps>("6", read_by_two<Steps>(0, 1), "");
+
+    // an alternative whose values another reads all of is a compile error
+    static_assert(one_of_contained<yyjson::one_of_variant<int, double>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<int, int>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfX>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<std::nullptr_t, std::optional<int>>>);
+    static_assert(one_of_contained<
+                  yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>,
+                                         yyjson::alt<int, yyjson::minimum(0), yyjson::maximum(5)>>>);
+    static_assert(
+        one_of_contained<yyjson::one_of_variant<yyjson::alt<std::string, yyjson::enum_("a", "b")>, std::string>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<yyjson::alt<std::string, &union_id_pattern>, std::string>>);
+    using Numbers = yyjson::detail::one_of_relations<yyjson::one_of_variant<std::string, int, double>>;
+    static_assert(Numbers::contained.contained == 1 && Numbers::contained.container == 2);
+    // the analysis does not prove what a setting that it does not know reads
+    static_assert(!one_of_contained<
+                  yyjson::one_of_variant<std::vector<int>, yyjson::alt<std::vector<int>, yyjson::max_items(2)>>>);
+    // a caster of the user that takes a value of the other document reads any value
+    using OtherOrString = yyjson::one_of_variant<OneOfOtherCode, std::string>;
+    static_assert(one_of_overlapping<OtherOrString, 0, 1>);
+    expect_rejected_under<OtherOrString>(R"("a")", read_by_two<OtherOrString>(0, 1));
+    expect_alternative<std::variant<OneOfOtherCode, std::string>>(R"("a")", 0);
+    // such a caster of a range or a map reads values that the elements or the values cannot
+    expect_alternative<std::variant<OtherCodeRange, std::vector<std::string>>>(R"(["x"])", 0);
+    expect_alternative<std::variant<OtherCodeMap, std::map<std::string, std::string>>>(R"({"a":"x"})", 0);
+    expect_alternative<yyjson::any_of_variant<OtherCodeRange, std::vector<std::string>>>(R"(["x"])", 0);
+    expect_alternative<yyjson::any_of_variant<OtherCodeMap, std::map<std::string, std::string>>>(R"({"a":"x"})", 0);
+}
+
 #if defined(__cpp_lib_define_static)
 TEST(Constraints, UnionStringViewSettings)
 {
@@ -4539,6 +4788,12 @@ TEST(Constraints, UnionStringViewSettings)
     using Id = yyjson::any_of_variant<yyjson::alt<std::string, yyjson::pattern(union_id_regex)>, int>;
     expect_alternative<Id>(R"("abc")", 0);
     EXPECT_THROW((void)yyjson::read<Id>(R"("ABC")"), yyjson::bad_cast);
+    using OneId = yyjson::one_of_variant<yyjson::alt<std::string, yyjson::pattern(union_id_regex)>,
+                                         yyjson::alt<std::string, yyjson::max_length(2)>>;
+    expect_alternative<OneId>(R"("abc")", 0);
+    expect_alternative<OneId>(R"("AB")", 1);
+    EXPECT_THROW((void)yyjson::read<OneId>(R"("ab")"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"("ab")").cast<OneId>(), yyjson::bad_cast);
 }
 #endif
 

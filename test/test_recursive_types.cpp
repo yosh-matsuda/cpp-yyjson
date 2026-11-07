@@ -380,6 +380,41 @@ struct TrUnionMap
 };
 template <>
 inline constexpr auto yyjson::annotations<TrUnionMap> = yyjson::annotate(yyjson::transparent);
+// the alternatives of `yyjson::one_of_variant` hold the struct again, told apart by their keys or not at all
+struct OneExpr;
+struct OneAdd
+{
+    std::vector<OneExpr> add;
+    bool operator==(const OneAdd&) const = default;
+};
+struct OneMul
+{
+    std::vector<OneExpr> mul;
+    bool operator==(const OneMul&) const = default;
+};
+struct OneExpr
+{
+    yyjson::one_of_variant<std::int64_t, OneAdd, OneMul> value;
+    bool operator==(const OneExpr&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneExpr> = yyjson::annotate(yyjson::transparent);
+struct OneBoth;
+struct OneLeft
+{
+    std::vector<OneBoth> args;
+    bool operator==(const OneLeft&) const = default;
+};
+struct OneRight
+{
+    std::vector<OneBoth> args;
+    bool operator==(const OneRight&) const = default;
+};
+struct OneBoth
+{
+    yyjson::one_of_variant<OneLeft, OneRight> op;
+    bool operator==(const OneBoth&) const = default;
+};
 static_assert(yyjson::readable<TrNest> && yyjson::writable<TrNest>);
 static_assert(yyjson::readable<TrVariantMap> && yyjson::writable<TrVariantMap>);
 static_assert(yyjson::readable<TrUnionMap> && yyjson::writable<TrUnionMap>);
@@ -648,6 +683,11 @@ TEST(Reader, RecursiveTransparent)
     // a string longer than the alternative allows reads into no alternative at any level
     EXPECT_THROW((void)yyjson::read<TrUnion>(R"("abcd")"), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read(R"("abcd")").cast<TrUnion>(), yyjson::bad_cast);
+    expect_recursive<OneExpr>(R"({"add":[1,{"mul":[2,{"add":[]}]}]})");
+    EXPECT_EQ(yyjson::read<OneExpr>(R"({"mul":[3]})").value.index(), 2);
+    // an object of both keys matches both structs
+    EXPECT_THROW((void)yyjson::read<OneExpr>(R"({"add":[],"mul":[]})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"add":[1],"mul":[]})").cast<OneExpr>(), yyjson::bad_cast);
 
     // an error is at the path of the value in the innermost struct
     for (const auto dom : {false, true})
@@ -728,6 +768,9 @@ TEST(Reader, RecursiveVariantLimit)
              nested(100, R"({"op":{"args":[)", R"({"op":{"args":1}})", "]}}"));
     read_all(std::type_identity<RecExpr>(),
              nested(5, R"({"op":{"args":[)", R"({"op":{"args":1}})", "]}}"));
+
+    // both alternatives of a yyjson::one_of_variant read the nested values at each level
+    read_all(std::type_identity<OneBoth>(), nested(100, R"({"op":{"args":[)", R"({"op":{"args":[]}})", "]}}"));
 
     // the second alternative is read after the first fails in up to 8 variants with 2 such alternatives each
     const auto tagged = [](std::size_t depth, std::string_view x) {

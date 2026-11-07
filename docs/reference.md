@@ -83,6 +83,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::nullable`](#yyjsonnullable)
     *   [`yyjson::indirect`](#yyjsonindirect)
     *   [`yyjson::any_of_variant`, `yyjson::alt`](#yyjsonany_of_variant-yyjsonalt)
+    *   [`yyjson::one_of_variant`](#yyjsonone_of_variant)
     *   [`yyjson::overloaded`](#yyjsonoverloaded)
 *   [Build configuration](#build-configuration)
     *   [Link-time optimization](#link-time-optimization)
@@ -1924,7 +1925,7 @@ inline constexpr /* unspecified */ one_of;
 
 See [Combining constraints](validation.md#combining-constraints) and [Conditions between fields](validation.md#conditions-between-fields).
 
-`yyjson::any_of` constrains a value. To choose the type of a value by constraints, use [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt).
+`yyjson::any_of` constrains a value. To choose the type of a value by constraints, use [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt) or [`yyjson::one_of_variant`](#yyjsonone_of_variant).
 
 ```cpp
 struct Contact
@@ -2606,6 +2607,34 @@ using Id = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>, yyjson::
 
 auto id = yyjson::read<Id>(R"("ab")");  // -> holds "ab", id.index() is 1
 yyjson::write(Id(std::in_place_index<0>, 7));  // -> 7
+```
+
+### `yyjson::one_of_variant`
+
+A variant whose value must match exactly one alternative, as `oneOf` of JSON Schema. See [Exactly one alternative](conversions.md#exactly-one-alternative).
+
+```cpp
+template <typename... As>
+struct one_of_variant : std::variant</* T of each A */...>
+{
+    using variant_type = std::variant</* T of each A */...>;
+    using variant_type::variant_type;
+    using variant_type::operator=;
+};
+
+// std::variant_size and std::variant_alternative of one_of_variant<As...> are those of variant_type
+```
+
+*   The template arguments, `yyjson::alt`, the write and the compile errors are those of [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt).
+*   An alternative matches a value if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. The policies of the call do not change the match.
+*   The read gives the only alternative that matches, and applies the policies of the call to it. If no alternative or two alternatives match, the read throws `yyjson::bad_cast`.
+*   An alternative can read only values that another alternative reads. When the library proves it, the alternative is a compile error. The library compares null, booleans, numbers, strings and arrays by their bounds, and other types by their kinds of JSON values. It does not compare the elements of arrays.
+
+```cpp
+using Range = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
+
+yyjson::read<Range>("-1").index();  // -> 1
+yyjson::read<Range>("5");           // throws yyjson::bad_cast: alternatives 0 and 1 match
 ```
 
 ### `yyjson::overloaded`

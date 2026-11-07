@@ -299,7 +299,7 @@ Give a pointer to a `constexpr` variable that holds such a setting instead: `yyj
 
 These are compile errors:
 
-*   `yyjson::alt` at any position other than a template argument of `yyjson::any_of_variant`, and `yyjson::alt` in `yyjson::alt`.
+*   `yyjson::alt` at any position other than a template argument of `yyjson::any_of_variant` or `yyjson::one_of_variant`, and `yyjson::alt` in `yyjson::alt`.
 *   A setting of the key of a field, such as `yyjson::required`, directly in `yyjson::alt`.
 *   A setting that declares a member, such as `yyjson::rename`, in `yyjson::field` in `yyjson::alt`.
 *   `yyjson::field` in an alternative where a field of `T` does not take it, such as `yyjson::field` that names no field of a struct `T`.
@@ -307,6 +307,59 @@ These are compile errors:
 *   [`yyjson::internal_tag` and `yyjson::adjacent_tag`](#tagged-variants) on a `yyjson::any_of_variant`.
 
 The setting [`yyjson::any_of`](reference.md#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) is a different feature. It constrains the value of one field with subschemas, and does not choose a type.
+
+### Exactly one alternative
+
+`yyjson::one_of_variant<As...>` is a variant of the same template arguments as `yyjson::any_of_variant`, as `oneOf` of JSON Schema. A JSON value must match exactly one alternative. The type, its storage, `yyjson::alt`, the write, `yyjson::read_into` and `yyjson::merge_into` are the same as for `yyjson::any_of_variant`.
+
+```cpp
+struct Point
+{
+    int x = 0;
+};
+struct Box
+{
+    int x = 0;
+    int z = 0;
+};
+using Shape = yyjson::one_of_variant<Point, Box>;
+
+yyjson::read<Shape>(R"({"x":1})").index();  // -> 0: Box has no "z"
+yyjson::read<Shape>(R"({"x":1,"z":2})");
+// throws yyjson::bad_cast: the value matches the alternatives 0 and 1 of yyjson::one_of_variant<Point, Box> ...
+```
+
+A read counts the alternatives that match the JSON value. The schema of the type decides the count, and the policies of the call do not change it:
+
+*   An alternative matches if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. Thus a field without a default must be in the object. A struct that takes other keys matches an object with more keys, also when the call gives `yyjson::reject_unknown_keys`.
+*   If exactly one alternative matches, the read gives that alternative. The read then applies the policies of the call to it, and throws `yyjson::bad_cast` if they reject the value.
+*   If no alternative matches, the read throws `yyjson::bad_cast` with `... is not constructible from JSON`. If two alternatives match, the read throws `yyjson::bad_cast` with the indexes of the two.
+
+A struct can match an object that has none of its keys, if all its fields have defaults:
+
+```cpp
+struct Named
+{
+    std::optional<std::string> name;
+};
+struct Sized
+{
+    int size = 0;
+};
+yyjson::read<yyjson::one_of_variant<Named, Sized>>(R"({"size":1})");  // throws: Named matches too
+```
+
+The library compares the alternatives of null, booleans, numbers, strings and arrays when it compiles the type. It uses the kinds of JSON values and the bounds and listed values of numbers and strings. It also uses the lengths of strings and the numbers of items of arrays. Other settings, such as `yyjson::pattern` and `yyjson::multiple_of`, can reject any value for the comparison. Structs and maps are compared only by their kinds of JSON values.
+
+*   An alternative that reads only values that another alternative reads can never be the only match. It is a compile error when the comparison proves it. Examples are `yyjson::one_of_variant<int, double>` and two alternatives of the same type and settings. The comparison does not compare the elements of arrays and the members of objects. Thus it does not find all such alternatives of arrays, structs and maps. The error comes from the code that reads or writes the type.
+*   The read does not try an alternative if the comparison proves that no value can match both it and the alternative that matched first.
+
+```cpp
+using Range = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
+yyjson::read<Range>("-1").index();  // -> 1
+yyjson::read<Range>("11").index();  // -> 0
+yyjson::read<Range>("5");           // throws yyjson::bad_cast: 5 matches both alternatives
+```
 
 ## Structs
 
