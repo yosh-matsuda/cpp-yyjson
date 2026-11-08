@@ -306,7 +306,7 @@ A read without a policy checks no key. With a policy, `read<T>`, `read_into` and
 
 ## Constraints
 
-A field can restrict the values that it reads, as a schema does. Give the constraints to the field in `yyjson::field`, or write them on the member as [C++26 annotations](conversions.md#c26-annotations). A read of a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#conversion-errors) of the value:
+A field can restrict the values that it reads, as a schema does. Give the constraints to the field in `yyjson::field`, or to the JSON key of the field in [`yyjson::property`](reference.md#yyjsonproperty). With C++26, you can also write them on the member as [annotations](conversions.md#c26-annotations). A read of a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#conversion-errors) of the value:
 
 ```cpp
 #include "cpp_yyjson.hpp"
@@ -566,7 +566,10 @@ bool b = yyjson::matches<Point>(doc);  // -> true
 
 ### Conditions between fields
 
-A struct takes `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` as settings of its own. Their subschemas take `yyjson::field("key", s...)`, which gives the settings of the member `key`, as the keywords `properties` and `required` of JSON Schema do. `s` is `yyjson::required`, which needs the key, and the constraints of the value:
+A struct takes `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` as settings of its own. Their subschemas take two settings that name the keys of the object, as the keywords `properties` and `required` of JSON Schema do:
+
+*   `yyjson::property("key", s...)` gives the constraints `s` of the value of the key.
+*   `yyjson::required("key", ...)` needs the keys.
 
 ```cpp
 struct Contact
@@ -578,8 +581,8 @@ struct Contact
 };
 template <>
 inline constexpr auto yyjson::annotations<Contact> =
-    yyjson::annotate(yyjson::any_of(yyjson::field("name", yyjson::required), yyjson::field("id", yyjson::required)),
-                     yyjson::one_of(yyjson::field("email", yyjson::required), yyjson::field("phone", yyjson::required)));
+    yyjson::annotate(yyjson::any_of(yyjson::required("name"), yyjson::required("id")),
+                     yyjson::one_of(yyjson::required("email"), yyjson::required("phone")));
 
 struct Shipment
 {
@@ -588,13 +591,13 @@ struct Shipment
 };
 template <>
 inline constexpr auto yyjson::annotations<Shipment> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("method", yyjson::const_("post"))),
-    yyjson::then(yyjson::field("address", yyjson::required, yyjson::min_length(1)))));
+    yyjson::if_(yyjson::property("method", yyjson::const_("post"))),
+    yyjson::then(yyjson::required("address"), yyjson::property("address", yyjson::min_length(1)))));
 
 yyjson::read<Contact>(R"({"email":"a@example.com"})");
-// throws: Contact satisfies none of the subschemas of yyjson::any_of (line 1, column 1, pos 0)
+// throws: Contact is not constructible from JSON without all the keys of one of ["name"], ["id"] (line 1, column 1, pos 0)
 yyjson::read<Contact>(R"({"id":1,"email":"a","phone":"1"})");
-// throws: Contact satisfies more than one subschema of yyjson::one_of (line 1, column 1, pos 0)
+// throws: Contact is not constructible from JSON with all the keys of more than one of ["email"], ["phone"] (line 1, column 1, pos 0)
 yyjson::read<Shipment>(R"({"method":"post"})");
 // throws: Shipment is not constructible from JSON without the key "address", which yyjson::if_then_else requires (line 1, column 1, pos 0)
 yyjson::read<Shipment>(R"({"method":"post","address":""})");
@@ -603,20 +606,21 @@ yyjson::read<Shipment>(R"({"method":"post","address":""})");
 
 *   The key is the JSON key of the member, after a [`yyjson::rename`](conversions.md#json-keys).
 *   The object has a key when the read gets the key from the JSON. A value that a field has in `T()` does not count. A key with `null` counts when the type of the field can hold `null`, such as a `yyjson::nullable`, a pointer or a `std::variant` of `std::monostate`. Its empty value then satisfies the constraints, except `yyjson::const_` and `yyjson::enum_` without `nullptr`. A key with `null` that the read reads as a missing key counts as missing, as in [`null` in a `std::optional`](#null-in-a-stdoptional).
-*   `yyjson::field` without `yyjson::required` accepts an object without the key. Thus `yyjson::not_(yyjson::field("a", yyjson::minimum(5)))` rejects `{}`. Add `yyjson::required` to the `yyjson::field` to reject only an object that has the key with such a value.
+*   `yyjson::property` without `yyjson::required` accepts an object without the key. Thus `yyjson::not_(yyjson::property("a", yyjson::minimum(5)))` rejects `{}`. Add `yyjson::required("a")` to the subschema to reject only an object that has the key with such a value.
+*   Each subschema of a `yyjson::one_of` or a `yyjson::any_of` can be one `yyjson::required("key", ...)`. Then the message gives the keys of the subschemas in their order, as in the example above.
 *   `read_into` checks the keys of the text that it reads.
 *   `merge_into` checks the keys of the patch, without the keys whose value is `null`. It takes the values from the struct after the merge. A key that the patch leaves out counts as missing, also when the struct has a value for it.
 *   The error of a condition is at the struct, with an empty path. The error of the value of a member is at the member.
 *   A field of `yyjson::value` or `yyjson::object` takes such conditions too, for the members of its object. A value that is not an object satisfies them, as in JSON Schema.
-*   `yyjson::field` in a subschema takes no `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, default or `yyjson::emit_defaults`. These are settings of a member, outside the subschemas.
+*   `yyjson::field` and `yyjson::required` without a call are compile errors in a subschema. `yyjson::property` takes no `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, default or `yyjson::emit_defaults`. These are settings of a member, for `yyjson::field` outside the subschemas.
 
 #### Keys that need other keys
 
-Three settings of a struct give the keys that its objects must have together. They are short forms of the conditions above:
+These settings of a struct give the keys that its objects must have together:
 
-*   `yyjson::dependent_required("card", {"address", "postal"})`: an object with the key `card` must also have the keys `address` and `postal`. It is the keyword `dependentRequired` of JSON Schema, and the same as `yyjson::if_then_else(yyjson::if_(yyjson::field("card", yyjson::required)), yyjson::then(yyjson::field("address", yyjson::required), yyjson::field("postal", yyjson::required)))`.
-*   `yyjson::one_of_required({"env"}, {"value", "unit"})`: an object must have all the keys of exactly one group. It is `oneOf` of `required` in JSON Schema.
-*   `yyjson::any_of_required({"email"}, {"phone"})`: an object must have all the keys of one group or more. It is `anyOf` of `required` in JSON Schema.
+*   `yyjson::required("id", "name")` on the struct: an object must have the keys `id` and `name`. It is the keyword `required` of JSON Schema, and the same as `yyjson::field("id", yyjson::required)` and `yyjson::field("name", yyjson::required)`.
+*   `yyjson::dependent_required("card", {"address", "postal"})`: an object with the key `card` must also have the keys `address` and `postal`. It is the keyword `dependentRequired` of JSON Schema, and the same as `yyjson::if_then_else(yyjson::if_(yyjson::required("card")), yyjson::then(yyjson::required("address", "postal")))`.
+*   `yyjson::one_of(yyjson::required("env"), yyjson::required("value", "unit"))`: an object must have all the keys of exactly one group. `yyjson::any_of` of `yyjson::required` needs all the keys of one group or more.
 
 ```cpp
 struct Measure
@@ -627,7 +631,7 @@ struct Measure
 };
 template <>
 inline constexpr auto yyjson::annotations<Measure> =
-    yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}));
+    yyjson::annotate(yyjson::one_of(yyjson::required("env"), yyjson::required("value", "unit")));
 
 struct Billing
 {
@@ -649,15 +653,16 @@ yyjson::read<Billing>(R"({"card":"c","postal":"1"})");
 
 *   The strings are the JSON keys of the fields, after [`yyjson::rename`](conversions.md#json-keys). A string that is not the key of a field is a compile error. A [skipped field](conversions.md#skipped-fields) has no key.
 *   The object has a key as in the conditions above. Thus `null` in a `std::optional` field is a missing key, and `null` in a `yyjson::nullable` field is a key. `read_into` and `merge_into` check the keys as the conditions do.
-*   `yyjson::any_of_required` has the same message as `yyjson::one_of_required` without the keys of a group. The message gives the groups of the setting in their order.
+*   `yyjson::any_of` of `yyjson::required` has the same message as `yyjson::one_of` without the keys of a group. The message gives the groups in their order.
 *   A struct can have more than one of these settings and the other conditions. The object must satisfy all of them. The read checks them in the order of `yyjson::annotate`, after the keys, the number of members and the values of the fields.
-*   An empty list of keys, an empty group or no group is a compile error. So is a key given twice in one list or in one group, and `yyjson::dependent_required` that lists its own key. Two groups can share a key.
+*   An empty list of keys is a compile error. So is a key given twice in one list or in one `yyjson::required`, and `yyjson::dependent_required` that lists its own key. Two groups can share a key.
+*   `yyjson::required("key", ...)` on the struct, or in its `yyjson::all_of`, on the key of a field with a default is a compile error, as `yyjson::field("member", yyjson::required, yyjson::default_)` is.
 *   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes none of these settings. The subschemas of the conditions take them, as in [Keywords of an object in the conditions](#keywords-of-an-object-in-the-conditions).
 *   A write does not check the keys. A field that equals its [default value](conversions.md#default-values-and-required-keys) is left out also when a setting names its key. The text can then fail the read. Thus give such a field `std::optional` and no default, because a write writes it only when it holds a value. `yyjson::emit_defaults` on the field writes it in every case.
 
 #### Keywords of an object in the conditions
 
-The subschemas of the conditions of a struct also take `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)` and the three settings above. Then they check the keys of the object and their number:
+The subschemas of the conditions of a struct also take `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)` and the settings above. Then they check the keys of the object and their number:
 
 ```cpp
 struct Shape
@@ -668,8 +673,8 @@ struct Shape
 };
 template <>
 inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
-    yyjson::then(yyjson::field("kind"), yyjson::field("r", yyjson::required), yyjson::additional_properties(false)),
+    yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("circle"))),
+    yyjson::then(yyjson::property("kind"), yyjson::property("r"), yyjson::required("r"), yyjson::additional_properties(false)),
     yyjson::else_(yyjson::max_properties(2))));
 
 yyjson::read<Shape>(R"({"kind":"circle","r":1,"w":2})");
@@ -678,7 +683,8 @@ yyjson::read<Shape>(R"({"kind":"square","r":1,"w":2})");
 // throws: Shape has more properties than the maximum 2 of yyjson::if_then_else (line 1, column 1, pos 0)
 ```
 
-*   `yyjson::additional_properties(false)` in a subschema accepts only the keys that `yyjson::field` names in the same subschema, and the keys of the [tags](conversions.md#tagged-variants). `yyjson::field("key")` without settings names a key and puts no other condition on it.
+*   `yyjson::additional_properties(false)` in a subschema accepts only the keys that `yyjson::property` names in the same subschema, and the keys of the [tags](conversions.md#tagged-variants). `yyjson::property("key")` without settings names a key and puts no other condition on it. `yyjson::required("key")` does not name a key for `yyjson::additional_properties(false)`, as in JSON Schema. Thus the example gives `yyjson::property("r")` together with `yyjson::required("r")`.
+*   A subschema of `yyjson::all_of` of the struct with `yyjson::additional_properties(false)` must name with `yyjson::property` each key that the struct requires. These keys come from `yyjson::required("key", ...)` on the struct or in its `yyjson::all_of`, and from `yyjson::field("member", yyjson::required)`. Another subschema is a compile error, because no object satisfies it.
 *   The count keywords count the members of the JSON object, as on the [struct](#the-number-of-members-of-a-struct). `yyjson::property_names` checks each key of the object, as on the [struct](#the-names-of-the-members-of-a-struct).
 *   `merge_into` takes the members of the patch without the members whose value is `null`, as for the other conditions.
 *   A subschema checks the keys first: `yyjson::additional_properties(false)`, then `yyjson::property_names`, then the number of the members. It then checks the fields and its other conditions.
@@ -686,7 +692,7 @@ yyjson::read<Shape>(R"({"kind":"square","r":1,"w":2})");
 
 #### Keywords of an object at a field
 
-A field, an element or a value of a map that holds a struct also takes the keywords of an object. These are `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)`, `yyjson::field("key", s...)`, the three settings above and the combinators with them. A `std::variant` with a struct alternative takes them too. They apply to the struct at that position only:
+A field, an element or a value of a map that holds a struct also takes the keywords of an object. These are `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)`, `yyjson::property("key", s...)`, `yyjson::required("key", ...)`, `yyjson::dependent_required` and the combinators with them. A `std::variant` with a struct alternative takes them too. They apply to the struct at that position only:
 
 ```cpp
 struct Point
@@ -701,7 +707,7 @@ struct Path
 };
 template <>
 inline constexpr auto yyjson::annotations<Path> = yyjson::annotate(
-    yyjson::field("start", yyjson::field("x", yyjson::required), yyjson::additional_properties(false)),
+    yyjson::field("start", yyjson::property("x"), yyjson::required("x"), yyjson::additional_properties(false)),
     yyjson::field("points", yyjson::items(yyjson::min_properties(1))));
 
 yyjson::read<Path>(R"({"start":{"x":1,"y":2}})");
@@ -710,8 +716,10 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
 // throws: an element of the value of the key "points" of Path has fewer properties than the minimum 1 at /points/1 (line 1, column 20, pos 19)
 ```
 
-*   `yyjson::field` names a field of the struct at the position by its JSON key. A key that the struct does not have is a compile error. For a `std::variant`, each struct alternative must have the key.
-*   That `yyjson::field` takes only `yyjson::required` and the keywords of the value. `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, `yyjson::default_`, `yyjson::default_from` and `yyjson::emit_defaults` in it are compile errors. Give them in the `yyjson::annotate` of the struct.
+*   `yyjson::property` and `yyjson::required("key", ...)` name a field of the struct at the position by its JSON key. A key that the struct does not have is a compile error. For a `std::variant`, each struct alternative must have the key.
+*   `yyjson::property` takes only the keywords of the value. `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, `yyjson::default_`, `yyjson::default_from` and `yyjson::emit_defaults` in it are compile errors. Give them in the `yyjson::annotate` of the struct. `yyjson::field` at this position is a compile error too.
+*   In `yyjson::field("start", yyjson::required, yyjson::required("x"))`, the two settings apply to different objects. `yyjson::required` makes `Path` need the key `"start"`. `yyjson::required("x")` makes the object of `"start"` need the key `"x"`.
+*   `yyjson::additional_properties(false)` with a key that only `yyjson::required` names, and not `yyjson::property`, is a compile error. No object satisfies both.
 *   The object has a key as in the [conditions between fields](#conditions-between-fields). `read_into` checks the keys that it reads. `merge_into` checks the keys of the patch without `null`, with the values of the struct after the merge.
 *   The error has the path of the struct. The message gives the keyword that fails, and not the key.
 *   A struct without such settings at its position is read as before. With them, a read keeps the JSON object of the struct until it checks the settings.
@@ -760,7 +768,7 @@ The library builds the constraints of each field at compile time, in arrays of f
 | subschemas and combinators in one position or subschema | 8 |
 | values of `yyjson::const_` and `yyjson::enum_` in one position or subschema | 16 |
 | patterns in one position or subschema | 8 |
-| characters of the strings in one position or subschema | 256, and no limit with C++26 |
+| characters of the strings in one position or subschema, with 1 more for each key of `yyjson::required("key", ...)`, or 2 for a key of 128 or more characters | 256, and no limit with C++26 |
 
 A subschema over the limits is a compile error. The constraints of a field outside these positions and subschemas have no such limits.
 
@@ -889,8 +897,8 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 
 | Keyword | cpp-yyjson | Difference |
 | --- | --- | --- |
-| `properties` | the fields of a struct, or `yyjson::field` in a combinator or at a [struct position](#keywords-of-an-object-at-a-field) | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
-| `required` | `yyjson::required`, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. |
+| `properties` | the fields of a struct, or `yyjson::property("key", settings...)` on a struct, in its conditions or at a [struct position](#keywords-of-an-object-at-a-field) | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). A map takes no `yyjson::property` yet. |
+| `required` | `yyjson::required("key", ...)`, `yyjson::required` on a field, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. A map takes no `yyjson::required("key", ...)` yet. |
 | `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, in its conditions or at a struct position, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
 | `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map, or a field of [`yyjson::extra_keys`](#keys-that-no-field-names) with it | without `yyjson::extra_keys`, a struct ignores a key that names no field. |
 | `patternProperties` | a field of [`yyjson::pattern_properties("regex")`](#keys-that-a-pattern-matches), with `yyjson::additional_properties(settings...)` and `yyjson::property_names(settings...)` | the engine of the patterns is the [pattern matcher](#pattern-matcher). A write does not check that a key of a map matches its pattern. |
@@ -903,8 +911,8 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | Keyword | cpp-yyjson | Difference |
 | --- | --- | --- |
 | `allOf` | the constraints of one field, which all apply, or `yyjson::all_of(...)` | none. |
-| `anyOf` | `yyjson::any_of(...)`, or `std::variant` or [`yyjson::any_of_variant`](reference.md#yyjsonany_of_variant-yyjsonalt) for alternatives of different types. `yyjson::any_of_required` on a struct for subschemas of `required` only | a `std::variant` reads the first alternative that accepts the value. |
-| `oneOf` | `yyjson::one_of(...)`, [`yyjson::one_of_variant`](reference.md#yyjsonone_of_variant) for alternatives of different types, or a [tagged variant](conversions.md#tagged-variants). `yyjson::one_of_required` on a struct for subschemas of `required` only | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
+| `anyOf` | `yyjson::any_of(...)`, or `std::variant` or [`yyjson::any_of_variant`](reference.md#yyjsonany_of_variant-yyjsonalt) for alternatives of different types | a `std::variant` reads the first alternative that accepts the value. |
+| `oneOf` | `yyjson::one_of(...)`, [`yyjson::one_of_variant`](reference.md#yyjsonone_of_variant) for alternatives of different types, or a [tagged variant](conversions.md#tagged-variants) | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
 | `not` | `yyjson::not_(...)` | none. |
 | `if`, `then`, `else` | `yyjson::if_then_else(...)` | none. |
 | `$ref`, `$defs` | a C++ type, or `yyjson::matches<T>` on a value of the DOM | a definition with constraints that is not an object is a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field). |

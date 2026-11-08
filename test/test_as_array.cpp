@@ -255,7 +255,7 @@ struct PointGate
 };
 template <>
 inline constexpr auto yyjson::annotations<PointGate> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("p", yyjson::min_items(3))), yyjson::then(yyjson::field("k", yyjson::required))));
+    yyjson::if_(yyjson::property("p", yyjson::min_items(3))), yyjson::then(yyjson::required("k"))));
 // the combinators of the whole array of a struct read as an array, which take the keywords of an array
 struct Gated
 {
@@ -391,7 +391,8 @@ namespace as_array_rules
     static_assert(table_error(as_array, yyjson::any_of(yyjson::prefix_items(yyjson::minimum(0)),
                                                        yyjson::min_items(1))) == as_array_items);
     static_assert(table_error(as_array, yyjson::not_(yyjson::min_properties(1))) == as_array_object_keyword);
-    static_assert(table_error(as_array, yyjson::not_(field("a", yyjson::required))) == as_array_object_keyword);
+    static_assert(table_error(as_array, yyjson::not_(yyjson::required("a"))) == as_array_object_keyword);
+    static_assert(table_error(as_array, yyjson::not_(yyjson::property("a"))) == as_array_object_keyword);
     static_assert(table_error(as_array, yyjson::not_(yyjson::const_(1))) == struct_value_keyword);
     static_assert(table_error(as_array, yyjson::min_items(1), yyjson::unique_items,
                               yyjson::contains(yyjson::minimum(0)), yyjson::min_contains(1), yyjson::max_contains(2),
@@ -404,7 +405,9 @@ namespace as_array_rules
     static_assert(table_error(as_array, yyjson::additional_properties(false)) == as_array_object_keyword);
     static_assert(table_error(as_array, yyjson::min_properties(1)) == as_array_object_keyword);
     static_assert(table_error(as_array, yyjson::property_names(yyjson::min_length(1))) == as_array_object_keyword);
-    static_assert(table_error(as_array, yyjson::one_of_required({"a"})) == as_array_object_keyword);
+    static_assert(table_error(as_array, yyjson::one_of(yyjson::required("a"))) == as_array_object_keyword);
+    static_assert(table_error(as_array, yyjson::property("a", yyjson::minimum(0))) == as_array_object_keyword);
+    static_assert(table_error(yyjson::required("a"), as_array) == as_array_object_keyword);
     static_assert(table_error(yyjson::dependent_required("a", {"b"}), as_array) == as_array_object_keyword);
     static_assert(table_error(as_array, field("e", yyjson::extra_keys)) == as_array_object_keyword);
     static_assert(table_error(field("e", yyjson::extra_keys), as_array) == as_array_object_keyword);

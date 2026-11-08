@@ -413,9 +413,9 @@ struct ConditionCountedDefaults
     int b = 5;
 };
 template <>
-inline constexpr auto yyjson::annotations<ConditionCountedDefaults> = yyjson::annotate(
-    yyjson::field("b", yyjson::default_),
-    yyjson::if_then_else(yyjson::if_(yyjson::field("b", yyjson::required)), yyjson::then(yyjson::min_properties(0))));
+inline constexpr auto yyjson::annotations<ConditionCountedDefaults> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_),
+                     yyjson::if_then_else(yyjson::if_(yyjson::required("b")), yyjson::then(yyjson::min_properties(0))));
 
 // types that constrain the keys of the members of their objects
 struct NamedPt
@@ -589,7 +589,8 @@ struct Measure
 };
 template <>
 inline constexpr auto yyjson::annotations<Measure> =
-    yyjson::annotate(yyjson::field("unit", yyjson::rename("u")), yyjson::one_of_required({"env"}, {"value", "u"}));
+    yyjson::annotate(yyjson::field("unit", yyjson::rename("u")),
+                     yyjson::one_of(yyjson::required("env"), yyjson::required("value", "u")));
 struct NullableMeasure
 {
     yyjson::nullable<std::string> env;
@@ -598,7 +599,7 @@ struct NullableMeasure
 };
 template <>
 inline constexpr auto yyjson::annotations<NullableMeasure> =
-    yyjson::annotate(yyjson::one_of_required({"env"}, {"value"}));
+    yyjson::annotate(yyjson::one_of(yyjson::required("env"), yyjson::required("value")));
 struct Reachable
 {
     std::optional<std::string> email;
@@ -608,7 +609,8 @@ struct Reachable
 };
 template <>
 inline constexpr auto yyjson::annotations<Reachable> =
-    yyjson::annotate(yyjson::any_of_required({"email"}, {"phone"}), yyjson::one_of_required({"phone"}, {"fax"}));
+    yyjson::annotate(yyjson::any_of(yyjson::required("email"), yyjson::required("phone")),
+                     yyjson::one_of(yyjson::required("phone"), yyjson::required("fax")));
 struct ExclusiveVisitable
 {
     std::optional<int> a;
@@ -616,7 +618,8 @@ struct ExclusiveVisitable
     bool operator==(const ExclusiveVisitable&) const = default;
 };
 template <>
-inline constexpr auto yyjson::annotations<ExclusiveVisitable> = yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}));
+inline constexpr auto yyjson::annotations<ExclusiveVisitable> =
+    yyjson::annotate(yyjson::one_of(yyjson::required("a"), yyjson::required("b")));
 VISITABLE_STRUCT(ExclusiveVisitable, a, b);
 // the settings with the keys of the read, the counts and a condition of the values
 struct PresenceChecked
@@ -629,7 +632,8 @@ struct PresenceChecked
 template <>
 inline constexpr auto yyjson::annotations<PresenceChecked> = yyjson::annotate(
     yyjson::additional_properties(false), yyjson::max_properties(2), yyjson::field("n", yyjson::minimum(0)),
-    yyjson::any_of_required({"a"}, {"b"}), yyjson::not_(yyjson::field("a", yyjson::required, yyjson::maximum(0))));
+    yyjson::any_of(yyjson::required("a"), yyjson::required("b")),
+    yyjson::not_(yyjson::required("a"), yyjson::property("a", yyjson::maximum(0))));
 // the fields named by the settings are left out when they equal their defaults
 struct PresenceDefaults
 {
@@ -640,11 +644,12 @@ struct PresenceDefaults
     bool operator==(const PresenceDefaults&) const = default;
 };
 template <>
-inline constexpr auto yyjson::annotations<PresenceDefaults> =
-    yyjson::annotate(yyjson::field("a", yyjson::default_), yyjson::field("b", yyjson::default_),
-                     yyjson::field("c", yyjson::default_), yyjson::one_of_required({"a"}, {"b"}));
+inline constexpr auto yyjson::annotations<PresenceDefaults> = yyjson::annotate(
+    yyjson::field("a", yyjson::default_), yyjson::field("b", yyjson::default_), yyjson::field("c", yyjson::default_),
+    yyjson::one_of(yyjson::required("a"), yyjson::required("b")));
 #if FIELD_RFL_ANNOTATIONS
-struct[[ = yyjson::one_of_required({"a"}, {"B"}), = yyjson::dependent_required("a", {"cc"}) ]] PresenceAnnotated
+struct[[ = yyjson::one_of(yyjson::required("a"), yyjson::required("B")), = yyjson::dependent_required("a", {"cc"}) ]]
+    PresenceAnnotated
 {
     std::optional<int> a;
     [[= yyjson::rename("B")]] std::optional<int> b;
@@ -757,8 +762,8 @@ struct ExtraConditional
 };
 template <>
 inline constexpr auto yyjson::annotations<ExtraConditional> = yyjson::annotate(
-    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("closed"), yyjson::required)),
-                         yyjson::then(yyjson::field("kind"), yyjson::additional_properties(false))),
+    yyjson::if_then_else(yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("closed"))),
+                         yyjson::then(yyjson::property("kind"), yyjson::additional_properties(false))),
     yyjson::field("more", yyjson::extra_keys));
 struct ExtraHolder
 {

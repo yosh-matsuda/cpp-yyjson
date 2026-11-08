@@ -730,13 +730,13 @@ namespace
     static_assert(annotated_keys(field("a", rename("x")), field("a", rename("y"))).error == renamed_twice);
     static_assert(annotated_keys(field("a", rename("x"), rename("y"))).error == renamed_twice);
     static_assert(annotated_keys(field("a", rename("b"))).error == duplicate_key);
-    static_assert(annotated_keys(field("a", skip), field("a", skip)).error == same_setting_twice);
+    static_assert(annotated_keys(field("a", skip), field("a", skip)).error == skip_twice);
     static_assert(annotated_keys(field("a", skip, rename("x"))).error == skipped_with_setting);
     static_assert(annotated_keys(field("a", rename("x"), skip)).error == skipped_with_setting);
     static_assert(annotated_keys(field("a", yyjson::adjacent_tag("t", {"x"}), skip)).error == skipped_with_setting);
     static_assert(annotated_keys(field("a", yyjson::adjacent_tag("t", {"x"})),
                                  field("a", yyjson::adjacent_tag("u", {"x"})))
-                      .error == same_setting_twice);
+                      .error == adjacent_tag_twice);
     static_assert(annotated_keys(yyjson::internal_tag("t", {"x"})).error == not_a_struct_setting);
     // a skipped field has no key, which another field may take
     static_assert(annotated_keys(field("a", skip), field("b", rename("a"))).error == none);

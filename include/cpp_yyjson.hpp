@@ -1771,11 +1771,84 @@ namespace yyjson
     };
     inline constexpr strict_t strict{};
 
-    // A field whose key an object read into the struct must have, even without `yyjson::reject_missing_keys`, as
-    // `yyjson::field("member", yyjson::required)` or `[[=yyjson::required]]` declares it.  A merge patch may still
-    // leave the key out.
+    namespace detail
+    {
+        // The keys of `yyjson::required("key", ...)`.  L is not 0 for string literals before C++26: it holds their
+        // characters then, so that a template argument can hold it.  A key ends at its first null character.
+        template <std::size_t L, std::size_t K>
+        struct required_keys
+        {
+            std::array<char, L> chars = {};
+            std::array<std::size_t, K> ends = {};
+
+            [[nodiscard]] static constexpr std::size_t size() noexcept { return K; }
+            [[nodiscard]] constexpr std::string_view key(std::size_t i) const noexcept
+            {
+                const auto first = i == 0 ? std::size_t{0} : ends[i - 1];
+                return {chars.data() + first, ends[i] - first};
+            }
+        };
+        template <std::size_t K>
+        struct required_keys<0, K>
+        {
+            std::array<const char*, K> key_data = {};
+            std::array<std::size_t, K> key_size = {};
+
+            [[nodiscard]] static constexpr std::size_t size() noexcept { return K; }
+            [[nodiscard]] constexpr std::string_view key(std::size_t i) const noexcept
+            {
+                return {key_data[i], key_size[i]};
+            }
+        };
+        template <typename R>
+        constexpr bool required_keys_unique(const R& r) noexcept
+        {
+            for (std::size_t i = 0; i < r.size(); ++i)
+                for (std::size_t j = 0; j < i; ++j)
+                    if (r.key(i) == r.key(j)) return false;
+            return true;
+        }
+    }  // namespace detail
+
+    // `yyjson::field("member", yyjson::required)` or `[[=yyjson::required]]`: an object read into the struct must have
+    // the key of the field; a merge patch may leave it out.  `yyjson::required("key", ...)`, as JSON Schema's
+    // `required`: an object at its position must have the keys.
     struct required_t
     {
+#if !defined(__cpp_lib_define_static)
+        template <std::size_t... Ns>
+        requires (sizeof...(Ns) != 0)
+        consteval detail::required_keys<(Ns + ...), sizeof...(Ns)> operator()(const char (&... keys)[Ns]) const
+        {
+            auto result = detail::required_keys<(Ns + ...), sizeof...(Ns)>{};
+            std::size_t size = 0;
+            std::size_t k = 0;
+            const auto add = [&](const char* key, std::size_t n) {
+                for (std::size_t i = 0; i + 1 < n && key[i] != '\0'; ++i) result.chars[size++] = key[i];
+                result.ends[k++] = size;
+            };
+            (add(keys, Ns), ...);
+            return result;
+        }
+#endif
+        template <typename... Ss>
+        requires (std::convertible_to<const Ss&, std::string_view> && ...)
+        consteval detail::required_keys<0, sizeof...(Ss)> operator()(const Ss&... keys) const
+        {
+            static_assert(sizeof...(Ss) != 0, "yyjson::required(\"key\", ...) needs a key");
+            // assigned rather than initialized: GCC 13 does not take `static_string` in an aggregate initializer, nor
+            // in a lambda that is not `consteval`
+            auto result = detail::required_keys<0, sizeof...(Ss)>{};
+            const std::string_view list[] = {std::string_view(keys)...};
+            for (std::size_t k = 0; k < sizeof...(Ss); ++k)
+            {
+                result.key_data[k] = detail::static_string(list[k]);
+                result.key_size[k] = list[k].size();
+            }
+            // a key from a std::string_view, which is not a constant, cannot reach a static_assert
+            if (!detail::required_keys_unique(result)) throw "yyjson::required(\"key\", ...) takes each key once";
+            return result;
+        }
     };
     inline constexpr required_t required{};
     // A field whose default member initializer is its default value, as `yyjson::field("member", yyjson::default_)`
@@ -2670,9 +2743,16 @@ namespace yyjson
     {
         template <std::size_t N, typename... As>
         struct field_annotation;
+        template <typename A>
+        struct is_field_annotation : std::false_type
+        {
+        };
+        template <std::size_t N, typename... As>
+        struct is_field_annotation<field_annotation<N, As...>> : std::true_type
+        {
+        };
 
-        // A `yyjson::field("key", ...)` in a subschema, as JSON Schema's `properties` and `required`: the key, and
-        // the keywords of its value with `yyjson::required`, which tests that the object has the key.
+        // `yyjson::property("key", ...)`, as JSON Schema's `properties`: the key, and the keywords of its value.
         template <std::size_t N, typename... As>
         struct member_schema
         {
@@ -2680,7 +2760,6 @@ namespace yyjson
             setting_list<As...> settings;
 
             [[nodiscard]] constexpr std::string_view key() const noexcept { return key_string.view(); }
-            static constexpr bool required = (std::same_as<As, required_t> || ...);
         };
         template <std::size_t N, typename... As>
         struct setting_type<member_schema<N, As...>>
@@ -2689,80 +2768,66 @@ namespace yyjson
         };
         template <>
         inline constexpr std::uint32_t constraint_bit<member_schema<0>> = 1U << 31;
-
-        // A setting of a subschema as the subschema holds it: `yyjson::field` as a `member_schema`.
         template <typename A>
-        struct subschema_entry
-        {
-            using type = A;
-        };
+        inline constexpr bool member_annotation = false;
         template <std::size_t N, typename... As>
-        struct subschema_entry<field_annotation<N, As...>>
+        inline constexpr bool member_annotation<member_schema<N, As...>> = true;
+
+        // `yyjson::required("key", ...)` is a keyword of an object, which sets the bit of `member_schema`.
+        template <std::size_t L, std::size_t K>
+        struct setting_type<required_keys<L, K>>
         {
-            using type = member_schema<N, As...>;
+            using type = required_keys<0, 0>;
         };
         template <typename A>
-        using subschema_entry_t = typename subschema_entry<A>::type;
-        template <typename A>
-        inline constexpr bool member_annotation = !std::same_as<subschema_entry_t<A>, A>;
-        // `yyjson::additional_properties(false)`, `dependent_required`, `one_of_required` and `any_of_required`,
-        // which a subschema takes for the object of a struct.  Specialized after them.
+        concept required_keys_setting = setting_of<A, required_keys<0, 0>>;
+
+        // `yyjson::additional_properties(false)`, `dependent_required` and `required("key", ...)`, which a subschema
+        // takes for the object of a struct.  Specialized after them.
         template <typename A>
         inline constexpr bool object_subschema_setting = false;
+        template <std::size_t L, std::size_t K>
+        inline constexpr bool object_subschema_setting<required_keys<L, K>> = true;
         // The settings of a subschema of `yyjson::not_`, `if_then_else`, `all_of`, `any_of` and `one_of`.
         template <typename A>
         concept subschema_setting = constraint_setting<A> || member_annotation<A> || object_subschema_setting<A>;
 
-        template <typename A>
-        struct member_schema_maker;
-        // Where a `yyjson::field` constrains a member that another setting declares: in a subschema, in
-        // `yyjson::alt`, or in another `yyjson::field`.
-        enum class member_position : std::uint8_t
+        // Fails to compile if the settings As of a subschema hold the tag `yyjson::required` or `yyjson::field`,
+        // which only `yyjson::annotate` takes.
+        template <typename... As>
+        consteval bool check_subschema_settings()
         {
-            subschema,
-            alternative,
-            nested
-        };
-        // Fails to compile if the settings of such a `yyjson::field` declare a member.  Defined after
-        // `field_annotation`.
-        template <member_position P, typename... As>
-        consteval bool check_member_settings();
-        template <std::size_t N, typename... As>
-        struct member_schema_maker<field_annotation<N, As...>>
-        {
-            template <std::size_t... Is>
-            static consteval subschema_entry_t<field_annotation<N, As...>> make(const field_annotation<N, As...>& a,
-                                                                                std::index_sequence<Is...>)
-            {
-                static_assert(check_member_settings<member_position::subschema, As...>());
-                return {a.member_string, make_setting_list(annotation_at<Is>(a.values)...)};
-            }
-        };
-        template <typename A>
-        consteval subschema_entry_t<A> make_subschema_entry(const A& a)
-        {
-            if constexpr (member_annotation<A>)
-                return member_schema_maker<A>::make(
-                    a, std::make_index_sequence<std::tuple_size_v<typename A::value_types>>{});
-            else
-                return a;
+            static_assert(!(std::same_as<As, required_t> || ...),
+                          "the tag yyjson::required marks a field only in yyjson::field(\"member\", ...) and on a "
+                          "member: yyjson::required(\"key\") tells that an object has the key, and "
+                          "yyjson::reject_missing_keys that it has the keys of all the fields");
+            static_assert(!(is_field_annotation<As>::value || ...),
+                          "yyjson::field names a member only directly in yyjson::annotate: elsewhere, "
+                          "yyjson::property(\"key\", ...) gives the keywords of the value of a key, and "
+                          "yyjson::required(\"key\") tells that an object has the key");
+            return true;
         }
+        // The settings that a subschema takes, or that `check_subschema_settings` rejects with its own message.
+        template <typename A>
+        concept subschema_argument =
+            subschema_setting<A> || std::same_as<A, required_t> || is_field_annotation<A>::value;
     }  // namespace detail
 
     // The settings that a value must not satisfy all together, as JSON Schema's `not`:
-    // `yyjson::not_(yyjson::minimum(10), yyjson::maximum(19))`.  In the subschemas, `yyjson::field("key", ...)`
-    // gives the keywords of a member, and `yyjson::required` in it that the object has the key.
+    // `yyjson::not_(yyjson::minimum(10), yyjson::maximum(19))`.  In the subschemas, `yyjson::property("key", ...)`
+    // gives the keywords of the value of a key, and `yyjson::required("key")` tells that the object has the key.
     template <typename... As>
     struct not_
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit not_(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit not_(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::not_ needs a setting");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::not_ takes the keywords of a value, such as yyjson::minimum and yyjson::items, "
-                          "and yyjson::field(\"key\", ...)");
+                          "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2774,14 +2839,15 @@ namespace yyjson
     template <typename... As>
     struct if_
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit if_(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit if_(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::if_ needs a setting");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::if_ takes the keywords of a value, such as yyjson::minimum and yyjson::items, "
-                          "and yyjson::field(\"key\", ...)");
+                          "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2789,14 +2855,15 @@ namespace yyjson
     template <typename... As>
     struct then
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit then(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit then(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::then needs a setting");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::then takes the keywords of a value, such as yyjson::minimum and yyjson::items, "
-                          "and yyjson::field(\"key\", ...)");
+                          "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2804,14 +2871,15 @@ namespace yyjson
     template <typename... As>
     struct else_
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit else_(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit else_(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::else_ needs a setting");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::else_ takes the keywords of a value, such as yyjson::minimum and yyjson::items, "
-                          "and yyjson::field(\"key\", ...)");
+                          "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2907,14 +2975,15 @@ namespace yyjson
     template <typename... As>
     struct items
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit items(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit items(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::items needs a setting of the elements");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::items takes the keywords of a value, such as yyjson::minimum and yyjson::items, "
-                          "and yyjson::field(\"key\", ...)");
+                          "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2937,15 +3006,15 @@ namespace yyjson
     template <typename... As>
     struct additional_properties
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit additional_properties(As... as)
-            : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit additional_properties(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::additional_properties needs a setting of the values");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::additional_properties takes the keywords of a value, such as yyjson::minimum and "
-                          "yyjson::items, and yyjson::field(\"key\", ...)");
+                          "yyjson::items, yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2970,14 +3039,15 @@ namespace yyjson
     template <typename... As>
     struct contains
     {
-        detail::setting_list<detail::subschema_entry_t<As>...> settings;
+        detail::setting_list<As...> settings;
 
-        consteval explicit contains(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
+        consteval explicit contains(As... as) : settings(detail::make_setting_list(as...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::contains needs a setting of the elements");
-            static_assert((detail::subschema_setting<As> && ...),
+            static_assert(detail::check_subschema_settings<As...>());
+            static_assert((detail::subschema_argument<As> && ...),
                           "yyjson::contains takes the keywords of a value, such as yyjson::minimum and "
-                          "yyjson::items, and yyjson::field(\"key\", ...)");
+                          "yyjson::items, yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -3045,22 +3115,6 @@ namespace yyjson
         }
     };
 
-    // The groups of keys of which the object of a struct must have all the keys of exactly one (`One`) or of at
-    // least one, as JSON Schema's `oneOf` or `anyOf` of `required`.  The G groups hold K keys in all, those of the
-    // group g up to `group_end[g]`.
-    template <bool One, std::size_t G, std::size_t K>
-    struct required_groups_t
-    {
-        std::array<const char*, K> key_data = {};
-        std::array<std::size_t, K> key_size = {};
-        std::array<std::size_t, G> group_end = {};
-
-        [[nodiscard]] constexpr std::string_view key(std::size_t i) const noexcept
-        {
-            return {key_data[i], key_size[i]};
-        }
-    };
-
     namespace detail
     {
         // The `{}` of `yyjson::dependent_required("key", {})`, which lists no key.
@@ -3073,24 +3127,14 @@ namespace yyjson
         {
             using type = dependent_required_t<0>;
         };
-        template <bool One, std::size_t G, std::size_t K>
-        struct setting_type<required_groups_t<One, G, K>>
-        {
-            using type = required_groups_t<One, 0, 0>;
-        };
         template <>
         inline constexpr bool object_subschema_setting<additional_properties<bool>> = true;
         template <std::size_t N>
         inline constexpr bool object_subschema_setting<dependent_required_t<N>> = true;
-        template <bool One, std::size_t G, std::size_t K>
-        inline constexpr bool object_subschema_setting<required_groups_t<One, G, K>> = true;
 
-        // `yyjson::dependent_required`, `one_of_required` and `any_of_required`, which a struct lowers into its
-        // conditions.
+        // `yyjson::dependent_required`, which a struct lowers into its conditions.
         template <typename A>
-        concept presence_setting =
-            setting_of<A, dependent_required_t<0>> || setting_of<A, required_groups_t<true, 0, 0>> ||
-            setting_of<A, required_groups_t<false, 0, 0>>;
+        concept presence_setting = setting_of<A, dependent_required_t<0>>;
 
         template <std::size_t N>
         consteval bool keys_repeated(const std::string_view (&keys)[N])
@@ -3101,27 +3145,6 @@ namespace yyjson
             return false;
         }
 
-        template <bool One, std::size_t... Ns>
-        consteval auto make_required_groups(const std::string_view (&... groups)[Ns])
-        {
-            if ((keys_repeated(groups) || ...))
-                throw "yyjson::one_of_required and yyjson::any_of_required take each key once in a group";
-            // assigned rather than initialized: GCC 13 does not take `static_string` in an aggregate initializer
-            auto result = required_groups_t<One, sizeof...(Ns), (std::size_t{0} + ... + Ns)>{};
-            const auto spans = std::array{std::span<const std::string_view>(groups)...};
-            std::size_t k = 0;
-            for (std::size_t g = 0; g < spans.size(); ++g)
-            {
-                for (const auto key : spans[g])
-                {
-                    result.key_data[k] = static_string(key);
-                    result.key_size[k] = key.size();
-                    ++k;
-                }
-                result.group_end[g] = k;
-            }
-            return result;
-        }
     }  // namespace detail
 
     // `yyjson::annotate(yyjson::dependent_required("card", {"address", "postal"}))` or
@@ -3134,7 +3157,7 @@ namespace yyjson
             throw "yyjson::dependent_required takes each key that the object must have once";
         for (const auto d : dependents)
             if (d == key) throw "yyjson::dependent_required does not list the key that makes the others required";
-        // assigned for the reason that `make_required_groups` gives
+        // assigned rather than initialized: GCC 13 does not take `static_string` in an aggregate initializer
         auto result = dependent_required_t<N>{};
         result.key_data = detail::static_string(key);
         result.key_size = key.size();
@@ -3151,25 +3174,6 @@ namespace yyjson
         if (key.size() != std::string_view::npos)
             throw "yyjson::dependent_required needs a key that the object must have";
         return {};
-    }
-
-    // `yyjson::one_of_required({"env"}, {"value", "unit"})` in `yyjson::annotate` or on the type T: an object read
-    // into T must have all the keys of exactly one group, here "env", or "value" and "unit", but not both.  The
-    // strings are the JSON keys of fields of T.
-    template <std::size_t... Ns>
-    consteval auto one_of_required(const std::string_view (&... groups)[Ns])
-    {
-        static_assert(sizeof...(Ns) != 0, "yyjson::one_of_required needs a group of keys");
-        return detail::make_required_groups<true>(groups...);
-    }
-
-    // `yyjson::any_of_required({"email"}, {"phone"})`: the same as `yyjson::one_of_required`, but the object may have
-    // all the keys of more than one of the groups.
-    template <std::size_t... Ns>
-    consteval auto any_of_required(const std::string_view (&... groups)[Ns])
-    {
-        static_assert(sizeof...(Ns) != 0, "yyjson::any_of_required needs a group of keys");
-        return detail::make_required_groups<false>(groups...);
     }
 
     // The settings of the first elements of a field written as a JSON array, by their positions, which
@@ -3298,7 +3302,7 @@ namespace yyjson
         inline constexpr unsigned other_kind = 16;
         inline constexpr unsigned every_kind = 31;
         // the keywords of a JSON string and of a JSON object by their kind: `yyjson::format` is an annotation of any
-        // value, and `yyjson::field` names a key
+        // value, and `yyjson::property` and `required` name a key
         inline constexpr std::uint32_t string_kind_constraints = string_constraints & ~constraint_bit<format<>>;
         inline constexpr std::uint32_t object_kind_constraints = object_constraints | constraint_bit<member_schema<0>>;
         // the keywords of any kind that the type of a struct does not take
@@ -3314,7 +3318,7 @@ namespace yyjson
             static_assert(!Given,
                           "a struct annotated with yyjson::as_array has no keys: it takes no "
                           "yyjson::additional_properties(false), min_properties, max_properties, property_names, "
-                          "yyjson::field, dependent_required, one_of_required, any_of_required, yyjson::extra_keys or "
+                          "yyjson::property, required(\"key\", ...), dependent_required, yyjson::extra_keys or "
                           "yyjson::pattern_properties; yyjson::items(false) denies the elements after its fields, "
                           "and yyjson::extra_items receives them");
             return true;
@@ -3337,9 +3341,9 @@ namespace yyjson
                           "max_contains constrain a JSON array, and the type at their position is not written as a "
                           "JSON array");
             static_assert((Bits & object_kind_constraints) == 0 || (Kinds & object_kind) != 0 || AsArrayStruct,
-                          "yyjson::min_properties, max_properties, additional_properties, property_names and "
-                          "yyjson::field constrain a JSON object, and the type at their position is not written as a "
-                          "JSON object");
+                          "yyjson::min_properties, max_properties, additional_properties, property_names, property "
+                          "and required(\"key\", ...) constrain a JSON object, and the type at their position is not "
+                          "written as a JSON object");
             return as_array_object_fit<(Bits & object_kind_constraints) != 0 && AsArrayStruct>();
         }
         // The keywords of `bits` whose kind is none of `kinds`.
@@ -3510,52 +3514,23 @@ namespace yyjson
         template <typename... As>
         consteval bool check_field_settings()
         {
-            static_assert((field_setting<As> && ...),
+            static_assert(!(is_field_annotation<As>::value || ...),
+                          "yyjson::field names a member only directly in yyjson::annotate: in it, "
+                          "yyjson::property(\"key\", ...) gives the keywords of the value of a key of the field, and "
+                          "yyjson::required(\"key\") tells that its object has the key");
+            static_assert(((field_setting<As> || is_field_annotation<As>::value) && ...),
                           "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::adjacent_tag, yyjson::required, "
                           "yyjson::default_, yyjson::default_from, yyjson::emit_defaults, yyjson::extra_items, "
                           "yyjson::extra_keys, yyjson::pattern_properties and the keywords of the value, such as "
-                          "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::field(\"key\", ...)");
+                          "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::property(\"key\", ...)");
             return true;
         }
-        template <member_position P, typename... As>
-        consteval bool check_member_settings()
-        {
-            constexpr bool member = ((subschema_setting<As> || std::same_as<As, required_t>) && ...);
-            if constexpr (P == member_position::nested)
-                static_assert(member,
-                              "yyjson::field in yyjson::field takes yyjson::required and the keywords of the value; "
-                              "yyjson::rename, skip, adjacent_tag, default_, default_from and emit_defaults declare "
-                              "a member, only in yyjson::field directly in yyjson::annotate");
-            else if constexpr (P == member_position::alternative)
-                static_assert(member,
-                              "yyjson::field in yyjson::alt takes yyjson::required and the keywords of the value; "
-                              "yyjson::rename, skip, adjacent_tag, default_, default_from and emit_defaults declare "
-                              "a member, outside it");
-            else
-                static_assert(member,
-                              "yyjson::field in yyjson::not_, if_then_else, all_of, any_of and one_of takes "
-                              "yyjson::required and the keywords of the value; yyjson::rename, skip, adjacent_tag, "
-                              "default_, default_from and emit_defaults declare a member, outside them");
-            return true;
-        }
-        // Checks the settings of A at P if it is a `yyjson::field`.  A `yyjson::field` in it was checked when the
-        // call of `yyjson::field` that made A took it.
-        template <member_position P, typename A>
-        struct member_settings_check : std::true_type
-        {
-        };
-        template <member_position P, std::size_t N, typename... As>
-        struct member_settings_check<P, field_annotation<N, As...>>
-            : std::bool_constant<check_member_settings<P, As...>()>
-        {
-        };
     }  // namespace detail
 
     template <typename... As>
     consteval detail::field_annotation<0, As...> field(std::string_view member, As... values)
     {
         static_assert(detail::check_field_settings<As...>());
-        static_assert((detail::member_settings_check<detail::member_position::nested, As>::value && ...));
         return {detail::setting_string<0>(member),
                 detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -3565,9 +3540,39 @@ namespace yyjson
     consteval detail::field_annotation<N, As...> field(const char (&member)[N], As... values)
     {
         static_assert(detail::check_field_settings<As...>());
-        static_assert((detail::member_settings_check<detail::member_position::nested, As>::value && ...));
         return {detail::setting_string<N>(member),
                 detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
+    }
+#endif
+
+    namespace detail
+    {
+        template <typename... As>
+        consteval bool check_property_settings()
+        {
+            static_assert(check_subschema_settings<As...>());
+            static_assert((subschema_argument<As> && ...),
+                          "yyjson::property takes the keywords of the value of the key; yyjson::rename, skip, "
+                          "adjacent_tag, default_, default_from, emit_defaults, extra_keys, pattern_properties and "
+                          "extra_items declare a member in yyjson::field directly in yyjson::annotate");
+            return true;
+        }
+    }  // namespace detail
+
+    // `yyjson::property("key", yyjson::minimum(0))`, as JSON Schema's `properties`: the value of the key "key" of an
+    // object, if it has the key, satisfies the keywords.  The key is a JSON key of a field of the struct.
+    template <typename... As>
+    consteval detail::member_schema<0, As...> property(std::string_view key, As... values)
+    {
+        static_assert(detail::check_property_settings<As...>());
+        return {detail::setting_string<0>(key), detail::make_setting_list(values...)};
+    }
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N, typename... As>
+    consteval detail::member_schema<N, As...> property(const char (&key)[N], As... values)
+    {
+        static_assert(detail::check_property_settings<As...>());
+        return {detail::setting_string<N>(key), detail::make_setting_list(values...)};
     }
 #endif
 
@@ -3687,14 +3692,6 @@ namespace yyjson
         };
 
         template <typename A>
-        struct is_field_annotation : std::false_type
-        {
-        };
-        template <std::size_t N, typename... As>
-        struct is_field_annotation<field_annotation<N, As...>> : std::true_type
-        {
-        };
-        template <typename A>
         struct is_enumerator_annotation : std::false_type
         {
         };
@@ -3712,8 +3709,9 @@ namespace yyjson
                         std::same_as<As, as_array_t> || std::same_as<As, items<bool>> || std::same_as<As, default_t> ||
                         std::same_as<As, additional_properties<bool>> || struct_count_setting<As> ||
                         setting_of<As, property_names<>> || read_policy<As> || combinator_setting<As> ||
-                        presence_setting<As> || array_struct_setting<As> || internal_tag_annotation<As> ||
-                        enum_annotation<As>)...> == sizeof...(As);
+                        presence_setting<As> || member_annotation<As> || required_keys_setting<As> ||
+                        array_struct_setting<As> || internal_tag_annotation<As> || enum_annotation<As>)...> ==
+            sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
@@ -3723,12 +3721,16 @@ namespace yyjson
                       "yyjson::additional_properties takes only false for a struct: with the keywords of the "
                       "values, it constrains a field of a map, or the field of yyjson::extra_keys or of "
                       "yyjson::pattern_properties, in yyjson::field");
-        static_assert(detail::annotate_settings<As...>,
+        static_assert(!(std::same_as<As, required_t> || ...),
+                      "the tag yyjson::required marks a field only in yyjson::field(\"member\", ...): "
+                      "yyjson::required(\"key\") tells that an object has the key, and yyjson::reject_missing_keys "
+                      "that it has the keys of all the fields");
+        static_assert(detail::annotate_settings<As...> || (std::same_as<As, required_t> || ...),
                       "yyjson::annotate takes yyjson::field(...), yyjson::transparent, yyjson::as_array, "
                       "yyjson::items(false), yyjson::default_ and the read policies yyjson::reject_unknown_keys, "
                       "yyjson::reject_missing_keys, yyjson::reject_null_as_missing, yyjson::reject_duplicates and "
                       "yyjson::strict, and yyjson::additional_properties(false), min_properties, max_properties, "
-                      "property_names, dependent_required, one_of_required, any_of_required, not_, if_then_else, "
+                      "property_names, property, required(\"key\", ...), dependent_required, not_, if_then_else, "
                       "all_of, any_of and one_of for a struct, "
                       "yyjson::min_items, max_items, unique_items, contains, min_contains and max_contains for a "
                       "struct annotated with yyjson::as_array, "
@@ -4240,7 +4242,14 @@ namespace yyjson
             none,
             unknown_member,
             renamed_twice,
-            same_setting_twice,
+            skip_twice,
+            adjacent_tag_twice,
+            required_twice,
+            required_key_twice,
+            emit_defaults_twice,
+            pattern_twice,
+            unknown_property_key,
+            member_property,
             skipped_with_setting,
             skip_visitable,
             annotated_visitable,
@@ -4355,6 +4364,10 @@ namespace yyjson
         // Defined after the trees.
         template <typename A>
         constexpr std::uint32_t combinator_keyword_bits(const A& a);
+        // f(key) for each key of `yyjson::required("key", ...)` at the position of the root of the subschema `p`.
+        // Defined after the subschemas.
+        template <typename P, typename F>
+        constexpr void for_each_root_required(const P& p, const F& f);
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
         // and keeps the first error.  The functions are constexpr rather than consteval, so that the lambdas that
@@ -4395,7 +4408,7 @@ namespace yyjson
             constexpr void skip_field(std::size_t i)
             {
                 if (visitable) return fail(field_key_error::skip_visitable);
-                if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
+                if (table.skipped[i]) return fail(field_key_error::skip_twice);
                 if (table.extra_keys == i) return fail(field_key_error::extra_keys_with_setting);
                 if (table.pattern[i]) return fail(field_key_error::pattern_with_setting);
                 if (renamed[i] || tagged[i] || has_presence(i) || constrained[i])
@@ -4414,12 +4427,12 @@ namespace yyjson
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 if constexpr (std::same_as<A, required_t>)
                 {
-                    if (table.required[i]) return fail(field_key_error::same_setting_twice);
+                    if (table.required[i]) return fail(field_key_error::required_twice);
                     table.required[i] = true;
                 }
                 else if constexpr (std::same_as<A, emit_defaults_t>)
                 {
-                    if (table.emit_defaults[i]) return fail(field_key_error::same_setting_twice);
+                    if (table.emit_defaults[i]) return fail(field_key_error::emit_defaults_twice);
                     table.emit_defaults[i] = true;
                 }
                 else
@@ -4439,7 +4452,7 @@ namespace yyjson
             }
             constexpr void tag_field(std::size_t i)
             {
-                if (tagged[i]) return fail(field_key_error::same_setting_twice);
+                if (tagged[i]) return fail(field_key_error::adjacent_tag_twice);
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 tagged[i] = true;
             }
@@ -4479,7 +4492,7 @@ namespace yyjson
             {
                 if (visitable) return fail(field_key_error::pattern_visitable);
                 if (table.skipped[i]) return fail(field_key_error::pattern_with_setting);
-                if (table.pattern[i]) return fail(field_key_error::same_setting_twice);
+                if (table.pattern[i]) return fail(field_key_error::pattern_twice);
                 table.pattern[i] = true;
                 table.patterns[i] = re;
                 object_keywords = true;
@@ -4556,7 +4569,8 @@ namespace yyjson
                 }
                 else if constexpr (std::same_as<A, additional_properties<bool>>)
                     close();
-                else if constexpr (struct_count_setting<A> || setting_of<A, property_names<>> || presence_setting<A>)
+                else if constexpr (struct_count_setting<A> || setting_of<A, property_names<>> || presence_setting<A> ||
+                                   member_annotation<A> || required_keys_setting<A>)
                     object_keywords = true;
                 else if constexpr (setting_of<A, additional_properties<>>)
                 {
@@ -4567,6 +4581,45 @@ namespace yyjson
                     keyword_bits |= constraint_bit<setting_type_t<A>>;
                 else
                     fail(field_key_error::not_a_struct_setting);
+            }
+
+            // The index of the field whose JSON key is `key`, or N.
+            [[nodiscard]] constexpr std::size_t key_index(std::string_view key) const noexcept
+            {
+                for (std::size_t i = 0; i < N; ++i)
+                    if (!table.skipped[i] && !table.keyless(i) && table.keys[i] == key) return i;
+                return N;
+            }
+            constexpr void require_field(std::string_view key)
+            {
+                const auto i = key_index(key);
+                if (i == N) return fail(field_key_error::unknown_property_key);
+                table.required[i] = true;
+            }
+            // `yyjson::property`, `yyjson::required("key", ...)` and the required keys of the root of a subschema of
+            // `yyjson::all_of` on the struct, after the keys of the fields are known.
+            template <typename A>
+            constexpr void apply_type_key(const A& a)
+            {
+                if constexpr (member_annotation<A>)
+                {
+                    const auto i = key_index(a.key());
+                    if (i == N) return fail(field_key_error::unknown_property_key);
+                    for_each_setting(a.settings, [&]<typename V>(const V&) {
+                        constrain_field(i, std::same_as<setting_type_t<V>, items<>>,
+                                        setting_of<V, additional_properties<>> || setting_of<V, property_names<>>);
+                    });
+                }
+                else if constexpr (required_keys_setting<A>)
+                {
+                    if (!required_keys_unique(a)) return fail(field_key_error::required_key_twice);
+                    for (std::size_t k = 0; k < a.size(); ++k) require_field(a.key(k));
+                }
+                else if constexpr (setting_of<A, all_of_t<0>>)
+                {
+                    for (const auto& p : a.operands)
+                        for_each_root_required(p, [&](std::string_view key) { require_field(key); });
+                }
             }
 
             // The error of the keywords of a value or an array on the struct.
@@ -4720,11 +4773,24 @@ namespace yyjson
                 if (t == ^^yyjson::enum_ || t == ^^yyjson::items || t == ^^yyjson::additional_properties ||
                     t == ^^yyjson::contains || t == ^^yyjson::property_names || t == ^^yyjson::prefix_items_t ||
                     t == ^^yyjson::matches_t || t == ^^yyjson::not_ || t == ^^yyjson::if_then_else_t ||
-                    t == ^^yyjson::all_of_t || t == ^^yyjson::any_of_t || t == ^^yyjson::one_of_t)
+                    t == ^^yyjson::all_of_t || t == ^^yyjson::any_of_t || t == ^^yyjson::one_of_t ||
+                    t == ^^yyjson::detail::required_keys)
                     result.push_back(a);
             }
             return result;
         }
+        // Whether the member I of T is annotated with `yyjson::property`, which annotates a struct.
+        template <typename T, std::size_t I>
+        inline constexpr bool property_annotated = [] {
+            for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (std::meta::has_template_arguments(type) &&
+                    std::meta::template_of(type) == ^^yyjson::detail::member_schema)
+                    return true;
+            }
+            return false;
+        }();
         template <typename T, std::size_t I>
         inline constexpr std::span<const std::meta::info> template_annotations =
             std::define_static_array(template_annotations_of<T, I>());
@@ -4799,7 +4865,7 @@ namespace yyjson
                              !field_reflection::field_annotations<T, Is, extra_items_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, extra_keys_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, pattern_properties>.empty() ||
-                             constraint_annotated<T, Is>) ||
+                             property_annotated<T, Is> || constraint_annotated<T, Is>) ||
                             ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             else
@@ -4837,6 +4903,7 @@ namespace yyjson
                         for (const pattern_properties& p :
                              field_reflection::field_annotations<T, Is, pattern_properties>)
                             builder.set_pattern(Is, p.regex());
+                        if constexpr (property_annotated<T, Is>) builder.fail(field_key_error::member_property);
                         if constexpr (constraint_annotated<T, Is>)
                             builder.constrain_field(
                                 Is, !value_keyword_annotated<T, Is> && items_annotated_only<T, Is>(),
@@ -4859,8 +4926,7 @@ namespace yyjson
                 if (!std::meta::has_template_arguments(type)) continue;
                 const auto t = std::meta::template_of(type);
                 if (t == ^^yyjson::not_ || t == ^^yyjson::if_then_else_t || t == ^^yyjson::all_of_t ||
-                    t == ^^yyjson::any_of_t || t == ^^yyjson::one_of_t || t == ^^yyjson::dependent_required_t ||
-                    t == ^^yyjson::required_groups_t)
+                    t == ^^yyjson::any_of_t || t == ^^yyjson::one_of_t || t == ^^yyjson::dependent_required_t)
                     result.push_back(a);
             }
             return result;
@@ -4874,18 +4940,40 @@ namespace yyjson
         }();
         template <typename T, std::size_t K>
         using type_condition_type = typename[:std::meta::remove_cvref(std::meta::type_of(type_conditions<T>[K])):];
-        // Whether the class T is annotated with `yyjson::dependent_required`, `one_of_required` or `any_of_required`,
-        // which are keywords of its object as well as conditions.
+        // Whether the class T is annotated with `yyjson::dependent_required`, which is a keyword of its object as well
+        // as a condition.
         template <typename T>
         inline constexpr bool type_presence_annotated = [] {
             for (const auto a : type_conditions<T>)
                 if (std::meta::template_of(std::meta::remove_cvref(std::meta::type_of(a))) ==
-                        ^^yyjson::dependent_required_t ||
-                    std::meta::template_of(std::meta::remove_cvref(std::meta::type_of(a))) ==
-                        ^^yyjson::required_groups_t)
+                    ^^yyjson::dependent_required_t)
                     return true;
             return false;
         }();
+
+        // The annotations of the class T of `yyjson::property` and `yyjson::required("key", ...)`.
+        template <typename T>
+        consteval std::vector<std::meta::info> type_keys_of()
+        {
+            auto result = std::vector<std::meta::info>{};
+            for (const auto a : std::meta::annotations_of(std::meta::dealias(^^T)))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (!std::meta::has_template_arguments(type)) continue;
+                const auto t = std::meta::template_of(type);
+                if (t == ^^yyjson::detail::member_schema || t == ^^yyjson::detail::required_keys) result.push_back(a);
+            }
+            return result;
+        }
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> type_keys = [] {
+            if constexpr (std::is_class_v<T>)
+                return std::span<const std::meta::info>(std::define_static_array(type_keys_of<T>()));
+            else
+                return std::span<const std::meta::info>{};
+        }();
+        template <typename T, std::size_t K>
+        using type_key_type = typename[:std::meta::remove_cvref(std::meta::type_of(type_keys<T>[K])):];
 
         // The annotations of the class T of `yyjson::contains`.
         template <typename T>
@@ -5086,7 +5174,7 @@ namespace yyjson
                                !field_reflection::type_annotations<T, items<bool>>.empty() ||
                                !field_reflection::type_annotations<T, additional_properties<bool>>.empty() ||
                                struct_property_counts<T> || struct_property_names<T> ||
-                               type_array_keywords_annotated<T>)
+                               type_array_keywords_annotated<T> || !type_keys<T>.empty())
                 return true;
             else if constexpr (!visitable<T>)
                 return annotated_members<T>;
@@ -5141,8 +5229,18 @@ namespace yyjson
                 if (type_array_keywords_annotated<T>) builder.keyword_bits |= constraint_bit<min_items>;
                 if (!field_reflection::type_annotations<T, min_properties>.empty() ||
                     !field_reflection::type_annotations<T, max_properties>.empty() || !type_property_names<T>.empty() ||
-                    type_presence_annotated<T>)
+                    type_presence_annotated<T> || !type_keys<T>.empty())
                     builder.object_keywords = true;
+#endif
+                for_each_annotation([&](const auto& a) { builder.apply_type_key(a); }, annotations<T>.values);
+#if FIELD_RFL_ANNOTATIONS
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    (builder.apply_type_key(std::meta::extract<type_key_type<T, Ks>>(type_keys<T>[Ks])), ...);
+                }(std::make_index_sequence<type_keys<T>.size()>{});
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    (builder.apply_type_key(std::meta::extract<type_condition_type<T, Ks>>(type_conditions<T>[Ks])),
+                     ...);
+                }(std::make_index_sequence<type_conditions<T>.size()>{});
 #endif
                 return builder.result();
             }
@@ -5152,8 +5250,26 @@ namespace yyjson
             static_assert(table.error != field_key_error::renamed_twice,
                           "a field is renamed twice, by yyjson::annotations, by an annotation of the member or by a "
                           "(member, \"key\") pair of VISITABLE_STRUCT");
-            static_assert(table.error != field_key_error::same_setting_twice,
-                          "a field is given yyjson::skip or yyjson::adjacent_tag twice");
+            static_assert(table.error != field_key_error::skip_twice, "a field is given yyjson::skip twice");
+            static_assert(table.error != field_key_error::adjacent_tag_twice,
+                          "a field is given yyjson::adjacent_tag twice");
+            static_assert(table.error != field_key_error::required_twice,
+                          "a field is given the tag yyjson::required twice, in yyjson::field or on the member");
+            static_assert(table.error != field_key_error::required_key_twice,
+                          "yyjson::required(\"key\", ...) takes each key once");
+            static_assert(table.error != field_key_error::emit_defaults_twice,
+                          "a field is given yyjson::emit_defaults twice");
+            static_assert(table.error != field_key_error::pattern_twice,
+                          "a field is given yyjson::pattern_properties twice");
+            static_assert(table.error != field_key_error::member_property,
+                          "[[=yyjson::property(\"key\", ...)]] annotates a struct, not a member: the annotations of "
+                          "a member constrain its value, and yyjson::field(\"member\", yyjson::property(...)) the "
+                          "keys of the struct of its value");
+            static_assert(table.error != field_key_error::unknown_property_key,
+                          "yyjson::property and yyjson::required(\"key\", ...) on a struct, and in the subschemas of "
+                          "its yyjson::all_of, name a field by its JSON key, which no field of the struct has; a "
+                          "skipped field, the field of yyjson::extra_keys or of yyjson::pattern_properties and a tag "
+                          "have no key of a field");
             static_assert(table.error != field_key_error::skipped_with_setting,
                           "a field annotated with yyjson::skip takes no other setting");
             static_assert(table.error != field_key_error::skip_visitable,
@@ -5181,8 +5297,8 @@ namespace yyjson
                           "a struct annotated with yyjson::transparent has no keys of its own: it takes no "
                           "yyjson::not_, if_then_else, all_of, any_of or one_of, which its field can take");
             static_assert(table.error != field_key_error::required_with_default,
-                          "a field annotated with yyjson::required has no default: it takes no yyjson::default_ or "
-                          "yyjson::default_from");
+                          "a field annotated with yyjson::required, or whose key yyjson::required(\"key\", ...) on "
+                          "the struct names, has no default: it takes no yyjson::default_ or yyjson::default_from");
             static_assert(table.error != field_key_error::default_twice,
                           "a field takes one default: yyjson::default_ or yyjson::default_from, once");
             static_assert(table.error != field_key_error::emit_defaults_without_default,
@@ -5230,7 +5346,7 @@ namespace yyjson
             static_assert(table.error != field_key_error::transparent_object_keyword,
                           "a struct annotated with yyjson::transparent has no keys of its own: it takes no "
                           "yyjson::additional_properties(false), min_properties, max_properties, property_names, "
-                          "dependent_required, one_of_required, any_of_required, yyjson::extra_keys or "
+                          "property, required(\"key\", ...), dependent_required, yyjson::extra_keys or "
                           "yyjson::pattern_properties, which the struct of its field can take");
             static_assert(table.error != field_key_error::extra_keys_twice,
                           "only one field of a struct may be annotated with yyjson::extra_keys");
@@ -6115,9 +6231,11 @@ namespace yyjson
                               "yyjson::enumerator and yyjson::enum_format annotate an enumeration, not a variant");
                 static_assert(!(read_policy<As> || ...),
                               "the read policies, such as yyjson::strict, annotate a struct, not a variant");
-                static_assert(!((combinator_setting<As> || presence_setting<As>) || ...),
-                              "yyjson::not_, if_then_else, all_of, any_of, one_of, dependent_required, one_of_required "
-                              "and any_of_required in yyjson::annotate annotate a struct, not a variant");
+                static_assert(!((combinator_setting<As> || presence_setting<As> || member_annotation<As> ||
+                                 required_keys_setting<As>) ||
+                                ...),
+                              "yyjson::not_, if_then_else, all_of, any_of, one_of, property, required(\"key\", ...) "
+                              "and dependent_required in yyjson::annotate annotate a struct, not a variant");
                 auto result = sizeof...(As);
                 auto i = std::size_t{0};
                 ((result = internal_tag_annotation<As> ? i : result, ++i), ...);
@@ -7024,10 +7142,11 @@ namespace yyjson
             all_of,
             any_of,
             one_of,
-            // the struct settings that lower into if_then_else, one_of and any_of of required keys
+            // `yyjson::dependent_required`, which lowers into if_then_else of required keys, and one_of and any_of
+            // whose subschemas only require keys, which are checked as a count of the subschemas held
             dependent_required,
-            one_of_required,
-            any_of_required,
+            one_of_keys,
+            any_of_keys,
         };
 
         // A position of a schema: its keywords, its values of `yyjson::const_` and `yyjson::enum_`, the constant
@@ -7052,12 +7171,13 @@ namespace yyjson
             std::size_t operands_first = 0;
             std::size_t operands_count = 0;
             std::size_t next = 0;
-            // the first node of a `yyjson::field("key", ...)`, which holds its key and the keywords of its value and
-            // links the next one by `next`
+            // the first member, which holds its key and the keywords of its value and links the next one by `next`:
+            // a `yyjson::property` (`named`), or a key of `yyjson::required("key", ...)` (`required`)
             std::size_t members = 0;
             tree_string key;
             bool required = false;
-            // `yyjson::additional_properties(false)`, which allows only the keys of `members` and the tags
+            bool named = false;
+            // `yyjson::additional_properties(false)`, which allows only the keys of the `named` members and the tags
             bool closed = false;
             // whether the node is a position, whose keywords with those of its `yyjson::all_of` must leave a value to
             // read: the root and the subschemas of the elements, the keys and the values of a position
@@ -7072,6 +7192,8 @@ namespace yyjson
             multiple_of_not_positive,
             contains_missing,
             prefix_position_too_large,
+            closed_required,
+            required_key_twice,
         };
 
         // The schema of a field as constant data: its nodes, of which the first is the field, and the pools of their
@@ -7091,6 +7213,8 @@ namespace yyjson
         template <std::size_t N, typename... As>
         inline constexpr bool constraint_field_annotation<field_annotation<N, As...>> =
             count_true<(constraint_setting<As> || object_subschema_setting<As> || member_annotation<As>)...> != 0;
+        template <std::size_t N, typename... As>
+        inline constexpr bool constraint_field_annotation<member_schema<N, As...>> = sizeof...(As) != 0;
 
         // Whether a field of the class S has a keyword of its value, which the types of the settings tell.
         template <typename S>
@@ -7106,7 +7230,12 @@ namespace yyjson
                 if constexpr (!annotated && !visitable<S> && field_reflection::field_countable<S>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return count_true<constraint_annotated<S, Is>...> != 0;
-                    }(std::make_index_sequence<field_reflection::field_count<S>>{});
+                    }(std::make_index_sequence<field_reflection::field_count<S>>{}) ||
+                           std::ranges::any_of(type_keys<S>, [](std::meta::info a) {
+                               const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                               return std::meta::template_of(type) ==
+                                      ^^member_schema && std::meta::template_arguments_of(type).size() > 1;
+                           });
                 else
 #endif
                     return annotated;
@@ -7142,7 +7271,17 @@ namespace yyjson
                     }
                 },
                 annotations<S>.values);
+            // `yyjson::property` on the struct, with the key of the field
+            const auto property = [&](const auto& a) {
+                if constexpr (member_annotation<std::remove_cvref_t<decltype(a)>>)
+                    if (a.key() == keys::table.keys[R] && !keys::table.skipped[R] && !keys::table.keyless(R))
+                        for_each_setting(a.settings, f);
+            };
+            for_each_annotation(property, annotations<S>.values);
 #if FIELD_RFL_ANNOTATIONS
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (property(std::meta::extract<type_key_type<S, Ks>>(type_keys<S>[Ks])), ...);
+            }(std::make_index_sequence<type_keys<S>.size()>{});
             if constexpr (std::same_as<typename keys::source, reflected_field_names<S>>)
             {
                 for (const auto& a : field_reflection::field_annotations<S, R, minimum>) f(a);
@@ -7303,13 +7442,47 @@ namespace yyjson
             return true;
         }
 
-        // The nodes and the pools of a schema while it is built, and the first error in it.
+        // The keys of `yyjson::required("key", ...)` of the node `node` that a `prefix_schema` keeps instead of
+        // members of the node: each key as its length, 7 bits in a character, and then its characters.
+        struct required_record
+        {
+            std::size_t node = 0;
+            tree_string keys;
+        };
+        struct required_list
+        {
+            std::size_t node = 0;
+            std::string keys;
+        };
+
+        template <typename F>
+        constexpr void for_each_record_key(std::string_view keys, const F& f)
+        {
+            for (std::size_t i = 0; i < keys.size();)
+            {
+                std::size_t size = 0;
+                for (std::size_t shift = 0;; shift += 7)
+                {
+                    const auto c = static_cast<unsigned char>(keys[i++]);
+                    size |= std::size_t{c & 0x7FU} << shift;
+                    if ((c & 0x80U) == 0) break;
+                }
+                f(keys.substr(i, size));
+                i += size;
+            }
+        }
+
+        // The nodes and the pools of a schema while it is built, and the first error in it.  `compact` keeps the
+        // required keys in `records`; `drop_root` leaves out those of the root, which a struct checks by its fields.
         struct tree_builder
         {
             std::vector<schema_node> nodes;
             std::vector<json_scalar> values;
             std::vector<tree_string> patterns;
             constraint_error error = constraint_error::none;
+            bool compact = false;
+            bool drop_root = false;
+            std::vector<required_list> records;
 
             constexpr void fail(constraint_error e) noexcept
             {
@@ -7317,8 +7490,89 @@ namespace yyjson
             }
         };
 
+        // Makes the node `at` require the key `key`: a member after its others, or a record if `b.compact`.
+        template <typename Keep>
+        constexpr void require_key(tree_builder& b, std::size_t at, std::string_view key, const Keep& keep)
+        {
+            if (b.compact)
+            {
+                auto list = std::ranges::find(b.records, at, &required_list::node);
+                if (list == b.records.end()) list = b.records.insert(list, required_list{at, {}});
+                auto size = key.size();
+                do
+                {
+                    list->keys.push_back(static_cast<char>((size & 0x7FU) | (size > 0x7FU ? 0x80U : 0U)));
+                    size >>= 7;
+                } while (size != 0);
+                list->keys.append(key);
+                return;
+            }
+            const auto member = b.nodes.size();
+            b.nodes.emplace_back();
+            b.nodes[member].key = keep(key);
+            b.nodes[member].required = true;
+            auto* link = &b.nodes[at].members;
+            while (*link != 0) link = &b.nodes[*link].next;
+            *link = member;
+        }
+
         template <typename P, typename Keep>
-        constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep);
+        constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep, bool drop = false);
+
+        // Whether the node `n` checks nothing but its keys of `yyjson::required("key", ...)`.
+        template <typename N>
+        requires std::same_as<N, schema_node>
+        constexpr bool bare_node(const N& n) noexcept
+        {
+            return (n.constraints.bits & ~constraint_bit<member_schema<0>>) == 0 && n.combinators == 0 &&
+                   n.items == 0 && n.properties == 0 && n.keys == 0 && n.contains == 0 && n.prefix_count == 0 &&
+                   n.values_count == 0 && n.patterns_count == 0 && !n.closed && !n.named;
+        }
+        // Whether the subschema `n` only requires keys, one or more.
+        template <typename N>
+        requires std::same_as<N, schema_node>
+        constexpr bool requires_only(const std::vector<N>& nodes, const N& n)
+        {
+            if (!bare_node(n) || n.members == 0) return false;
+            for (auto m = n.members; m != 0; m = nodes[m].next)
+                if (!nodes[m].required || !bare_node(nodes[m])) return false;
+            return true;
+        }
+
+        // Whether the subschema `n` checks nothing: no keys, and no `yyjson::property`.
+        template <typename N>
+        requires std::same_as<N, schema_node>
+        constexpr bool empty_node(const N& n) noexcept
+        {
+            return bare_node(n) && n.members == 0;
+        }
+
+        // Unlinks each `yyjson::all_of` of the node `at`, at any depth, whose subschemas are left with nothing to
+        // check after their required keys are dropped.
+        constexpr void unlink_bare_all_of(tree_builder& b, std::size_t at)
+        {
+            auto* link = &b.nodes[at].combinators;
+            while (*link != 0)
+            {
+                const auto r = *link;
+                if (b.nodes[r].combinator == combinator_kind::all_of)
+                {
+                    bool bare = true;
+                    for (std::size_t j = 0; j < b.nodes[r].operands_count; ++j)
+                    {
+                        unlink_bare_all_of(b, b.nodes[r].operands_first + j);
+                        bare = bare && empty_node(b.nodes[b.nodes[r].operands_first + j]);
+                    }
+                    if (bare)
+                    {
+                        *link = b.nodes[r].next;
+                        b.nodes[at].constraints.bits &= ~constraint_bit<all_of_t<0>>;
+                        continue;
+                    }
+                }
+                link = &b.nodes[r].next;
+            }
+        }
 
         inline constexpr std::size_t new_node = static_cast<std::size_t>(-1);
 
@@ -7341,7 +7595,7 @@ namespace yyjson
                     !std::same_as<B, pattern<>>)
                     b.fail(constraint_error::keyword_twice);
                 c.bits |= constraint_bit<B>;
-                if constexpr (is_field_annotation<A>::value || presence_setting<A>)
+                if constexpr (presence_setting<A> || required_keys_setting<A>)
                     c.bits |= constraint_bit<member_schema<0>>;
                 else if constexpr (std::same_as<A, additional_properties<bool>>)
                 {
@@ -7419,26 +7673,38 @@ namespace yyjson
             std::size_t last_member = 0;
             visit([&]<typename A>(const A& a) {
                 using B = setting_type_t<A>;
-                if constexpr (std::same_as<B, member_schema<0>> || is_field_annotation<A>::value)
+                if constexpr (std::same_as<B, member_schema<0>>)
                 {
-                    auto member = std::size_t{0};
-                    if constexpr (is_field_annotation<A>::value)
-                    {
-                        member = build_schema_node(b, [&a](const auto& f) { for_each_annotation(f, a.values); }, keep);
-                        b.nodes[member].key = keep(a.member());
-                        b.nodes[member].required = subschema_entry_t<A>::required;
-                    }
-                    else
-                    {
-                        member = build_schema_node(b, [&a](const auto& f) { for_each_setting(a.settings, f); }, keep);
-                        b.nodes[member].key = keep(a.key());
-                        b.nodes[member].required = A::required;
-                    }
+                    const auto member =
+                        build_schema_node(b, [&a](const auto& f) { for_each_setting(a.settings, f); }, keep);
+                    b.nodes[member].key = keep(a.key());
+                    b.nodes[member].named = true;
                     if (last_member == 0)
                         node.members = member;
                     else
                         b.nodes[last_member].next = member;
                     last_member = member;
+                }
+                else if constexpr (required_keys_setting<A>)
+                {
+                    if (!required_keys_unique(a)) b.fail(constraint_error::required_key_twice);
+                    for (std::size_t k = 0; k < a.size() && !(b.drop_root && index == 0); ++k)
+                    {
+                        if (b.compact)
+                        {
+                            require_key(b, index, a.key(k), keep);
+                            continue;
+                        }
+                        const auto member = b.nodes.size();
+                        b.nodes.emplace_back();
+                        b.nodes[member].key = keep(a.key(k));
+                        b.nodes[member].required = true;
+                        if (last_member == 0)
+                            node.members = member;
+                        else
+                            b.nodes[last_member].next = member;
+                        last_member = member;
+                    }
                 }
                 else if constexpr (combinator_setting<A>)
                 {
@@ -7476,8 +7742,21 @@ namespace yyjson
                         r.operands_first = b.nodes.size();
                         r.operands_count = a.operands.size();
                         b.nodes.resize(b.nodes.size() + a.operands.size());
+                        const bool drop = b.drop_root && index == 0 && r.combinator == combinator_kind::all_of;
                         for (std::size_t i = 0; i < a.operands.size(); ++i)
-                            graft_prefix(b, r.operands_first + i, a.operands[i], keep);
+                            graft_prefix(b, r.operands_first + i, a.operands[i], keep, drop);
+                        if (drop && std::ranges::all_of(std::span(b.nodes).subspan(r.operands_first, r.operands_count),
+                                                        [](const schema_node& n) { return empty_node(n); }))
+                        {
+                            // the subschemas only required the keys of the fields: nothing is left to check
+                            b.nodes.resize(record);
+                            return;
+                        }
+                        if (r.combinator != combinator_kind::all_of &&
+                            std::ranges::all_of(std::span(b.nodes).subspan(r.operands_first, r.operands_count),
+                                                [&](const schema_node& n) { return requires_only(b.nodes, n); }))
+                            r.combinator = r.combinator == combinator_kind::one_of ? combinator_kind::one_of_keys
+                                                                                   : combinator_kind::any_of_keys;
                     }
                     b.nodes[record] = r;
                     if (last_combinator == 0)
@@ -7491,42 +7770,13 @@ namespace yyjson
                     const auto record = b.nodes.size();
                     b.nodes.emplace_back();
                     auto r = schema_node{};
+                    r.combinator = combinator_kind::dependent_required;
                     r.operands_first = b.nodes.size();
-                    // the operand j gets the required keys from `first` up to `last` of `key(i)`
-                    const auto require = [&](std::size_t j, std::size_t first, std::size_t last, const auto& key) {
-                        std::size_t previous = 0;
-                        for (std::size_t i = first; i < last; ++i)
-                        {
-                            const auto member = b.nodes.size();
-                            b.nodes.emplace_back();
-                            b.nodes[member].key = keep(key(i));
-                            b.nodes[member].required = true;
-                            if (previous == 0)
-                                b.nodes[r.operands_first + j].members = member;
-                            else
-                                b.nodes[previous].next = member;
-                            previous = member;
-                        }
-                    };
-                    if constexpr (std::same_as<B, dependent_required_t<0>>)
-                    {
-                        r.combinator = combinator_kind::dependent_required;
-                        r.operands_count = 3;
-                        b.nodes.resize(b.nodes.size() + 3);
-                        require(0, 0, 1, [&a](std::size_t) { return a.key(); });
-                        require(1, 0, a.dependent_size.size(), [&a](std::size_t i) { return a.dependent(i); });
-                    }
-                    else
-                    {
-                        r.combinator = std::same_as<B, required_groups_t<true, 0, 0>>
-                                           ? combinator_kind::one_of_required
-                                           : combinator_kind::any_of_required;
-                        r.operands_count = a.group_end.size();
-                        b.nodes.resize(b.nodes.size() + a.group_end.size());
-                        for (std::size_t g = 0; g < a.group_end.size(); ++g)
-                            require(g, g == 0 ? 0 : a.group_end[g - 1], a.group_end[g],
-                                    [&a](std::size_t i) { return a.key(i); });
-                    }
+                    r.operands_count = 3;
+                    b.nodes.resize(b.nodes.size() + 3);
+                    require_key(b, r.operands_first, a.key(), keep);
+                    for (std::size_t i = 0; i < a.dependent_size.size(); ++i)
+                        require_key(b, r.operands_first + 1, a.dependent(i), keep);
                     b.nodes[record] = r;
                     if (last_combinator == 0)
                         node.combinators = record;
@@ -7561,9 +7811,9 @@ namespace yyjson
         }
 
         // Copies the tree of the position `p` of `yyjson::prefix_items` into the node `at`, and its other nodes
-        // into new nodes.
+        // into new nodes.  `drop` leaves out the required keys of the nodes of the position of the root of `p`.
         template <typename P, typename Keep>
-        constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep)
+        constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep, bool drop)
         {
             if (p.error != constraint_error::none) b.fail(p.error);
             const auto base = b.nodes.size();
@@ -7588,6 +7838,16 @@ namespace yyjson
             };
             b.nodes[at] = moved(p.nodes[0]);
             for (std::size_t k = 1; k < p.node_size; ++k) b.nodes.push_back(moved(p.nodes[k]));
+            const auto dropped = drop ? position_nodes(p, 0) : std::vector<std::size_t>{};
+            for (std::size_t k = 0; k < p.record_size; ++k)
+            {
+                const auto& r = p.records[k];
+                if (std::ranges::find(dropped, r.node) != dropped.end()) continue;
+                for_each_record_key(p.chars.view(r.keys), [&](std::string_view key) {
+                    require_key(b, r.node == 0 ? at : r.node + base - 1, key, keep);
+                });
+            }
+            if (drop) unlink_bare_all_of(b, at);
         }
 
         // The characters that a position of `yyjson::prefix_items` holds, of the string literals of its settings,
@@ -7622,6 +7882,8 @@ namespace yyjson
             std::size_t value_size = 0;
             std::array<tree_string, 8> patterns = {};
             std::size_t pattern_size = 0;
+            std::array<required_record, 8> records = {};
+            std::size_t record_size = 0;
             char_pool<prefix_position_chars> chars = {};
             constraint_error error = constraint_error::none;
 
@@ -7630,31 +7892,57 @@ namespace yyjson
             requires (sizeof...(As) != 0 && !(std::same_as<As, prefix_schema> || ...))
             consteval prefix_schema(As... settings)  // NOLINT(google-explicit-constructor)
             {
-                static_assert((subschema_setting<As> && ...),
+                static_assert(check_subschema_settings<As...>());
+                static_assert((subschema_argument<As> && ...),
                               "a position of yyjson::prefix_items and a subschema of yyjson::all_of, any_of and "
-                              "one_of take the keywords of a value, such as yyjson::minimum and yyjson::items, and "
-                              "yyjson::field(\"key\", ...)");
-                const auto entries = make_setting_list(make_subschema_entry(settings)...);
+                              "one_of take the keywords of a value, such as yyjson::minimum and yyjson::items, "
+                              "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...)");
+                const auto entries = make_setting_list(settings...);
                 auto b = tree_builder{};
+                b.compact = true;
                 auto pool = char_pool<prefix_position_chars>{};
                 bool too_long = false;
                 build_schema_node(
                     b, [&](const auto& f) { for_each_setting(entries, f); },
                     [&](std::string_view s) { return keep_string(pool, s, too_long); });
                 if (too_long || b.nodes.size() > nodes.size() || b.values.size() > values.size() ||
-                    b.patterns.size() > patterns.size())
+                    b.patterns.size() > patterns.size() || b.records.size() > records.size())
                     b.fail(constraint_error::prefix_position_too_large);
                 error = b.error;
                 if (error != constraint_error::none) return;
                 node_size = b.nodes.size();
                 value_size = b.values.size();
                 pattern_size = b.patterns.size();
+                record_size = b.records.size();
+                for (std::size_t k = 0; k < record_size; ++k)
+                {
+#if defined(__cpp_lib_define_static)
+                    const auto keys = std::string_view(static_string(b.records[k].keys), b.records[k].keys.size());
+#else
+                    const std::string_view keys = b.records[k].keys;
+#endif
+                    records[k] = {b.records[k].node, keep_string(pool, keys, too_long)};
+                }
+                if (too_long)
+                {
+                    error = constraint_error::prefix_position_too_large;
+                    return;
+                }
                 std::ranges::copy(b.nodes, nodes.begin());
                 std::ranges::copy(b.values, values.begin());
                 std::ranges::copy(b.patterns, patterns.begin());
                 chars = pool;
             }
         };
+
+        template <typename P, typename F>
+        constexpr void for_each_root_required(const P& p, const F& f)
+        {
+            const auto nodes = position_nodes(p, 0);
+            for (std::size_t k = 0; k < p.record_size; ++k)
+                if (std::ranges::find(nodes, p.records[k].node) != nodes.end())
+                    for_each_record_key(p.chars.view(p.records[k].keys), f);
+        }
 
         template <typename T, std::size_t>
         using always_t = T;
@@ -7745,7 +8033,22 @@ namespace yyjson
                 const auto root = roots.back();
                 roots.pop_back();
                 tree.nodes[root].position = true;
-                for (const auto k : position_nodes(tree, root))
+                const auto nodes = position_nodes(tree, root);
+                for (const auto c : nodes)
+                {
+                    if (!tree.nodes[c].closed) continue;
+                    const auto named = [&](std::string_view key) {
+                        for (auto m = tree.nodes[c].members; m != 0; m = tree.nodes[m].next)
+                            if (tree.nodes[m].named && tree.nodes[m].key.view() == key) return true;
+                        return false;
+                    };
+                    for (const auto k : nodes)
+                        for (auto m = tree.nodes[k].members; m != 0; m = tree.nodes[m].next)
+                            if (tree.nodes[m].required && !named(tree.nodes[m].key.view()) &&
+                                tree.error == constraint_error::none)
+                                tree.error = constraint_error::closed_required;
+                }
+                for (const auto k : nodes)
                 {
                     const auto& n = tree.nodes[k];
                     for (const auto sub : {n.items, n.properties, n.keys, n.contains})
@@ -7772,6 +8075,11 @@ namespace yyjson
                           "a position of yyjson::prefix_items and a subschema of yyjson::all_of, any_of and one_of "
                           "take up to 8 subschemas and combinators, 16 values of yyjson::const_ and yyjson::enum_, 8 "
                           "patterns and 256 characters of strings");
+            static_assert(tree.error != constraint_error::closed_required,
+                          "yyjson::additional_properties(false) allows only the keys of yyjson::property at its "
+                          "position, and yyjson::required(\"key\") there requires another key");
+            static_assert(tree.error != constraint_error::required_key_twice,
+                          "yyjson::required(\"key\", ...) takes each key once");
         };
 
         // The tree of the field R of S, by its index among all the fields, of a struct that `has_constraints`.
@@ -7828,8 +8136,7 @@ namespace yyjson
 
         // The settings that `yyjson::alt` takes: those of the value of a field.
         template <typename A>
-        concept alternative_setting = (constraint_setting<A> && !setting_of<A, member_schema<0>>) ||
-                                      object_subschema_setting<A> || is_field_annotation<A>::value;
+        concept alternative_setting = subschema_setting<A>;
 
         template <typename A>
         inline constexpr bool is_alt = false;
@@ -8089,34 +8396,40 @@ namespace yyjson
 #endif
         }
 
-        // Whether the struct S is annotated with `yyjson::not_`, `if_then_else`, `all_of`, `any_of` or `one_of`,
-        // which check the keys of the object read into it and the values of its fields.
+        template <typename S>
+        constexpr tree_builder build_struct_tree()
+        {
+            auto b = tree_builder{};
+            b.drop_root = true;
+            build_schema_node(
+                b, [](const auto& f) { for_each_struct_condition<S>(f); },
+                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
+            return b;
+        }
+
+        // Whether the struct S is annotated with `yyjson::not_`, `if_then_else`, `all_of`, `any_of`, `one_of` or
+        // `dependent_required`, which check the keys of the object read into it and the values of its fields, other
+        // than the keys of its fields that `yyjson::all_of` only requires.
         template <typename S>
         inline constexpr bool has_struct_conditions = [] {
             if constexpr (!std::is_class_v<S> || as_array_struct<S>)
                 return false;
             else
             {
-                constexpr bool annotated = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                    return count_true<(combinator_setting<As> || presence_setting<As>)...> != 0;
-                }(std::type_identity<annotation_values_of<S>>{});
+                constexpr bool annotated =
+                    []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                        return count_true<(combinator_setting<As> || presence_setting<As>)...> != 0;
+                    }(std::type_identity<annotation_values_of<S>>{})
 #if FIELD_RFL_ANNOTATIONS
-                return annotated || !type_conditions<S>.empty();
-#else
-                return annotated;
+                    || !type_conditions<S>.empty()
 #endif
+                    ;
+                if constexpr (annotated)
+                    return checked_tree<&build_struct_tree<S>>::tree.nodes[0].combinators != 0;
+                else
+                    return false;
             }
         }();
-
-        template <typename S>
-        constexpr tree_builder build_struct_tree()
-        {
-            auto b = tree_builder{};
-            build_schema_node(
-                b, [](const auto& f) { for_each_struct_condition<S>(f); },
-                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
-            return b;
-        }
 
         // The keywords of the object of a struct that a subschema of its conditions takes, with
         // `yyjson::additional_properties(false)`.
@@ -8127,6 +8440,7 @@ namespace yyjson
         {
             none,
             unknown_key,
+            closed_required,
         };
 
         // The keywords of the root node of `tree` and of the subschemas of its combinators, at any depth, which all
@@ -8158,7 +8472,7 @@ namespace yyjson
         }
 
         // The first error of the subschemas of the conditions of S, which the root node and the subschemas of its
-        // combinators are: `yyjson::field` with a key that no field of S has.
+        // combinators are: a member with a key that no field of S has.
         template <typename S, typename Tree>
         consteval struct_condition_error check_struct_tree(const Tree& tree)
         {
@@ -8174,6 +8488,24 @@ namespace yyjson
                     for (std::size_t j = 0; j < tree.nodes[r].operands_count; ++j)
                         pending.push_back(tree.nodes[r].operands_first + j);
             }
+            // the tree leaves out the keys that the fields require: a closed subschema at the root must name them
+            using keys = typename presence_keys<S>::type;
+            if constexpr (!std::is_void_v<keys>)
+            {
+                constexpr auto& table = keys::table;
+                for (const auto c : position_nodes(tree, 0))
+                {
+                    if (c == 0 || !tree.nodes[c].closed) continue;
+                    for (std::size_t i = 0; i < table.keys.size(); ++i)
+                    {
+                        if (!table.required[i]) continue;
+                        bool named = false;
+                        for (auto m = tree.nodes[c].members; m != 0 && !named; m = tree.nodes[m].next)
+                            named = tree.nodes[m].named && tree.nodes[m].key.view() == table.keys[i];
+                        if (!named) return struct_condition_error::closed_required;
+                    }
+                }
+            }
             return struct_condition_error::none;
         }
 
@@ -8181,7 +8513,7 @@ namespace yyjson
         struct struct_count_tree;
 
         // The tree of the conditions of the struct S: the root node holds the combinators, whose subschemas give the
-        // keys of S by `yyjson::field`.
+        // keys of S by `yyjson::property` and `yyjson::required("key", ...)`.
         template <typename S>
         struct struct_tree : checked_tree<&build_struct_tree<S>>
         {
@@ -8197,9 +8529,13 @@ namespace yyjson
                                                object_kind) == 0>());
             static constexpr auto error = check_struct_tree<S>(checked_tree<&build_struct_tree<S>>::tree);
             static_assert(error != struct_condition_error::unknown_key,
-                          "yyjson::field in yyjson::not_, if_then_else, all_of, any_of and one_of of a struct, and "
-                          "yyjson::dependent_required, one_of_required and any_of_required, name a field by its JSON "
+                          "yyjson::property and yyjson::required(\"key\", ...) in yyjson::not_, if_then_else, all_of, "
+                          "any_of and one_of of a struct, and yyjson::dependent_required, name a field by its JSON "
                           "key, which no field of the struct has");
+            static_assert(error != struct_condition_error::closed_required,
+                          "yyjson::additional_properties(false) in a subschema of yyjson::all_of of a struct allows "
+                          "only the keys of yyjson::property there, and the struct requires another key, by "
+                          "yyjson::required or yyjson::required(\"key\", ...)");
         };
 
         // f(setting) for each `yyjson::min_properties` and `yyjson::max_properties` of the struct S, in
@@ -8870,7 +9206,7 @@ namespace yyjson
             max_properties,
             additional_properties,
             property_names,
-            properties,  // a key or a value of a member that `yyjson::field` in a subschema gives
+            properties,  // a key or a value of a member that `yyjson::property` or `required` gives
             matches,
             not_,
             then,
@@ -8994,7 +9330,7 @@ namespace yyjson
                 case constraint_kind::property_names:
                     return "has a key that does not satisfy the constraints of yyjson::property_names";
                 case constraint_kind::properties:
-                    return "does not have the keys and the values that yyjson::field gives";
+                    return "does not have the keys and the values that yyjson::property and required give";
                 case constraint_kind::matches:
                     return std::format("is not read as {} by yyjson::matches", c.matches.name());
                 case constraint_kind::not_:
@@ -9016,9 +9352,9 @@ namespace yyjson
                 case constraint_kind::dependent_required:
                     return "does not have all the keys that yyjson::dependent_required requires";
                 case constraint_kind::required_groups_none:
-                    return "does not have all the keys of one group of yyjson::one_of_required or any_of_required";
+                    return "does not have all the keys that one subschema of yyjson::one_of or any_of requires";
                 case constraint_kind::required_groups_many:
-                    return "has all the keys of more than one group of yyjson::one_of_required";
+                    return "has all the keys that more than one subschema of yyjson::one_of requires";
                 case constraint_kind::pattern:
                 {
                     if (patterns.size() == 1) return std::format("does not match the pattern \"{}\"", patterns[0]);
@@ -9342,8 +9678,8 @@ namespace yyjson
                               "yyjson::object");
                 static_assert(!c.template has<member_schema<0>>() || dom_any || dom_kind_of<V> == dom_kind::object ||
                                   holds_object_struct<V>(),
-                              "yyjson::field in a subschema names a key of a struct, or of a yyjson::value or "
-                              "yyjson::object, not of the value of another type");
+                              "yyjson::property, required(\"key\", ...) and dependent_required name a key of a "
+                              "struct, or of a yyjson::value or yyjson::object, not of the value of another type");
                 static_assert(!Schema::node.closed || holds_object_struct<V>(),
                               "yyjson::additional_properties(false) in a subschema closes a struct; a map takes "
                               "yyjson::additional_properties with the keywords of its values");
@@ -9365,17 +9701,15 @@ namespace yyjson
                                   "yyjson::alt takes settings, or pointers to constexpr variables that hold them");
                     if constexpr (std::ranges::all_of(arguments, std::identity{}))
                     {
-                        constexpr bool settings[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
+                        static_assert(check_subschema_settings<alternative_setting_t<Settings>...>());
+                        constexpr bool settings[] = {true, subschema_argument<alternative_setting_t<Settings>>...};
                         static_assert(std::ranges::all_of(settings, std::identity{}),
-                                      "yyjson::alt takes the settings of the value of a field and yyjson::field, "
-                                      "but no setting of a key or of presence, such as yyjson::rename or "
-                                      "yyjson::required");
-                        if constexpr (sizeof...(Settings) != 0 && std::ranges::all_of(settings, std::identity{}))
-                        {
-                            constexpr auto at = member_position::alternative;
-                            (void)(member_settings_check<at, alternative_setting_t<Settings>>::value && ...);
+                                      "yyjson::alt takes the settings of the value of a field, "
+                                      "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...), but no "
+                                      "setting of a member, such as yyjson::rename or yyjson::default_");
+                        constexpr bool taken[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
+                        if constexpr (sizeof...(Settings) != 0 && std::ranges::all_of(taken, std::identity{}))
                             (void)checked_tree<&build_alternative_tree<Settings...>>::tree;
-                        }
                     }
                     return true;
                 }(std::type_identity<A>{});
@@ -9657,13 +9991,13 @@ namespace yyjson
                 if (holds(std::integral_constant<std::size_t, 0>()) && !holds(std::integral_constant<std::size_t, 1>()))
                     kind = constraint_kind::dependent_required;
             }
-            else if constexpr (N::node.combinator == combinator_kind::one_of_required ||
-                               N::node.combinator == combinator_kind::any_of_required)
+            else if constexpr (N::node.combinator == combinator_kind::one_of_keys ||
+                               N::node.combinator == combinator_kind::any_of_keys)
             {
                 const auto held = count(std::make_index_sequence<N::node.operands_count>());
                 if (held == 0)
                     kind = constraint_kind::required_groups_none;
-                else if (held > 1 && N::node.combinator == combinator_kind::one_of_required)
+                else if (held > 1 && N::node.combinator == combinator_kind::one_of_keys)
                     kind = constraint_kind::required_groups_many;
             }
             else if constexpr (N::node.combinator == combinator_kind::all_of)
@@ -10012,18 +10346,19 @@ namespace yyjson
                 return constraint_violation<K, true>(key);
         }
 
-        // Whether the members of `tree` from `first` name the field k of S by `yyjson::field`, and at k = the number
-        // of the fields, whether they name a key that no field of S has.
+        // Whether the members of `tree` from `first`, only those of `yyjson::property` if `named`, name the field k
+        // of S, and at k = the number of the fields, whether they name a key that no field of S has.
         template <typename S, typename Tree>
-        consteval std::array<bool, struct_field_count<S> + 1> members_key_mask(const Tree& tree, std::size_t first)
+        consteval std::array<bool, struct_field_count<S> + 1> members_key_mask(const Tree& tree, std::size_t first,
+                                                                               bool named = true)
         {
             auto mask = std::array<bool, struct_field_count<S> + 1>{};
             for (auto m = first; m != 0; m = tree.nodes[m].next)
-                mask[struct_field_of_key<S>(tree.nodes[m].key.view())] = true;
+                if (tree.nodes[m].named || !named) mask[struct_field_of_key<S>(tree.nodes[m].key.view())] = true;
             return mask;
         }
 
-        // Whether the node I of the conditions of T names the field k by `yyjson::field`.
+        // Whether the node I of the conditions of T names the field k by `yyjson::property`.
         template <typename T, std::size_t I>
         inline constexpr auto node_field_mask =
             members_key_mask<T>(struct_tree<T>::tree, struct_tree<T>::tree.nodes[I].members);
@@ -10129,7 +10464,7 @@ namespace yyjson
                 const auto count = std::ranges::count(held, true);
                 if constexpr (kind == combinator_kind::all_of)
                     return count == static_cast<std::ptrdiff_t>(held.size());
-                else if constexpr (kind == combinator_kind::any_of || kind == combinator_kind::any_of_required)
+                else if constexpr (kind == combinator_kind::any_of || kind == combinator_kind::any_of_keys)
                     return count != 0;
                 else
                     return count == 1;
@@ -10204,8 +10539,8 @@ namespace yyjson
             if constexpr (N::node.next != 0) throw_struct_members<T, N::node.next, Merge>(t, seen, obj, via);
         }
 
-        // The JSON keys of the groups of `yyjson::one_of_required` or `any_of_required` at the combinator R of the
-        // conditions of T, as `["a"], ["b", "c"]`.
+        // The JSON keys that the subschemas of `yyjson::one_of` or `any_of` at the combinator R of the conditions of
+        // T require, as `["a"], ["b", "c"]`.
         template <typename T, std::size_t R>
         consteval std::string required_groups_string()
         {
@@ -10217,7 +10552,8 @@ namespace yyjson
                 for (auto m = nodes[nodes[R].operands_first + j].members; m != 0; m = nodes[m].next)
                 {
                     result += m == nodes[nodes[R].operands_first + j].members ? "\"" : ", \"";
-                    result += nodes[m].key.view();
+                    // GCC with -fsanitize cannot fold the null check of append on a pointer into annotations<T>
+                    for (const char c : nodes[m].key.view()) result += c;
                     result += '"';
                 }
                 result += ']';
@@ -10249,10 +10585,10 @@ namespace yyjson
                                       : kind == combinator_kind::dependent_required ? "dependent_required"
                                                                                     : "one_of";
                 constexpr auto first = N::node.operands_first;
-                if constexpr (kind == combinator_kind::one_of_required || kind == combinator_kind::any_of_required)
+                if constexpr (kind == combinator_kind::one_of_keys || kind == combinator_kind::any_of_keys)
                 {
                     const bool none =
-                        kind == combinator_kind::any_of_required || ![&]<std::size_t... J>(std::index_sequence<J...>) {
+                        kind == combinator_kind::any_of_keys || ![&]<std::size_t... J>(std::index_sequence<J...>) {
                             return (struct_node_holds<T, first + J>(t, seen, condition_object<Merge>(obj)) || ...);
                         }(std::make_index_sequence<N::node.operands_count>());
                     constexpr auto& groups = required_groups_text<T, R>;
@@ -18289,7 +18625,7 @@ namespace yyjson
         }
 
         // The keyword of `Schema` that the struct `s`, read from the JSON object `json` or merged from it if
-        // `Merge`, does not satisfy on its keys, their number and the fields that `yyjson::field` names.
+        // `Merge`, does not satisfy on its keys, their number and the fields that its members name.
         template <typename Schema, bool Merge, typename S, typename Json>
         constraint_kind struct_json_violation(const S& s, const Json& json, std::string_view tag)
         {
@@ -18298,10 +18634,10 @@ namespace yyjson
             constexpr const field_constraints& c = Schema::constraints;
             constexpr auto named = members_key_mask<S>(Schema::tree, node.members);
             static_assert(
-                !named[n],
-                "yyjson::field in a subschema of a struct that a field, an element or a value holds, and "
-                "yyjson::dependent_required, one_of_required and any_of_required there, name a field by its JSON key, "
-                "which no field of that struct, or of a struct alternative of that variant, has");
+                !members_key_mask<S>(Schema::tree, node.members, false)[n],
+                "yyjson::property, required(\"key\", ...) and dependent_required in a subschema of a struct that a "
+                "field, an element or a value holds name a field by its JSON key, which no field of that struct, or "
+                "of a struct alternative of that variant, has");
             const auto obj = json.as_object();
             if (!obj.has_value()) return constraint_kind::none;
             const auto& rules = struct_rules<S>;

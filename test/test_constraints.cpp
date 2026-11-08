@@ -693,7 +693,7 @@ struct CountGate
 };
 template <>
 inline constexpr auto yyjson::annotations<CountGate> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("s", yyjson::min_items(2))), yyjson::then(yyjson::field("k", yyjson::required))));
+    yyjson::if_(yyjson::property("s", yyjson::min_items(2))), yyjson::then(yyjson::required("k"))));
 
 // the counts of yyjson::contains that are 0, null elements and a std::optional range
 struct Counted
@@ -1014,7 +1014,7 @@ namespace constraint_rules
                                     yyjson::property_names(yyjson::max_length(1)))) == none);
     static_assert(table_error(field("v", pattern_properties("^a")), field("w", extra_keys)) == none);
     static_assert(table_error(additional_properties(false), field("w", pattern_properties("^a"))) == none);
-    static_assert(table_error(field("w", pattern_properties("^a"), pattern_properties("^b"))) == same_setting_twice);
+    static_assert(table_error(field("w", pattern_properties("^a"), pattern_properties("^b"))) == pattern_twice);
     static_assert(table_error(field("w", pattern_properties("^a"), yyjson::rename("x"))) == pattern_with_setting);
     static_assert(table_error(field("w", yyjson::required), field("w", pattern_properties("^a"))) ==
                   pattern_with_setting);
@@ -1049,10 +1049,12 @@ namespace constraint_rules
                   extra_keys_map<std::map<std::string, yyjson::value>>);
     static_assert(!extra_keys_map<std::map<int, int>> && !extra_keys_map<std::multimap<std::string, int>> &&
                   !extra_keys_map<std::vector<std::pair<std::string, int>>> && !extra_keys_map<yyjson::object>);
-    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::one_of_required({"v"})) ==
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::one_of(yyjson::required("v"))) ==
+                  transparent_conditions);
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::required("v")) ==
                   transparent_object_keyword);
-    static_assert(table_error(yyjson::any_of_required({"v"}), yyjson::transparent, field("w", yyjson::skip)) ==
-                  transparent_object_keyword);
+    static_assert(table_error(yyjson::property("v", yyjson::minimum(0)), yyjson::transparent,
+                              field("w", yyjson::skip)) == transparent_object_keyword);
 }  // namespace constraint_rules
 
 // the tree of the keywords of the field `v` of a struct, by its error
@@ -1063,6 +1065,40 @@ namespace constraint_rules
     };                                   \
     template <>                          \
     inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(yyjson::field("v", __VA_ARGS__));
+// `yyjson::property` on the struct adds keywords to the value of the field that `yyjson::field` constrains, each
+// once
+struct PropertyMerged
+{
+    int v = 0;
+    bool operator==(const PropertyMerged&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PropertyMerged> =
+    yyjson::annotate(yyjson::field("v", yyjson::minimum(0)), yyjson::property("v", yyjson::maximum(9)));
+struct PropertyTwice
+{
+    int v = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<PropertyTwice> =
+    yyjson::annotate(yyjson::field("v", yyjson::minimum(0)), yyjson::property("v", yyjson::minimum(1)));
+// yyjson::additional_properties(false) allows the keys of yyjson::property only, and not those of yyjson::required
+struct ClosedKeys
+{
+    std::optional<int> zip;
+    std::optional<int> city;
+};
+CONSTRAINT_RULE(ClosedRequiredOnly, ClosedKeys, yyjson::additional_properties(false), yyjson::property("city"),
+                yyjson::required("zip"))
+CONSTRAINT_RULE(ClosedRequiredNamed, ClosedKeys, yyjson::additional_properties(false), yyjson::property("zip"),
+                yyjson::required("zip"))
+CONSTRAINT_RULE(ClosedRequiredAllOf, ClosedKeys, yyjson::additional_properties(false),
+                yyjson::all_of(yyjson::required("zip")))
+CONSTRAINT_RULE(ClosedRequiredOneOf, ClosedKeys, yyjson::one_of(yyjson::required("zip"), yyjson::required("city")),
+                yyjson::additional_properties(false), yyjson::property("zip"), yyjson::property("city"))
+#if !defined(__cpp_lib_define_static)
+CONSTRAINT_RULE(RequiredKeyTwice, ClosedKeys, yyjson::any_of(yyjson::required("zip", "zip")))
+#endif
 CONSTRAINT_RULE(MinimumTwice, int, yyjson::minimum(0), yyjson::minimum(1))
 CONSTRAINT_RULE(ConstTwice, int, yyjson::const_(1), yyjson::const_(1))
 CONSTRAINT_RULE(EnumTwice, int, yyjson::enum_(1), yyjson::enum_(2))
@@ -1171,7 +1207,7 @@ struct StructAnyOfCounts
 };
 template <>
 inline constexpr auto yyjson::annotations<StructAnyOfCounts> = yyjson::annotate(
-    yyjson::min_properties(1), yyjson::any_of(yyjson::max_properties(0), yyjson::field("v", yyjson::minimum(0))));
+    yyjson::min_properties(1), yyjson::any_of(yyjson::max_properties(0), yyjson::property("v", yyjson::minimum(0))));
 // the names of the members of a struct follow the rules of those of a map
 struct StructNamesInverted
 {
@@ -1226,6 +1262,13 @@ namespace constraint_tree_rules
                   tree_error<EnumTwice> == keyword_twice && tree_error<FormatTwice> == keyword_twice &&
                   tree_error<SatisfiesTwice> == keyword_twice);
     static_assert(tree_error<PatternsTwice> == none);
+    static_assert(tree_error<PropertyMerged> == none && tree_error<PropertyTwice> == keyword_twice);
+    static_assert(tree_error<ClosedRequiredOnly> == closed_required &&
+                  tree_error<ClosedRequiredAllOf> == closed_required);
+    static_assert(tree_error<ClosedRequiredNamed> == none && tree_error<ClosedRequiredOneOf> == none);
+#if !defined(__cpp_lib_define_static)
+    static_assert(tree_error<RequiredKeyTwice> == required_key_twice);
+#endif
     static_assert(tree_error<MultipleOfZero> == multiple_of_not_positive &&
                   tree_error<MultipleOfNegative> == multiple_of_not_positive);
     static_assert(empty_position<BoundsInverted> && empty_position<BoundsExclusive> &&
@@ -1293,11 +1336,11 @@ template <>
 inline constexpr auto yyjson::annotations<ConditionShape> = yyjson::annotate(
     yyjson::field("r", yyjson::rename("radius")),
     yyjson::if_then_else(
-        yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
-        yyjson::then(yyjson::field("radius", yyjson::required, yyjson::minimum(0))),
-        yyjson::else_(yyjson::field("p", yyjson::matches<ConditionPoint>),
-                      yyjson::field("sides", yyjson::items(yyjson::minimum(1)), yyjson::min_items(3)))),
-    yyjson::not_(yyjson::field("kind", yyjson::pattern("^x"))));
+        yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("circle"))),
+        yyjson::then(yyjson::required("radius"), yyjson::property("radius", yyjson::minimum(0))),
+        yyjson::else_(yyjson::property("p", yyjson::matches<ConditionPoint>),
+                      yyjson::property("sides", yyjson::items(yyjson::minimum(1)), yyjson::min_items(3)))),
+    yyjson::not_(yyjson::property("kind", yyjson::pattern("^x"))));
 // a field with yyjson::required in a condition, and an if_then_else without then
 struct Leveled
 {
@@ -1308,8 +1351,8 @@ struct Leveled
 template <>
 inline constexpr auto yyjson::annotations<Leveled> = yyjson::annotate(
     yyjson::field("level", yyjson::required),
-    yyjson::if_then_else(yyjson::if_(yyjson::field("level", yyjson::maximum(4))),
-                         yyjson::else_(yyjson::field("note", yyjson::required, yyjson::min_length(1)))));
+    yyjson::if_then_else(yyjson::if_(yyjson::property("level", yyjson::maximum(4))),
+                         yyjson::else_(yyjson::required("note"), yyjson::property("note", yyjson::min_length(1)))));
 // VISITABLE_STRUCT
 struct ConditionVisitable
 {
@@ -1318,8 +1361,8 @@ struct ConditionVisitable
     bool operator==(const ConditionVisitable&) const = default;
 };
 template <>
-inline constexpr auto yyjson::annotations<ConditionVisitable> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("a", yyjson::required)), yyjson::then(yyjson::field("b", yyjson::required))));
+inline constexpr auto yyjson::annotations<ConditionVisitable> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::required("a")), yyjson::then(yyjson::required("b"))));
 VISITABLE_STRUCT(ConditionVisitable, a, b);
 // VISITABLE_STRUCT in another order than the declarations, and a struct that is not an aggregate
 struct ConditionReordered
@@ -1331,7 +1374,7 @@ struct ConditionReordered
 };
 template <>
 inline constexpr auto yyjson::annotations<ConditionReordered> =
-    yyjson::annotate(yyjson::any_of(yyjson::field("c", yyjson::minimum(5))));
+    yyjson::annotate(yyjson::any_of(yyjson::property("c", yyjson::minimum(5))));
 VISITABLE_STRUCT(ConditionReordered, c, a, b);
 class ConditionConstructed
 {
@@ -1345,7 +1388,7 @@ public:
 };
 template <>
 inline constexpr auto yyjson::annotations<ConditionConstructed> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("a_", yyjson::minimum(1))), yyjson::then(yyjson::field("b_", yyjson::required))));
+    yyjson::if_(yyjson::property("a_", yyjson::minimum(1))), yyjson::then(yyjson::required("b_"))));
 VISITABLE_STRUCT(ConditionConstructed, b_, a_);
 // fields whose keys a condition tests while their values cannot tell: a std::optional with an initializer and plain
 // fields; reading tells by the keys of the object
@@ -1360,11 +1403,9 @@ struct ConditionPresence
 };
 template <>
 inline constexpr auto yyjson::annotations<ConditionPresence> =
-    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
-                                          yyjson::then(yyjson::field("d", yyjson::required))),
-                     yyjson::if_then_else(yyjson::if_(yyjson::field("b", yyjson::required)),
-                                          yyjson::then(yyjson::field("d", yyjson::required))),
-                     yyjson::not_(yyjson::field("c", yyjson::required), yyjson::field("e", yyjson::required)));
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::required("a")), yyjson::then(yyjson::required("d"))),
+                     yyjson::if_then_else(yyjson::if_(yyjson::required("b")), yyjson::then(yyjson::required("d"))),
+                     yyjson::not_(yyjson::required("c"), yyjson::required("e")));
 // null in a field that cannot hold null, which the read takes as a missing key, and in one that holds it
 struct NullKeys
 {
@@ -1376,10 +1417,9 @@ struct NullKeys
 };
 template <>
 inline constexpr auto yyjson::annotations<NullKeys> =
-    yyjson::annotate(yyjson::one_of(yyjson::field("a", yyjson::required), yyjson::field("b", yyjson::required)),
-                     yyjson::all_of(yyjson::field("a", yyjson::maximum(3))),
-                     yyjson::if_then_else(yyjson::if_(yyjson::field("c", yyjson::required)),
-                                          yyjson::then(yyjson::field("d", yyjson::required))));
+    yyjson::annotate(yyjson::one_of(yyjson::required("a"), yyjson::required("b")),
+                     yyjson::all_of(yyjson::property("a", yyjson::maximum(3))),
+                     yyjson::if_then_else(yyjson::if_(yyjson::required("c")), yyjson::then(yyjson::required("d"))));
 // all_of, any_of and one_of on a struct: a name or an id, exactly one of an email and a phone, an age of at least
 // 0, and no id of 0 or less
 struct Contact
@@ -1393,10 +1433,10 @@ struct Contact
 };
 template <>
 inline constexpr auto yyjson::annotations<Contact> =
-    yyjson::annotate(yyjson::any_of(yyjson::field("name", yyjson::required), yyjson::field("id", yyjson::required)),
-                     yyjson::one_of(yyjson::field("email", yyjson::required), yyjson::field("phone", yyjson::required)),
-                     yyjson::all_of({yyjson::field("age", yyjson::minimum(0))},
-                                    yyjson::not_(yyjson::field("id", yyjson::required, yyjson::maximum(0)))));
+    yyjson::annotate(yyjson::any_of(yyjson::required("name"), yyjson::required("id")),
+                     yyjson::one_of(yyjson::required("email"), yyjson::required("phone")),
+                     yyjson::all_of({yyjson::property("age", yyjson::minimum(0))},
+                                    yyjson::not_(yyjson::required("id"), yyjson::property("id", yyjson::maximum(0)))));
 // matches in the conditions: an object in "auto" needs a name, "kind" is not null, and "point" read as
 // ConditionPoint, which strict reading does not do with another key, needs a label
 struct TypeTested
@@ -1410,11 +1450,13 @@ struct TypeTested
 template <>
 inline constexpr auto yyjson::annotations<TypeTested> = yyjson::annotate(
     yyjson::field("auto_", yyjson::rename("auto")),
-    yyjson::if_then_else(yyjson::if_(yyjson::field("auto", yyjson::required, yyjson::matches<yyjson::object>)),
-                         yyjson::then(yyjson::field("name", yyjson::required))),
-    yyjson::if_then_else(yyjson::if_(yyjson::field("point", yyjson::required, yyjson::matches<ConditionPoint>)),
-                         yyjson::then(yyjson::field("label", yyjson::required))),
-    yyjson::not_(yyjson::field("kind", yyjson::required, yyjson::matches<std::nullptr_t>)));
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::required("auto"), yyjson::property("auto", yyjson::matches<yyjson::object>)),
+        yyjson::then(yyjson::required("name"))),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::required("point"), yyjson::property("point", yyjson::matches<ConditionPoint>)),
+        yyjson::then(yyjson::required("label"))),
+    yyjson::not_(yyjson::required("kind"), yyjson::property("kind", yyjson::matches<std::nullptr_t>)));
 // keywords of the values in the conditions: a kind "few" when there are two or three xs, but not with four or more
 struct AlignedConditions
 {
@@ -1424,13 +1466,13 @@ struct AlignedConditions
     std::vector<std::vector<int>> rows;
 };
 template <>
-inline constexpr auto yyjson::annotations<AlignedConditions> =
-    yyjson::annotate(yyjson::field("ys", yyjson::not_(yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(2))),
-                     yyjson::field("rows", yyjson::items(yyjson::not_(yyjson::contains(yyjson::const_(0))))),
-                     yyjson::if_then_else(yyjson::if_(yyjson::field("xs", yyjson::min_items(2), yyjson::max_items(3))),
-                                          yyjson::then(yyjson::field("kind", yyjson::required, yyjson::const_("few")))),
-                     yyjson::not_(yyjson::field("xs", yyjson::min_items(4)),
-                                  yyjson::field("kind", yyjson::required, yyjson::const_("few"))));
+inline constexpr auto yyjson::annotations<AlignedConditions> = yyjson::annotate(
+    yyjson::field("ys", yyjson::not_(yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(2))),
+    yyjson::field("rows", yyjson::items(yyjson::not_(yyjson::contains(yyjson::const_(0))))),
+    yyjson::if_then_else(yyjson::if_(yyjson::property("xs", yyjson::min_items(2), yyjson::max_items(3))),
+                         yyjson::then(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("few")))),
+    yyjson::not_(yyjson::property("xs", yyjson::min_items(4)), yyjson::required("kind"),
+                 yyjson::property("kind", yyjson::const_("few"))));
 // prefix_items in the conditions: the elements at the positions satisfy the settings, and an array shorter than
 // the positions satisfies them too
 struct PrefixConditions
@@ -1447,8 +1489,9 @@ inline constexpr auto yyjson::annotations<PrefixConditions> = yyjson::annotate(
                                             yyjson::then(yyjson::max_items(2)))),
     yyjson::field("w", yyjson::not_(yyjson::min_items(2), yyjson::prefix_items({}, yyjson::const_("x")))),
     yyjson::field("t", yyjson::not_(yyjson::prefix_items(yyjson::const_(1), yyjson::const_("y")))),
-    yyjson::if_then_else(yyjson::if_(yyjson::field("d", yyjson::required, yyjson::prefix_items(yyjson::const_("a")))),
-                         yyjson::then(yyjson::field("n", yyjson::required))));
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::required("d"), yyjson::property("d", yyjson::prefix_items(yyjson::const_("a")))),
+        yyjson::then(yyjson::required("n"))));
 
 // yyjson::field in a subschema of a value of the DOM names a key of the object, and passes a value of another kind
 struct DomConditions
@@ -1460,12 +1503,13 @@ struct DomConditions
 };
 template <>
 inline constexpr auto yyjson::annotations<DomConditions> = yyjson::annotate(
-    yyjson::field("m", yyjson::additional_properties(yyjson::field("id", yyjson::required))),
-    yyjson::field("v", yyjson::not_(yyjson::field("bad", yyjson::required))),
+    yyjson::field("m", yyjson::additional_properties(yyjson::required("id"))),
+    yyjson::field("v", yyjson::not_(yyjson::required("bad"))),
     // an absent key satisfies yyjson::field, so that yyjson::if_ tests it with yyjson::required
-    yyjson::field("o", yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::required, yyjson::const_("x"))),
-                                            yyjson::then(yyjson::field("x", yyjson::required, yyjson::minimum(1))))),
-    yyjson::field("e", yyjson::items(yyjson::field("id", yyjson::required, yyjson::minimum(0)))));
+    yyjson::field(
+        "o", yyjson::if_then_else(yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("x"))),
+                                  yyjson::then(yyjson::required("x"), yyjson::property("x", yyjson::minimum(1))))),
+    yyjson::field("e", yyjson::items(yyjson::required("id"), yyjson::property("id", yyjson::minimum(0)))));
 
 // the keywords on a value of several JSON kinds, each of which constrains only the values of its kind
 enum class MultiShade
@@ -1535,14 +1579,95 @@ struct PresenceKnown
     std::optional<int> s;
 };
 template <>
-inline constexpr auto yyjson::annotations<PresenceRenamed> =
-    yyjson::annotate(yyjson::field("b", yyjson::rename("bb")), yyjson::one_of_required({"a"}, {"b"}));
+inline constexpr auto yyjson::annotations<PresenceRenamed> = yyjson::annotate(
+    yyjson::field("b", yyjson::rename("bb")), yyjson::one_of(yyjson::required("a"), yyjson::required("b")));
 template <>
 inline constexpr auto yyjson::annotations<PresenceSkipped> =
     yyjson::annotate(yyjson::field("s", yyjson::skip), yyjson::dependent_required("a", {"s"}));
 template <>
-inline constexpr auto yyjson::annotations<PresenceKnown> =
-    yyjson::annotate(yyjson::field("b", yyjson::rename("bb")), yyjson::any_of_required({"a"}, {"bb", "s"}));
+inline constexpr auto yyjson::annotations<PresenceKnown> = yyjson::annotate(
+    yyjson::field("b", yyjson::rename("bb")), yyjson::any_of(yyjson::required("a"), yyjson::required("bb", "s")));
+// a key of `yyjson::property` and `yyjson::required` inside the value of a field is a key of the struct of that value
+struct PresenceNestedKnown
+{
+    PresenceKnown v;
+};
+template <>
+inline constexpr auto yyjson::annotations<PresenceNestedKnown> =
+    yyjson::annotate(yyjson::field("v", yyjson::required("bb"), yyjson::property("a", yyjson::minimum(0))));
+// a closed subschema of `yyjson::all_of` of a struct names each key that the struct requires
+struct ClosedAllOfKeys
+{
+    int id = 0;
+    std::optional<int> name;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedAllOfKeys> =
+    yyjson::annotate(yyjson::all_of(yyjson::required("id"), yyjson::additional_properties(false)));
+struct ClosedAllOfField
+{
+    int id = 0;
+    std::optional<int> name;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedAllOfField> = yyjson::annotate(
+    yyjson::field("id", yyjson::required),
+    yyjson::all_of({yyjson::property("id"), yyjson::property("name"), yyjson::additional_properties(false)}));
+// `yyjson::all_of` in `yyjson::all_of` of a struct that only requires keys is no condition
+struct NestedAllOf
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<NestedAllOf> =
+    yyjson::annotate(yyjson::all_of(yyjson::all_of(yyjson::required("a"))));
+// `yyjson::all_of` in `yyjson::all_of` of a struct that also gives `yyjson::property` keeps it
+struct NestedAllOfProperty
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<NestedAllOfProperty> =
+    yyjson::annotate(yyjson::all_of(yyjson::all_of(yyjson::property("b", yyjson::minimum(1)))));
+struct NestedAllOfMixed
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<NestedAllOfMixed> = yyjson::annotate(
+    yyjson::all_of(yyjson::all_of({yyjson::required("a"), yyjson::property("b", yyjson::minimum(1))})));
+struct NestedAllOfDeep
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<NestedAllOfDeep> = yyjson::annotate(
+    yyjson::all_of(yyjson::all_of(yyjson::all_of(yyjson::required("a")), yyjson::property("b", yyjson::minimum(1)))));
+struct NestedAllOfInner
+{
+    std::optional<int> c;
+};
+struct NestedAllOfObject
+{
+    int a = 0;
+    std::optional<NestedAllOfInner> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<NestedAllOfObject> =
+    yyjson::annotate(yyjson::all_of(yyjson::all_of(yyjson::property("b", yyjson::required("c")))));
+// a group of `yyjson::required` with more keys than a mask of 8 bits holds, and than 16
+struct ManyKeys
+{
+    std::optional<int> a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, z;
+    bool operator==(const ManyKeys&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ManyKeys> = yyjson::annotate(yyjson::one_of(
+    yyjson::required("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"),
+    yyjson::required("z")));
 // the field of `yyjson::extra_keys` has no key, so that the settings cannot name it
 struct PresenceExtra
 {
@@ -1559,7 +1684,7 @@ struct ConditionExtra
 };
 template <>
 inline constexpr auto yyjson::annotations<ConditionExtra> = yyjson::annotate(
-    yyjson::field("s", yyjson::extra_keys), yyjson::not_(yyjson::field("s", yyjson::min_properties(1))));
+    yyjson::field("s", yyjson::extra_keys), yyjson::not_(yyjson::property("s", yyjson::min_properties(1))));
 // nor a field of `yyjson::pattern_properties`
 struct PresencePattern
 {
@@ -1575,8 +1700,9 @@ struct ConditionPattern
     std::map<std::string, int> s;
 };
 template <>
-inline constexpr auto yyjson::annotations<ConditionPattern> = yyjson::annotate(
-    yyjson::field("s", yyjson::pattern_properties("^s")), yyjson::not_(yyjson::field("s", yyjson::min_properties(1))));
+inline constexpr auto yyjson::annotations<ConditionPattern> =
+    yyjson::annotate(yyjson::field("s", yyjson::pattern_properties("^s")),
+                     yyjson::not_(yyjson::property("s", yyjson::min_properties(1))));
 
 // The members of an object that the maps of `yyjson::pattern_properties` receive by the patterns of their keys
 struct PatternMaps
@@ -1660,8 +1786,8 @@ struct PatternConditional
 };
 template <>
 inline constexpr auto yyjson::annotations<PatternConditional> = yyjson::annotate(
-    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("closed"), yyjson::required)),
-                         yyjson::then(yyjson::field("kind"), yyjson::additional_properties(false))),
+    yyjson::if_then_else(yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("closed"))),
+                         yyjson::then(yyjson::property("kind"), yyjson::additional_properties(false))),
     yyjson::field("p", yyjson::pattern_properties("^p")));
 // a pattern that matches the key of a tag checks the value of the tag
 struct PatternTagShort
@@ -1753,10 +1879,10 @@ struct ConditionClosed
 };
 template <>
 inline constexpr auto yyjson::annotations<ConditionClosed> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
-    yyjson::then(yyjson::field("kind"), yyjson::field("r", yyjson::required, yyjson::minimum(0)),
+    yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("circle"))),
+    yyjson::then(yyjson::property("kind"), yyjson::required("r"), yyjson::property("r", yyjson::minimum(0)),
                  yyjson::additional_properties(false)),
-    yyjson::else_(yyjson::field("kind"), yyjson::field("w"), yyjson::additional_properties(false))));
+    yyjson::else_(yyjson::property("kind"), yyjson::property("w"), yyjson::additional_properties(false))));
 // the keys of tags are allowed: an adjacent tag, and the internal tag of an alternative
 struct ClosedTagged
 {
@@ -1766,8 +1892,8 @@ struct ClosedTagged
 template <>
 inline constexpr auto yyjson::annotations<ClosedTagged> =
     yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})),
-                     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::required)),
-                                          yyjson::then(yyjson::field("n"), yyjson::field("data"),
+                     yyjson::if_then_else(yyjson::if_(yyjson::required("n")),
+                                          yyjson::then(yyjson::property("n"), yyjson::property("data"),
                                                        yyjson::additional_properties(false))));
 struct ClosedAlternative
 {
@@ -1775,9 +1901,8 @@ struct ClosedAlternative
     std::optional<int> b;
 };
 template <>
-inline constexpr auto yyjson::annotations<ClosedAlternative> =
-    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
-                                          yyjson::then(yyjson::field("a"), yyjson::additional_properties(false))));
+inline constexpr auto yyjson::annotations<ClosedAlternative> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::required("a")), yyjson::then(yyjson::property("a"), yyjson::additional_properties(false))));
 using ClosedAlternatives = std::variant<ClosedAlternative, ConditionPoint>;
 template <>
 inline constexpr auto yyjson::annotations<ClosedAlternatives> =
@@ -1791,10 +1916,10 @@ struct ConditionCounted
 };
 template <>
 inline constexpr auto yyjson::annotations<ConditionCounted> = yyjson::annotate(
-    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
+    yyjson::if_then_else(yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("pair"))),
                          yyjson::then(yyjson::min_properties(3)), yyjson::else_(yyjson::max_properties(2))),
     yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2), yyjson::max_properties(2)),
-                         yyjson::then(yyjson::field("a", yyjson::required))),
+                         yyjson::then(yyjson::required("a"))),
     yyjson::not_(yyjson::min_properties(5)));
 // the internal tag of an alternative is a key of its object
 struct CountedAlternative
@@ -1803,8 +1928,8 @@ struct CountedAlternative
     std::optional<int> b;
 };
 template <>
-inline constexpr auto yyjson::annotations<CountedAlternative> = yyjson::annotate(
-    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::field("b", yyjson::required))));
+inline constexpr auto yyjson::annotations<CountedAlternative> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::required("b"))));
 using CountedAlternatives = std::variant<CountedAlternative, ConditionPoint>;
 template <>
 inline constexpr auto yyjson::annotations<CountedAlternatives> =
@@ -1815,11 +1940,11 @@ struct ConditionNamed
     std::optional<std::string> kind;
 };
 template <>
-inline constexpr auto yyjson::annotations<ConditionNamed> =
-    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("short"), yyjson::required)),
-                                          yyjson::then(yyjson::property_names(yyjson::max_length(4)))));
+inline constexpr auto yyjson::annotations<ConditionNamed> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("short"))),
+                         yyjson::then(yyjson::property_names(yyjson::max_length(4)))));
 
-// yyjson::one_of_required and yyjson::any_of_required in the conditions require the keys of groups
+// yyjson::one_of and yyjson::any_of of yyjson::required("key", ...) in the conditions require the keys of groups
 struct ConditionGrouped
 {
     std::optional<std::string> kind;
@@ -1828,10 +1953,11 @@ struct ConditionGrouped
     std::optional<int> c;
 };
 template <>
-inline constexpr auto yyjson::annotations<ConditionGrouped> = yyjson::annotate(
-    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
-                         yyjson::then(yyjson::field("c", yyjson::maximum(9)), yyjson::one_of_required({"a"}, {"b"})),
-                         yyjson::else_(yyjson::any_of_required({"a", "c"}, {"b"}), yyjson::max_properties(2))));
+inline constexpr auto yyjson::annotations<ConditionGrouped> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::required("kind"), yyjson::property("kind", yyjson::const_("pair"))),
+    yyjson::then(yyjson::property("c", yyjson::maximum(9)),
+                 yyjson::one_of(yyjson::required("a"), yyjson::required("b"))),
+    yyjson::else_(yyjson::any_of(yyjson::required("a", "c"), yyjson::required("b")), yyjson::max_properties(2))));
 // the internal tag of an alternative is not a member of a group
 struct GroupedAlternative
 {
@@ -1839,8 +1965,9 @@ struct GroupedAlternative
     std::optional<int> b;
 };
 template <>
-inline constexpr auto yyjson::annotations<GroupedAlternative> = yyjson::annotate(
-    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::any_of_required({"a"}, {"b"}))));
+inline constexpr auto yyjson::annotations<GroupedAlternative> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)),
+                                          yyjson::then(yyjson::any_of(yyjson::required("a"), yyjson::required("b")))));
 using GroupedAlternatives = std::variant<GroupedAlternative, ConditionPoint>;
 template <>
 inline constexpr auto yyjson::annotations<GroupedAlternatives> =
@@ -1872,15 +1999,15 @@ struct Positions
 };
 template <>
 inline constexpr auto yyjson::annotations<Positions> = yyjson::annotate(
-    yyjson::field("field", yyjson::min_properties(1), yyjson::field("a", yyjson::required, yyjson::maximum(5)),
+    yyjson::field("field", yyjson::min_properties(1), yyjson::required("a"), yyjson::property("a", yyjson::maximum(5)),
                   yyjson::additional_properties(false)),
     yyjson::field("list", yyjson::items(yyjson::max_properties(1), yyjson::property_names(yyjson::max_length(1)))),
     yyjson::field("map", yyjson::additional_properties(yyjson::not_(yyjson::min_properties(2)))),
-    yyjson::field("alternative", yyjson::additional_properties(false), yyjson::field("a", yyjson::minimum(0))),
-    yyjson::field("groups", yyjson::one_of_required({"a"}, {"b"})),
+    yyjson::field("alternative", yyjson::additional_properties(false), yyjson::property("a", yyjson::minimum(0))),
+    yyjson::field("groups", yyjson::one_of(yyjson::required("a"), yyjson::required("b"))),
     yyjson::field("conditional",
-                  yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
-                                       yyjson::then(yyjson::field("a"), yyjson::additional_properties(false)),
+                  yyjson::if_then_else(yyjson::if_(yyjson::required("a")),
+                                       yyjson::then(yyjson::property("a"), yyjson::additional_properties(false)),
                                        yyjson::else_(yyjson::dependent_required("b", {"a"})))));
 
 namespace struct_condition_rules
@@ -1893,7 +2020,7 @@ namespace struct_condition_rules
                   yyjson::detail::has_struct_conditions<ConditionVisitable> &&
                   !yyjson::detail::has_struct_conditions<Bounded> && !yyjson::detail::has_constraints<Contact>);
 
-    // `yyjson::dependent_required`, `one_of_required` and `any_of_required` name the keys of the fields, each once
+    // `yyjson::dependent_required` and `yyjson::required("key", ...)` name the keys of the fields, each once
     template <int K>
     consteval auto make_presence()
     {
@@ -1906,21 +2033,24 @@ namespace struct_condition_rules
         else if constexpr (K == 3)
             return yyjson::dependent_required("a", {});
         else if constexpr (K == 4)
-            return yyjson::one_of_required({"a"}, {"a", "b"});
+            return yyjson::one_of(yyjson::required("a"), yyjson::required("a", "b"));
         else if constexpr (K == 5)
-            return yyjson::one_of_required({"a"}, {"b", "c", "b"});
+            return yyjson::one_of(yyjson::required("a"), yyjson::required("b", "c", "b"));
         else
-            return yyjson::any_of_required({"a", "a"});
+            return yyjson::any_of(yyjson::required("a", "a"));
     }
     template <int K>
     concept presence_made = requires { typename std::integral_constant<bool, (make_presence<K>(), true)>; };
-    static_assert(presence_made<0> && !presence_made<1> && !presence_made<2> && !presence_made<3> && presence_made<4> &&
-                  !presence_made<5> && !presence_made<6>);
+    static_assert(presence_made<0> && !presence_made<1> && !presence_made<2> && !presence_made<3> && presence_made<4>);
+    // a string literal given twice is an error of the tree before C++26, and a std::string_view of the call
+#if defined(__cpp_lib_define_static)
+    static_assert(!presence_made<5> && !presence_made<6>);
+#else
+    static_assert(presence_made<5> && presence_made<6>);
+#endif
     template <typename S>
-    concept groups_made = requires(S s) { yyjson::one_of_required({s}, {s, s}); };
-    template <typename S>
-    concept empty_group_made = requires(S s) { yyjson::any_of_required({s}, {}); };
-    static_assert(groups_made<std::string_view> && !empty_group_made<std::string_view>);
+    concept keys_made = requires(S s) { yyjson::one_of(yyjson::required(s), yyjson::required(s, s)); };
+    static_assert(keys_made<std::string_view> && keys_made<std::string>);
     // a key that no field has, which a renamed or skipped member does not
     template <typename T>
     constexpr auto presence_error =
@@ -1930,6 +2060,13 @@ namespace struct_condition_rules
                   presence_error<PresenceKnown> == none);
     static_assert(presence_error<PresenceExtra> == unknown_key && presence_error<ConditionExtra> == unknown_key);
     static_assert(presence_error<PresencePattern> == unknown_key && presence_error<ConditionPattern> == unknown_key);
+    static_assert(presence_error<PresenceNestedKnown> == none);
+    static_assert(presence_error<ClosedAllOfKeys> == closed_required && presence_error<ClosedAllOfField> == none);
+    static_assert(!yyjson::detail::has_struct_conditions<NestedAllOf> &&
+                  yyjson::detail::has_struct_conditions<NestedAllOfProperty> &&
+                  yyjson::detail::has_struct_conditions<NestedAllOfMixed> &&
+                  yyjson::detail::has_struct_conditions<NestedAllOfDeep> &&
+                  yyjson::detail::has_struct_conditions<NestedAllOfObject>);
     static_assert(yyjson::detail::has_struct_conditions<PresenceKnown> &&
                   !yyjson::detail::has_constraints<PresenceKnown>);
     // the keywords of an object at a position of a struct, which a map, a struct written as an array and a value
@@ -1944,9 +2081,10 @@ namespace struct_condition_rules
     static_assert(field_schema<Positions, 0>::node.closed && field_schema<Positions, 3>::node.closed &&
                   !struct_object_node<field_schema<Positions, 1>> && !struct_object_node<field_schema<Positions, 4>>);
     // they are settings of a subschema and of a field too, as a struct at any position takes them
-    static_assert(yyjson::detail::subschema_setting<decltype(yyjson::one_of_required({"a"}, {"b"}))> &&
-                  yyjson::detail::subschema_setting<decltype(yyjson::dependent_required("a", {"b"}))> &&
-                  yyjson::detail::field_setting<decltype(yyjson::any_of_required({"a"}))>);
+    static_assert(
+        yyjson::detail::subschema_setting<decltype(yyjson::one_of(yyjson::required("a"), yyjson::required("b")))> &&
+        yyjson::detail::subschema_setting<decltype(yyjson::dependent_required("a", {"b"}))> &&
+        yyjson::detail::field_setting<decltype(yyjson::any_of(yyjson::required("a")))>);
 }  // namespace struct_condition_rules
 
 #if FIELD_RFL_ANNOTATIONS
@@ -1985,8 +2123,8 @@ struct ElementsAnnotated
 
 // the conditions of a struct as annotations of the struct: a or b, not both, and a key renamed by its member
 struct[[
-    = yyjson::not_(yyjson::field("first", yyjson::required), yyjson::field("b", yyjson::required)),
-    = yyjson::any_of(yyjson::field("first", yyjson::required), yyjson::field("b", yyjson::minimum(0)))
+    = yyjson::not_(yyjson::required("first"), yyjson::required("b")),
+    = yyjson::any_of(yyjson::required("first"), yyjson::property("b", yyjson::minimum(0)))
 ]] ExclusiveAnnotated
 {
     [[= yyjson::rename("first")]] std::optional<int> a{};
@@ -3721,14 +3859,66 @@ TEST(Constraints, StructConditions)
 
     expect_conditions<Contact>(R"({"name":"a","email":"e"})", "");
     expect_conditions<Contact>(R"({"id":1,"phone":"p","age":0})", "");
-    expect_conditions<Contact>(R"({"email":"e"})", "Contact satisfies none of the subschemas of yyjson::any_of");
-    expect_conditions<Contact>(R"({"name":"a"})", "Contact satisfies none of the subschemas of yyjson::one_of");
+    // a yyjson::one_of or any_of of yyjson::required("key", ...) names the keys in its message
+    expect_conditions<Contact>(R"({"email":"e"})",
+                               R"(Contact is not constructible from JSON without all the keys of one of ["name"], )"
+                               R"(["id"])");
+    expect_conditions<Contact>(R"({"name":"a"})",
+                               R"(Contact is not constructible from JSON without all the keys of one of ["email"], )"
+                               R"(["phone"])");
     expect_conditions<Contact>(R"({"name":"a","email":"e","phone":"p"})",
-                               "Contact satisfies more than one subschema of yyjson::one_of");
+                               R"(Contact is not constructible from JSON with all the keys of more than one of )"
+                               R"(["email"], ["phone"])");
     expect_conditions<Contact>(R"({"name":"a","email":"e","age":-1})",
                                R"(the value of the key "age" of Contact is less than the minimum 0)", "/age");
     expect_conditions<Contact>(R"({"id":0,"email":"e"})",
                                "Contact has the keys and the values that yyjson::not_ rejects");
+}
+
+TEST(Constraints, PropertyAndField)
+{
+    expect_accepted<PropertyMerged>(R"({"v":9})", {9});
+    expect_rejected<PropertyMerged>(R"({"v":-1})",
+                                    R"(the value of the key "v" of PropertyMerged is less than the minimum 0)", "/v");
+    expect_rejected<PropertyMerged>(
+        R"({"v":10})", R"(the value of the key "v" of PropertyMerged is greater than the maximum 9)", "/v");
+
+    expect_conditions<ManyKeys>(
+        R"({"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1,"q":1})",
+        "");
+    expect_conditions<ManyKeys>(R"({"z":1})", "");
+    expect_conditions<ManyKeys>(
+        R"({"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1})",
+        R"(ManyKeys is not constructible from JSON without all the keys of one of )"
+        R"(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"], ["z"])");
+    expect_conditions<ManyKeys>(
+        R"({"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1,"q":1,"z":1})",
+        R"(ManyKeys is not constructible from JSON with all the keys of more than one of )"
+        R"(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"], ["z"])");
+
+    const auto below = [](std::string_view type) {
+        return std::format(R"(the value of the key "b" of {} is less than the minimum 1)", type);
+    };
+    expect_conditions<NestedAllOfProperty>(R"({"a":1,"b":2})", "");
+    expect_conditions<NestedAllOfProperty>(R"({"a":1,"b":0})", below("NestedAllOfProperty"), "/b");
+    expect_conditions<NestedAllOfMixed>(R"({"a":1,"b":2})", "");
+    expect_conditions<NestedAllOfMixed>(R"({"a":1,"b":0})", below("NestedAllOfMixed"), "/b");
+    expect_conditions<NestedAllOfDeep>(R"({"a":1,"b":2})", "");
+    expect_conditions<NestedAllOfDeep>(R"({"a":1,"b":0})", below("NestedAllOfDeep"), "/b");
+    expect_conditions<NestedAllOfObject>(R"({"a":1,"b":{"c":1}})", "");
+    expect_conditions<NestedAllOfObject>(R"({"a":1,"b":{}})",
+                                         R"(the value of the key "b" of NestedAllOfObject does not have the keys )"
+                                         R"(and the values that yyjson::property and required give)",
+                                         "/b");
+
+    expect_conditions<PresenceNestedKnown>(R"({"v":{"bb":1,"a":0}})", "");
+    expect_conditions<PresenceNestedKnown>(R"({"v":{"a":0}})",
+                                           R"(the value of the key "v" of PresenceNestedKnown does not have the keys )"
+                                           R"(and the values that yyjson::property and required give)",
+                                           "/v");
+    expect_conditions<PresenceNestedKnown>(
+        R"({"v":{"bb":1,"a":-1}})",
+        R"(the value of the key "v" of PresenceNestedKnown does not have the keys and the values that )", "/v");
 }
 
 TEST(Constraints, StructConditionsOfNull)
@@ -3736,7 +3926,8 @@ TEST(Constraints, StructConditionsOfNull)
     // a null that the read takes as a missing key is no key, and the conditions do not check the value that the
     // field keeps
     expect_conditions<NullKeys>(R"({"a":null,"b":1})", "");
-    expect_conditions<NullKeys>(R"({"a":null})", "NullKeys satisfies none of the subschemas of yyjson::one_of");
+    expect_conditions<NullKeys>(
+        R"({"a":null})", R"(NullKeys is not constructible from JSON without all the keys of one of ["a"], ["b"])");
     expect_conditions<NullKeys>(R"({"a":4})", R"(the value of the key "a" of NullKeys is greater than the maximum 3)",
                                 "/a");
     // a null in a field that holds null is a present key, which a merge takes as a removal
@@ -3759,7 +3950,9 @@ TEST(Constraints, StructConditionsMerged)
         << e.what();
     EXPECT_EQ(e.path(), "/age");
     e = bad_cast_of([&] { yyjson::merge_into(R"({"age":3})", c); });
-    EXPECT_TRUE(message_of(e).starts_with("Contact satisfies none of the subschemas of yyjson::any_of")) << e.what();
+    EXPECT_TRUE(message_of(e).starts_with(
+        R"(Contact is not constructible from JSON without all the keys of one of ["name"], ["id"])"))
+        << e.what();
     c = Contact{.name = "a", .email = "e"};
     yyjson::merge_into(R"({"name":"b","email":null,"phone":"p"})", c);
     EXPECT_EQ(c, (Contact{.name = "b", .phone = "p"}));
@@ -3935,7 +4128,7 @@ TEST(Constraints, ObjectKeywordsAtPositions)
         return R"(an element of the value of the key ")" + std::string(key) + R"(" of Positions )";
     };
     const auto closed = "has a key that yyjson::additional_properties(false) rejects";
-    const auto fields = "does not have the keys and the values that yyjson::field gives";
+    const auto fields = "does not have the keys and the values that yyjson::property and required give";
     expect_conditions<Positions>(
         R"({"field":{"a":1},"list":[{"a":1},{}],"map":{"k":{"a":1}},"alternative":{"type":"p","a":1},)"
         R"("groups":{"a":1},"conditional":{"a":1}})",
@@ -3966,13 +4159,13 @@ TEST(Constraints, ObjectKeywordsAtPositions)
     expect_conditions<Positions>(R"({"alternative":{"type":"o","a":2}})", "");
 
     expect_conditions<Positions>(R"({"groups":{"b":1}})", "");
-    expect_conditions<Positions>(R"({"groups":{"a":1,"b":1}})",
-                                 value("groups") + "has all the keys of more than one group of yyjson::one_of_required",
-                                 "/groups");
+    expect_conditions<Positions>(
+        R"({"groups":{"a":1,"b":1}})",
+        value("groups") + "has all the keys that more than one subschema of yyjson::one_of requires", "/groups");
     expect_conditions<Positions>(R"({"groups":{}})",
                                  value("groups") +
-                                     "does not have all the keys of one group of "
-                                     "yyjson::one_of_required or any_of_required",
+                                     "does not have all the keys that one subschema of yyjson::one_of or any_of "
+                                     "requires",
                                  "/groups");
     expect_conditions<Positions>(
         R"({"conditional":{"a":1,"b":1}})",
@@ -4011,7 +4204,7 @@ TEST(Constraints, DomConditions)
     expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":0},"e":[]})", o, "/o");
     expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":"1"},"e":[]})", "");
     const auto e = R"(an element of the value of the key "e" of DomConditions does not have the keys and the values )"
-                   R"(that yyjson::field gives)";
+                   R"(that yyjson::property and required give)";
     expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":0},1,"a",null,[]]})", "");
     expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":0},{}]})", e, "/e/1");
     expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":-1}]})", e, "/e/0");
@@ -4390,7 +4583,7 @@ struct UnionShape
 constexpr auto union_y_needs_x = yyjson::dependent_required("y", {"x"});
 // The tag of the variant that holds a union is a key of the object of its alternative.
 using UnionTagged = std::variant<
-    yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::field("x"), yyjson::additional_properties(false)>>>;
+    yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::property("x"), yyjson::additional_properties(false)>>>;
 template <>
 inline constexpr auto yyjson::annotations<UnionTagged> = yyjson::annotate(yyjson::internal_tag("kind", {"p"}));
 // A union takes no tag of the std::variant that stores its alternatives.
@@ -4477,17 +4670,17 @@ TEST(Constraints, UnionReading)
     expect_alternative<ClosedAltOrMap>(R"({"k":1})", 1);
 
     // yyjson::field in an alternative constrains a member, as in a field that holds a struct
-    using Shapes = yyjson::any_of_variant<yyjson::alt<UnionShape, yyjson::field("kind", yyjson::const_("circle"))>,
-                                          yyjson::alt<UnionShape, yyjson::field("kind", yyjson::const_("square"))>>;
+    using Shapes = yyjson::any_of_variant<yyjson::alt<UnionShape, yyjson::property("kind", yyjson::const_("circle"))>,
+                                          yyjson::alt<UnionShape, yyjson::property("kind", yyjson::const_("square"))>>;
     expect_alternative<Shapes>(R"({"kind":"square","size":2})", 1);
     expect_alternative<Shapes>(R"({"kind":"circle"})", 0);
     expect_rejected<Shapes>(R"({"kind":"hexagon"})", read_by_none<Shapes>(), "");
-    using RequiredX = yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::field("x", yyjson::required)>, UnionPoint>;
+    using RequiredX = yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::required("x")>, UnionPoint>;
     expect_alternative<RequiredX>(R"({"x":1})", 0);
     expect_alternative<RequiredX>(R"({"y":1})", 1);
     // additional_properties(false) takes only the keys that yyjson::field names, also when it ranks the structs
     using NamedX = yyjson::any_of_variant<
-        yyjson::alt<UnionPoint, yyjson::field("x", yyjson::minimum(0)), yyjson::additional_properties(false)>,
+        yyjson::alt<UnionPoint, yyjson::property("x", yyjson::minimum(0)), yyjson::additional_properties(false)>,
         UnionMap>;
     expect_alternative<NamedX>(R"({"x":1})", 0);
     expect_alternative<NamedX>(R"({"x":1,"y":2})", 1);
@@ -4760,7 +4953,7 @@ struct OneOfMidX
 };
 template <>
 inline constexpr auto yyjson::annotations<OneOfMidX> =
-    yyjson::annotate(yyjson::transparent, yyjson::field("b", yyjson::field("x", yyjson::minimum(0))));
+    yyjson::annotate(yyjson::transparent, yyjson::field("b", yyjson::property("x", yyjson::minimum(0))));
 using OneOfInts = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
 inline bool one_of_has_value(const yyjson::nullable<int>& v) { return v.has_value(); }
 inline constexpr auto one_of_present = yyjson::satisfies<one_of_has_value>;
@@ -4837,8 +5030,8 @@ TEST(Constraints, OneOfReading)
     EXPECT_THROW((void)yyjson::read(R"({"x":1,"x":2})").cast<XOrText>(yyjson::reject_duplicates), yyjson::bad_cast);
 
     // the settings of an alternative decide whether it matches
-    using SignedX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::field("x", yyjson::minimum(0))>,
-                                           yyjson::alt<OneOfX, yyjson::field("x", yyjson::maximum(-1))>>;
+    using SignedX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::property("x", yyjson::minimum(0))>,
+                                           yyjson::alt<OneOfX, yyjson::property("x", yyjson::maximum(-1))>>;
     expect_alternative<SignedX>(R"({"x":1})", 0);
     expect_alternative<SignedX>(R"({"x":-1})", 1);
     expect_accepted<OneOfInts>("-1", OneOfInts(std::in_place_index<1>, -1));
@@ -5097,11 +5290,11 @@ TEST(Constraints, OneOfBounds)
     static_assert(XAndXZ::contained.contained == 1 && XAndXZ::contained.container == 0);
     static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfClosedX>>);
     using ClosedByAlt =
-        yyjson::alt<OneOfXZ, yyjson::field("x"), yyjson::field("z"), yyjson::additional_properties(false)>;
+        yyjson::alt<OneOfXZ, yyjson::property("x"), yyjson::property("z"), yyjson::additional_properties(false)>;
     static_assert(one_of_contained<yyjson::one_of_variant<ClosedByAlt, OneOfXZ>>);
     static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, ClosedByAlt>>);
-    static_assert(
-        one_of_contained<yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::field("x", yyjson::minimum(0))>, OneOfX>>);
+    static_assert(one_of_contained<
+                  yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::property("x", yyjson::minimum(0))>, OneOfX>>);
     static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXMaybeY>>);
     static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXRest>>);
     static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfWrapped<OneOfXZ>>>);
@@ -5117,8 +5310,8 @@ TEST(Constraints, OneOfBounds)
     static_assert(!one_of_overlapping<IntOrText, 0, 1>);
     expect_alternative<IntOrText>(R"({"x":"a"})", 1);
     expect_alternative<IntOrText>(R"({"x":1})", 0);
-    using Letters = yyjson::one_of_variant<yyjson::alt<OneOfTextX, yyjson::field("x", yyjson::enum_("a", "b"))>,
-                                           yyjson::alt<OneOfTextX, yyjson::field("x", yyjson::enum_("c"))>>;
+    using Letters = yyjson::one_of_variant<yyjson::alt<OneOfTextX, yyjson::property("x", yyjson::enum_("a", "b"))>,
+                                           yyjson::alt<OneOfTextX, yyjson::property("x", yyjson::enum_("c"))>>;
     static_assert(!one_of_overlapping<Letters, 0, 1>);
     expect_alternative<Letters>(R"({"x":"c"})", 1);
     expect_alternative<Letters>(R"({"x":"a"})", 0);
@@ -5141,8 +5334,8 @@ TEST(Constraints, OneOfBounds)
     expect_rejected<MaybeYOrZ>(R"({"x":1})", read_by_two<MaybeYOrZ>(0, 1), "");
     expect_alternative<MaybeYOrZ>(R"({"x":1,"y":"a"})", 1);
     // nor what a struct reads with a setting other than the keys that it takes
-    using MinimumX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::field("x", yyjson::minimum(0))>,
-                                            yyjson::alt<OneOfXZ, yyjson::field("x", yyjson::minimum(0))>>;
+    using MinimumX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::property("x", yyjson::minimum(0))>,
+                                            yyjson::alt<OneOfXZ, yyjson::property("x", yyjson::minimum(0))>>;
     static_assert(!one_of_contained<MinimumX> && one_of_overlapping<MinimumX, 0, 1>);
     expect_rejected<MinimumX>(R"({"x":1,"z":2})", read_by_two<MinimumX>(0, 1), "");
     // nor what a struct with a map of other keys reads at those keys

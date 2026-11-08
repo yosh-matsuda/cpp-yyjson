@@ -36,6 +36,54 @@ struct PreReqWide
 template <>
 inline constexpr auto yyjson::annotations<PreReqWide> = yyjson::annotate(yyjson::field("j", yyjson::required));
 
+// `yyjson::required("key", ...)` on the struct requires the key as `yyjson::field("member", yyjson::required)` does
+struct PreReqKeys
+{
+    int a = 1;
+    int b = 2;
+    std::optional<int> c;
+    bool operator==(const PreReqKeys&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreReqKeys> = yyjson::annotate(yyjson::required("a"));
+struct PreReqAllOf
+{
+    int a = 1;
+    int b = 2;
+    std::optional<int> c;
+    bool operator==(const PreReqAllOf&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreReqAllOf> =
+    yyjson::annotate(yyjson::all_of(yyjson::required("a"), yyjson::property("b", yyjson::minimum(0))));
+// the key after `yyjson::rename`, and a key in a `std::string_view`
+inline constexpr std::string_view pre_req_key = "y";
+struct PreReqRenamed
+{
+    int a = 1;
+    int b = 2;
+    bool operator==(const PreReqRenamed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreReqRenamed> =
+    yyjson::annotate(yyjson::field("a", yyjson::rename("x")), yyjson::field("b", yyjson::rename("y")),
+                     yyjson::required("x"), yyjson::required(pre_req_key));
+// a variant takes the alternative whose required keys the object has
+struct PreReqA
+{
+    int a = 0;
+    std::optional<int> n;
+    bool operator==(const PreReqA&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreReqA> = yyjson::annotate(yyjson::required("a"));
+struct PreReqB
+{
+    std::optional<int> b;
+    std::optional<int> n;
+    bool operator==(const PreReqB&) const = default;
+};
+
 struct PreDef
 {
     int a = 1;
@@ -124,6 +172,16 @@ struct PreAnnotated
     [[= yyjson::default_from<make_name>]] std::optional<std::string> o;
     int c = 3;
     bool operator==(const PreAnnotated&) const = default;
+};
+struct PreAnnotatedZip
+{
+    std::optional<std::string> zip;
+};
+struct[[= yyjson::required("a")]][[= yyjson::property("b", yyjson::minimum(0))]] PreAnnotatedKeys
+{
+    int a = 0;
+    int b = 0;
+    [[= yyjson::required("zip")]] PreAnnotatedZip addr;
 };
 #endif
 
@@ -223,9 +281,10 @@ namespace presence_rules
     static_assert(table_error(field("v", required), field("w", default_)) == none);
     static_assert(table_error(field("v", required, default_)) == required_with_default);
     static_assert(table_error(field("v", default_from<make_seven>, required)) == required_with_default);
-    static_assert(table_error(field("v", required, required)) == same_setting_twice);
+    static_assert(table_error(field("v", required, required)) == required_twice);
     static_assert(table_error(field("v", default_, default_from<make_seven>)) == default_twice);
     static_assert(table_error(field("v", default_, default_)) == default_twice);
+    static_assert(table_error(field("v", default_, emit_defaults, emit_defaults)) == emit_defaults_twice);
     static_assert(table_error(field("v", emit_defaults)) == emit_defaults_without_default);
     static_assert(table_error(field("v", required, emit_defaults), default_) == emit_defaults_without_default);
     static_assert(table_error(field("v", emit_defaults), default_) == none);
@@ -238,6 +297,35 @@ namespace presence_rules
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), field("v", required)) ==
                   transparent_presence);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), default_) == transparent_presence);
+
+    // `yyjson::property` and `yyjson::required("key", ...)` on the struct, which name the keys of its fields
+    template <typename... As>
+    consteval auto type_key_error(const As&... annotations)
+    {
+        constexpr auto members = std::array<std::string_view, 3>{"v", "w", "t"};
+        auto builder = yyjson::detail::field_key_builder<3>{members, {members}, false};
+        (builder.apply_annotation(annotations), ...);
+        (builder.apply_type_key(annotations), ...);
+        return builder.result().error;
+    }
+    using yyjson::property, yyjson::minimum;
+    static_assert(type_key_error(required("v", "w"), required("v"), field("v", required)) == none);
+    static_assert(type_key_error(property("v", minimum(0)), field("v", yyjson::maximum(1))) == none);
+    static_assert(type_key_error(required("v"), field("v", default_)) == required_with_default);
+    static_assert(type_key_error(yyjson::all_of(required("v")), field("v", default_)) == required_with_default);
+    static_assert(type_key_error(yyjson::any_of(required("v")), field("v", default_)) == none);
+    static_assert(type_key_error(yyjson::not_(required("v")), field("v", default_)) == none);
+    // a default of the struct is no default of a field that `required` names
+    static_assert(type_key_error(default_, required("v")) == none);
+    static_assert(type_key_error(required("x")) == unknown_property_key);
+    static_assert(type_key_error(property("x")) == unknown_property_key);
+    static_assert(type_key_error(field("v", yyjson::rename("x")), required("x")) == none);
+    static_assert(type_key_error(field("v", yyjson::rename("x")), required("v")) == unknown_property_key);
+    static_assert(type_key_error(field("v", yyjson::skip), property("v")) == unknown_property_key);
+    static_assert(type_key_error(field("v", yyjson::adjacent_tag("k", {"x"})), required("k")) == unknown_property_key);
+    static_assert(type_key_error(field("t", yyjson::extra_keys), required("t")) == unknown_property_key);
+    static_assert(type_key_error(yyjson::as_array, required("v")) == as_array_object_keyword);
+    static_assert(type_key_error(yyjson::as_array, property("v")) == as_array_object_keyword);
 }  // namespace presence_rules
 
 namespace
@@ -305,6 +393,25 @@ TEST(Presence, Required)
               R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":10})");
     // a vector of them, whose elements are read whole
     EXPECT_EQ(read_with<std::vector<PreReq>>(R"([{"a":1},{"b":2}])"), missing("PreReq", "a") + " at /1");
+}
+
+TEST(Presence, RequiredKeys)
+{
+    static_assert(yyjson::detail::presence_of<PreReqKeys, 0>.required &&
+                  !yyjson::detail::presence_of<PreReqKeys, 1>.required);
+    static_assert(yyjson::detail::presence_of<PreReqAllOf, 0>.required &&
+                  !yyjson::detail::has_struct_conditions<PreReqKeys>);
+    expect_required<PreReqKeys>("PreReqKeys");
+    expect_required<PreReqAllOf>("PreReqAllOf");
+    EXPECT_EQ(read_with<PreReqAllOf>(R"({"a":4,"b":-1})"),
+              error(R"(the value of the key "b" of PreReqAllOf is less than the minimum 0)") + " at /b");
+    EXPECT_EQ(read_with<PreReqRenamed>(R"({"x":4,"y":5})"), R"({"x":4,"y":5})");
+    EXPECT_EQ(read_with<PreReqRenamed>(R"({"y":5})"), missing("PreReqRenamed", "x"));
+    EXPECT_EQ(read_with<PreReqRenamed>(R"({"x":4})"), missing("PreReqRenamed", "y"));
+    using V = std::variant<PreReqA, PreReqB>;
+    EXPECT_EQ(yyjson::read<V>(R"({"a":1,"n":2})").index(), 0);
+    EXPECT_EQ(yyjson::read<V>(R"({"b":1,"n":2})").index(), 1);
+    EXPECT_EQ(yyjson::read<V>(R"({"n":2})").index(), 1);
 }
 
 TEST(Presence, Default)
@@ -488,6 +595,18 @@ TEST(Presence, Annotations)
     EXPECT_EQ(read_with<PreAnnotated>(R"({"c":5})"), missing("PreAnnotated", "a"));
     EXPECT_EQ(read_with<PreAnnotated>(R"({"a":4})", yyjson::strict), missing("PreAnnotated", "c"));
     EXPECT_EQ(read_with<PreAnnotated>(R"({"a":4,"o":null})"), R"({"a":4,"b":2,"o":"anon","c":3})");
+}
+
+TEST(Presence, AnnotatedKeys)
+{
+    EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"a":1,"b":2,"addr":{"zip":"z"}})"),
+              R"({"a":1,"b":2,"addr":{"zip":"z"}})");
+    EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"b":2,"addr":{"zip":"z"}})"), missing("PreAnnotatedKeys", "a"));
+    EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"a":1,"b":-1,"addr":{"zip":"z"}})"),
+              error("the value of the key \"b\" of PreAnnotatedKeys is less than the minimum 0 at /b"));
+    EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"a":1,"b":2,"addr":{}})"),
+              error("the value of the key \"addr\" of PreAnnotatedKeys does not have the keys and the values that "
+                    "yyjson::property and required give at /addr"));
 }
 #endif
 
