@@ -441,10 +441,12 @@ TEST(Presence, WriteDefaults)
     EXPECT_EQ(write_both(from), R"({"plain":5})");
     *from.p = 8;
     EXPECT_EQ(write_both(from), R"({"p":8,"plain":5})");
-    // -0.0 is not equal to a default of 0.0
+    // -0.0 equals a default of 0.0, as JSON Schema compares numbers; emit_defaults writes the exact values
     EXPECT_EQ(write_both(PreZero()), R"({})");
-    EXPECT_EQ(write_both(PreZero{-0.0, 0.0f}), R"({"z":-0.0,"f":0.0})");
+    EXPECT_EQ(write_both(PreZero{-0.0, 0.0f}), R"({})");
+    EXPECT_EQ(write_both(PreZero{1.0, 0.0f}), R"({"z":1.0})");
     EXPECT_EQ(write_all(PreZero()), R"({"z":0.0,"f":-0.0})");
+    EXPECT_EQ(write_all(PreZero{-0.0, 0.0f}), R"({"z":-0.0,"f":0.0})");
     // fields of each kind
     EXPECT_EQ(write_both(PreKinds()), R"({})");
     auto kinds = PreKinds();

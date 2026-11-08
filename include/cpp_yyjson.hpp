@@ -76,6 +76,15 @@
 #define CPPYYJSON_DELETED_FUNCTION(message) delete
 #endif
 
+// Lets the compiler warn about a reference that outlives the object that a member function returns it into
+#if __has_cpp_attribute(clang::lifetimebound)
+#define CPPYYJSON_LIFETIMEBOUND [[clang::lifetimebound]]
+#elif __has_cpp_attribute(msvc::lifetimebound)
+#define CPPYYJSON_LIFETIMEBOUND [[msvc::lifetimebound]]
+#else
+#define CPPYYJSON_LIFETIMEBOUND
+#endif
+
 // Keeps the compiler from vectorizing the loop that follows, for a scalar tail after a SIMD loop
 #if defined(__clang__)
 #define CPPYYJSON_NO_VECTORIZE _Pragma("clang loop vectorize(disable)")
@@ -1429,6 +1438,118 @@ namespace yyjson
     template <typename T>
     nullable(T) -> nullable<T>;
 
+    template <typename T, typename X>
+    class with_caster;
+
+    namespace detail
+    {
+        template <typename T>
+        struct is_with_caster : std::false_type
+        {
+        };
+        template <typename T, typename X>
+        struct is_with_caster<yyjson::with_caster<T, X>> : std::true_type
+        {
+        };
+
+        // The type of the elements of the `std::initializer_list` that T is constructed from, or a type that no
+        // braced list gives.
+        struct no_initializer_list
+        {
+        };
+        template <typename T>
+        struct initializer_list_element
+        {
+            using type = no_initializer_list;
+        };
+        template <typename T>
+        requires requires { typename T::value_type; } &&
+                 std::is_constructible_v<T, std::initializer_list<typename T::value_type>>
+        struct initializer_list_element<T>
+        {
+            using type = typename T::value_type;
+        };
+    }  // namespace detail
+
+    // A value of T that the static functions of X convert from and to JSON instead of `caster<T>`, in the forms that
+    // `caster<T>` takes.  A direction that X does not convert is converted as T is.
+    template <typename T, typename X>
+    class with_caster
+    {
+        static_assert(!detail::is_with_caster<std::remove_cv_t<T>>::value,
+                      "with_caster<with_caster<T, X>, Y> is not allowed");
+
+    public:
+        using value_type = T;
+        using caster_type = X;
+
+        T value;
+
+        constexpr with_caster() = default;
+        template <typename U = T>
+        requires (!detail::is_with_caster<std::remove_cvref_t<U>>::value) &&
+                 (!std::same_as<std::remove_cvref_t<U>, std::in_place_t>) && std::constructible_from<T, U&&>
+        constexpr explicit(!std::convertible_to<U&&, T>) with_caster(U&& u) : value(std::forward<U>(u))
+        {
+        }
+        constexpr with_caster(std::initializer_list<typename detail::initializer_list_element<T>::type> list)
+        requires (!std::same_as<typename detail::initializer_list_element<T>::type, detail::no_initializer_list>)
+            : value(list)
+        {
+        }
+        template <typename... Args>
+        requires std::constructible_from<T, Args&&...>
+        constexpr explicit with_caster(std::in_place_t, Args&&... args) : value(std::forward<Args>(args)...)
+        {
+        }
+
+        constexpr T& operator*() & noexcept CPPYYJSON_LIFETIMEBOUND { return value; }
+        constexpr const T& operator*() const& noexcept CPPYYJSON_LIFETIMEBOUND { return value; }
+        constexpr T&& operator*() && noexcept CPPYYJSON_LIFETIMEBOUND { return std::move(value); }
+        constexpr T* operator->() noexcept CPPYYJSON_LIFETIMEBOUND { return std::addressof(value); }
+        constexpr const T* operator->() const noexcept CPPYYJSON_LIFETIMEBOUND { return std::addressof(value); }
+        // `const T& r = f().member;` binds to the member of a temporary, which a compiler can warn about
+        constexpr operator T&() & noexcept CPPYYJSON_LIFETIMEBOUND { return value; }
+        constexpr operator const T&() const& noexcept CPPYYJSON_LIFETIMEBOUND { return value; }
+        constexpr operator T() && { return std::move(value); }
+
+        friend constexpr bool operator==(const with_caster& lhs, const with_caster& rhs)
+        requires std::equality_comparable<T>
+        {
+            return lhs.value == rhs.value;
+        }
+        friend constexpr auto operator<=>(const with_caster& lhs, const with_caster& rhs)
+        requires std::three_way_comparable<T>
+        {
+            return lhs.value <=> rhs.value;
+        }
+        // The left operand is deduced, as for `nullable`: otherwise the reversed candidates ask the constraint again,
+        // as when a range of wrappers compares its iterators.
+        template <typename U, std::same_as<X> Y>
+        requires (!detail::is_with_caster<U>::value) && requires(const T& t, const U& u) {
+            { t == u } -> std::convertible_to<bool>;
+        }
+        friend constexpr bool operator==(const with_caster<T, Y>& lhs, const U& rhs)
+        {
+            return lhs.value == rhs;
+        }
+        template <typename U, std::same_as<X> Y>
+        requires (!detail::is_with_caster<U>::value) && requires(const T& t, const U& u) { t <=> u; }
+        friend constexpr auto operator<=>(const with_caster<T, Y>& lhs, const U& rhs)
+        {
+            return lhs.value <=> rhs;
+        }
+        // Wrappers with other converters do not compare through the values that they convert to.
+        template <typename U, typename Z, std::same_as<X> Y>
+        requires (!std::same_as<with_caster<U, Z>, with_caster<T, Y>>)
+        friend constexpr bool operator==(const with_caster<T, Y>&, const with_caster<U, Z>&) =
+            CPPYYJSON_DELETED_FUNCTION("with_caster compares with a with_caster of the same T and X only");
+        template <typename U, typename Z, std::same_as<X> Y>
+        requires (!std::same_as<with_caster<U, Z>, with_caster<T, Y>>)
+        friend constexpr auto operator<=>(const with_caster<T, Y>&, const with_caster<U, Z>&) =
+            CPPYYJSON_DELETED_FUNCTION("with_caster compares with a with_caster of the same T and X only");
+    };
+
     template <typename...>
     class visit_struct : public std::false_type
     {
@@ -1497,6 +1618,48 @@ struct std::hash<yyjson::indirect<T>>
     {
         if (i.valueless_after_move()) return static_cast<std::size_t>(-1);
         return std::hash<T>()(*i);
+    }
+};
+
+template <typename T, typename X>
+requires std::is_default_constructible_v<std::hash<T>>
+struct std::hash<yyjson::with_caster<T, X>>
+{
+    std::size_t operator()(const yyjson::with_caster<T, X>& w) const
+        noexcept(noexcept(std::hash<T>()(std::declval<const T&>())))
+    {
+        return std::hash<T>()(w.value);
+    }
+};
+
+// The common reference of the value, as for `std::reference_wrapper` in C++23: T and `with_caster` convert to each
+// other, so the default is ambiguous, and `std::equality_comparable_with<with_caster<int, X>, int>` fails.
+template <typename W, typename U, template <typename> class WQ, template <typename> class UQ>
+requires yyjson::detail::is_with_caster<W>::value && (!yyjson::detail::is_with_caster<U>::value) &&
+         requires { typename std::common_reference_t<WQ<typename W::value_type>, UQ<U>>; } &&
+         std::convertible_to<WQ<W>, std::common_reference_t<WQ<typename W::value_type>, UQ<U>>>
+struct std::basic_common_reference<W, U, WQ, UQ>
+{
+    using type = std::common_reference_t<WQ<typename W::value_type>, UQ<U>>;
+};
+template <typename U, typename W, template <typename> class UQ, template <typename> class WQ>
+requires yyjson::detail::is_with_caster<W>::value && (!yyjson::detail::is_with_caster<U>::value) &&
+         requires { typename std::common_reference_t<UQ<U>, WQ<typename W::value_type>>; } &&
+         std::convertible_to<WQ<W>, std::common_reference_t<UQ<U>, WQ<typename W::value_type>>>
+struct std::basic_common_reference<U, W, UQ, WQ>
+{
+    using type = std::common_reference_t<UQ<U>, WQ<typename W::value_type>>;
+};
+
+// A `with_caster` is formatted as its value.
+template <typename T, typename X, typename CharT>
+requires std::is_default_constructible_v<std::formatter<T, CharT>>
+struct std::formatter<yyjson::with_caster<T, X>, CharT> : std::formatter<T, CharT>
+{
+    template <typename Context>
+    auto format(const yyjson::with_caster<T, X>& w, Context& ctx) const
+    {
+        return std::formatter<T, CharT>::format(w.value, ctx);
     }
 };
 
@@ -9435,11 +9598,19 @@ namespace yyjson
                 {
                     if (value != nullptr && !c.predicate.check(value)) return constraint_kind::satisfies;
                 }
+                else if constexpr (is_with_caster<V>::value)
+                {
+                    static_assert(parameter == type_name<typename V::value_type>(),
+                                  "the function of yyjson::satisfies on a yyjson::with_caster<T, X> takes "
+                                  "yyjson::with_caster<T, X> or T");
+                    if (value != nullptr && !c.predicate.check(std::addressof(value->value)))
+                        return constraint_kind::satisfies;
+                }
                 else
                     static_assert(false_v<F>,
                                   "the function of yyjson::satisfies takes the type of the field, or the type of the "
-                                  "value that a std::optional, a yyjson::nullable, an owning pointer or "
-                                  "yyjson::indirect field holds");
+                                  "value that a std::optional, a yyjson::nullable, an owning pointer, "
+                                  "yyjson::indirect or yyjson::with_caster field holds");
             }
             if constexpr (c.template has<matches_t<void>>())
             {
@@ -11616,8 +11787,8 @@ namespace yyjson
                 return field_reflection::get_field<I>(t);
         }
 
-        // Whether `a` and `b` are written as the same JSON value.  `SignOfZero` tells -0.0 from 0.0.
-        template <typename T, bool SignOfZero = false>
+        // Whether `a` and `b` are equal as JSON Schema compares JSON values: -0.0 equals 0.0.
+        template <typename T>
         bool json_equal(const T& a, const T& b);
 
         // Whether the field R of S, by its index among all the fields, is left out of an object when it equals its
@@ -11666,7 +11837,7 @@ namespace yyjson
         {
             if (write_emit_defaults) return false;
             const auto& d = writable_field(stored_default<S, R>());
-            return json_equal<std::remove_cvref_t<decltype(d)>, true>(d, field);
+            return json_equal<std::remove_cvref_t<decltype(d)>>(d, field);
         }
 
         // Emplaces the field R of the struct S, by its index among all the fields, with `emitter`.  A variant
@@ -16575,15 +16746,17 @@ namespace yyjson
             bool keyword_equal(const L& left, const R& right);
         }
 
-        // Whether `a` and `b` are written as the same JSON value: structs by fields, tuples and ranges by elements (as
-        // sets when unordered or written as objects), variants and holders by what they hold, the rest by `operator==`.
-        // `SignOfZero` tells -0.0 from 0.0, which the writer writes differently; without it, the keywords compare.
-        template <typename T, bool SignOfZero>
+        // Whether `a` and `b` are equal as JSON values: structs by fields, tuples and ranges by elements (as sets when
+        // unordered or written as objects), variants and holders by what they hold, the rest by `operator==`.
+        template <typename T>
         bool json_equal(const T& a, const T& b)
         {
             using U = std::remove_cv_t<T>;
-            const auto equal = []<typename E>(const E& x, const E& y) { return json_equal<E, SignOfZero>(x, y); };
-            if constexpr (char_string_array<U>)
+            const auto equal = []<typename E>(const E& x, const E& y) { return json_equal<E>(x, y); };
+            // by the values, which X may write alike when they differ
+            if constexpr (is_with_caster<U>::value)
+                return equal(a.value, b.value);
+            else if constexpr (char_string_array<U>)
                 return std::string_view(a, char_array_size(a)) == std::string_view(b, char_array_size(b));
             else if constexpr (std::is_array_v<U>)
             {
@@ -16593,10 +16766,7 @@ namespace yyjson
             }
             else if constexpr (std::same_as<U, const char*> || std::same_as<U, char*>)
                 return a == nullptr || b == nullptr ? a == b : std::string_view(a) == std::string_view(b);
-            else if constexpr (std::floating_point<U>)
-                return a == b && (!SignOfZero || std::signbit(a) == std::signbit(b));
-            else if constexpr (!SignOfZero &&
-                               (writer::detail::base_of_value<U> || reader::detail::base_of_value_ref<U>))
+            else if constexpr (writer::detail::base_of_value<U> || reader::detail::base_of_value_ref<U>)
                 return json_compare::keyword_equal(a, b);
             else if constexpr (!std::is_class_v<U> || writer::detail::base_of_value<U> ||
                                reader::detail::base_of_value_ref<U> ||
@@ -20243,6 +20413,208 @@ namespace yyjson
             else
                 v = std::move(*t);
         }
+    };
+
+    namespace detail
+    {
+        // Whether X has a member named `from_json` or `to_json`, as `caster_names_from_json` tells of a caster.  A
+        // final X tells only by the forms that can be called.
+        template <typename X>
+        struct converter_lookup : X, caster_conversion_probe
+        {
+        };
+        template <typename X>
+        concept converter_names_from_json = requires {
+            &X::from_json;
+        } || (std::is_class_v<X> && !std::is_final_v<X> && !requires { &converter_lookup<X>::from_json; });
+        template <typename X>
+        concept converter_names_to_json = requires {
+            &X::to_json;
+        } || (std::is_class_v<X> && !std::is_final_v<X> && !requires { &converter_lookup<X>::to_json; });
+
+        // The parameter of `T X::from_json(U)` or of `void X::from_json(T&, U)`, deduced as for `caster<T>`, or
+        // `no_converter_form` when X has no such form.
+        struct no_converter_form
+        {
+        };
+        template <typename T, typename X>
+        struct converter_return_param
+        {
+            using type = no_converter_form;
+        };
+        template <typename T, typename X>
+        requires requires { from_json_return_form<T>(&X::from_json); }
+        struct converter_return_param<T, X>
+        {
+            using type = decltype(from_json_return_form<T>(&X::from_json));
+        };
+        template <typename T, typename X>
+        struct converter_in_place_param
+        {
+            using type = no_converter_form;
+        };
+        template <typename T, typename X>
+        requires requires { from_json_in_place_form<T>(&X::from_json); }
+        struct converter_in_place_param<T, X>
+        {
+            using type = decltype(from_json_in_place_form<T>(&X::from_json));
+        };
+
+        // X reads T from a JSON value of the DOM API, as a template or as overloads.
+        template <typename T, typename X>
+        concept converter_reads_dom = requires(const reader::const_value_ref& v) {
+            { X::from_json(v) } -> std::same_as<T>;
+        } || requires(const writer::detail::const_value_ref& v) {
+            { X::from_json(v) } -> std::same_as<T>;
+        } || requires(T& t, const reader::const_value_ref& v) {
+            X::from_json(t, v);
+        } || requires(T& t, const writer::detail::const_value_ref& v) { X::from_json(t, v); };
+        template <typename T, typename X>
+        concept converter_reads = (!std::same_as<typename converter_return_param<T, X>::type, no_converter_form>) ||
+                                  (!std::same_as<typename converter_in_place_param<T, X>::type, no_converter_form>) ||
+                                  converter_reads_dom<T, X>;
+
+        template <typename V, typename T, typename X>
+        concept converter_writes_into = requires(V& v, const T& t) { X::to_json(v, t); } ||
+                                        requires(V& v, const T& t) { X::to_json(v, t, copy_string); };
+        template <typename T, typename X>
+        concept converter_writes =
+            requires(const T& t) { X::to_json(t); } || requires(const T& t) { X::to_json(t, copy_string); } ||
+            converter_writes_into<writer::value_ref, T, X> || converter_writes_into<writer::array_ref, T, X> ||
+            converter_writes_into<writer::object_ref, T, X> || converter_writes_into<object_emitter, T, X> ||
+            converter_writes_into<array_emitter, T, X>;
+
+        // The `from_json` of `caster<with_caster<T, X>>`, in the form of X so that the library tells the same form.
+        template <typename T, typename X, typename R = typename converter_return_param<T, X>::type,
+                  typename I = typename converter_in_place_param<T, X>::type>
+        struct with_caster_reader
+        {
+            static with_caster<T, X> from_json(R r)
+            {
+                return with_caster<T, X>(std::in_place, X::from_json(static_cast<R&&>(r)));
+            }
+            static void from_json(with_caster<T, X>& w, I i) { X::from_json(w.value, static_cast<I&&>(i)); }
+        };
+        template <typename T, typename X, typename R>
+        struct with_caster_reader<T, X, R, no_converter_form>
+        {
+            static with_caster<T, X> from_json(R r)
+            {
+                return with_caster<T, X>(std::in_place, X::from_json(static_cast<R&&>(r)));
+            }
+        };
+        template <typename T, typename X, typename I>
+        struct with_caster_reader<T, X, no_converter_form, I>
+        {
+            static void from_json(with_caster<T, X>& w, I i) { X::from_json(w.value, static_cast<I&&>(i)); }
+        };
+        // a `from_json` of X that takes a JSON value of the DOM API
+        template <typename T, typename X>
+        struct with_caster_dom_reader
+        {
+            template <typename Json>
+            requires requires(const Json& json) {
+                { X::from_json(json) } -> std::same_as<T>;
+            }
+            static with_caster<T, X> from_json(const Json& json)
+            {
+                return with_caster<T, X>(std::in_place, X::from_json(json));
+            }
+            template <typename Json>
+            requires requires(T& t, const Json& json) { X::from_json(t, json); }
+            static void from_json(with_caster<T, X>& w, const Json& json)
+            {
+                X::from_json(w.value, json);
+            }
+        };
+        // no `from_json` in X, which leaves T to be read as `cast<T>` reads it
+        template <typename T, typename X>
+        struct with_caster_value_reader
+        {
+            static with_caster<T, X> from_json(T t) { return with_caster<T, X>(std::in_place, std::move(t)); }
+        };
+        template <typename T, typename X>
+        struct with_caster_reader<T, X, no_converter_form, no_converter_form>
+            : std::conditional_t<converter_names_from_json<X>, with_caster_dom_reader<T, X>,
+                                 with_caster_value_reader<T, X>>
+        {
+        };
+
+        // The `to_json` of `caster<with_caster<T, X>>`.  A template for the wrapper, which a reference to the value
+        // that the writer is given does not convert to.
+        template <typename T, typename X, bool Writes = converter_writes<T, X>>
+        struct with_caster_writer
+        {
+            template <typename Self>
+            requires std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(Self&& s) { X::to_json(std::forward<Self>(s).value); }
+            static decltype(auto) to_json(Self&& s)
+            {
+                return X::to_json(std::forward<Self>(s).value);
+            }
+            template <typename Self>
+            requires std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(Self&& s) { X::to_json(std::forward<Self>(s).value, copy_string); }
+            static decltype(auto) to_json(Self&& s, copy_string_t)
+            {
+                return X::to_json(std::forward<Self>(s).value, copy_string);
+            }
+            template <typename V, typename Self>
+            requires writer::detail::to_json_inp_target<V> &&
+                     std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(V& v, Self&& s) { X::to_json(v, std::forward<Self>(s).value); }
+            static void to_json(V& v, Self&& s)
+            {
+                X::to_json(v, std::forward<Self>(s).value);
+            }
+            template <typename V, typename Self>
+            requires writer::detail::to_json_inp_target<V> &&
+                     std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(V& v, Self&& s) { X::to_json(v, std::forward<Self>(s).value, copy_string); }
+            static void to_json(V& v, Self&& s, copy_string_t)
+            {
+                X::to_json(v, std::forward<Self>(s).value, copy_string);
+            }
+            static bool should_omit(const with_caster<T, X>& w)
+            requires requires {
+                { X::should_omit(w.value) } -> std::convertible_to<bool>;
+            }
+            {
+                return X::should_omit(w.value);
+            }
+        };
+        // T written as T: the value goes into the document in place, without a copy
+        template <typename T, typename X>
+        struct with_caster_writer<T, X, false>
+        {
+            template <typename Self, typename... Ts>
+            requires std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> && copy_string_args<Ts...> &&
+                     requires(writer::value_ref& v, Self&& s) { v = std::forward<Self>(s).value; }
+            static void to_json(writer::value_ref& v, Self&& s, Ts...)
+            {
+                if constexpr (sizeof...(Ts) != 0)
+                    v = std::pair<decltype((std::forward<Self>(s).value)), copy_string_t>(std::forward<Self>(s).value,
+                                                                                          copy_string);
+                else
+                    v = std::forward<Self>(s).value;
+            }
+        };
+    }  // namespace detail
+
+    // `yyjson::with_caster<T, X>`, which X reads and writes in the forms of a caster of T.  A caster of the user,
+    // whose forms the library tells as for any other.
+    template <typename T, typename X>
+    struct caster<with_caster<T, X>> : detail::with_caster_reader<T, X>, detail::with_caster_writer<T, X>
+    {
+        static_assert(detail::converter_names_from_json<X> || detail::converter_names_to_json<X> ||
+                          detail::converter_reads<T, X> || detail::converter_writes<T, X>,
+                      "X of with_caster<T, X> has no from_json nor to_json for T");
+        static_assert(!detail::converter_names_from_json<X> || detail::converter_reads<T, X>,
+                      "X::from_json of with_caster<T, X> cannot be called: declare one non-template `T from_json(U)` "
+                      "or `void from_json(T&, U)`, or a `from_json` that takes a JSON value");
+        static_assert(!detail::converter_names_to_json<X> || detail::converter_writes<T, X>,
+                      "X::to_json of with_caster<T, X> cannot be called with a const T&: declare `to_json(const T&)`, "
+                      "`to_json(const T&, copy_string_t)` or `to_json(V&, const T&)` for a reference or an emitter V");
     };
 
     namespace detail

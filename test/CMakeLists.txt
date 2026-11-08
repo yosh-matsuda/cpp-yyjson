@@ -60,6 +60,7 @@ add_executable(
   test_transparent.cpp
   test_read_policies.cpp
   test_nullable.cpp
+  test_with_caster.cpp
   test_presence.cpp
   test_constraints.cpp
   test_as_array.cpp)

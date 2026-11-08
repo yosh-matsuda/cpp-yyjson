@@ -587,7 +587,7 @@ yyjson::read<Query>(R"({"limit":5})");
 *   `yyjson::read<T>`, `read_into` and `cast<T>` give a field with a default its default when the key is missing. `merge_into` keeps the value that the field has, and `null` resets the field to its default.
 *   Under [`yyjson::strict`](validation.md#read-policies), and under `yyjson::reject_missing_keys`, only the key of a field with a default may be left out. Without them, a field without a default keeps its value in `T()`.
 *   `yyjson::required` makes every read reject an object without the key, with or without the policies. It takes no default, and a `std::optional` field takes no `yyjson::required`.
-*   The library compares a field with its default as JSON values: `-0.0` is not equal to `0.0`, because the two are written differently.
+*   The library compares a field with its default as JSON Schema compares JSON values. Thus `-0.0` is equal to a default of `0.0`, and `write` leaves it out. To write the exact value, use `yyjson::emit_defaults`.
 *   `f` of `default_from<f>` must give the same value each time that it is called. The library calls it once and keeps the value for the comparison.
 
 `yyjson::nullable<U>` reads `null` and writes an empty value as `null`, at every position. As a field, it needs its key as `U` does. `std::optional<yyjson::nullable<U>>` tells three states of a key: absent, `null`, and a value.
@@ -1058,7 +1058,7 @@ A [translator](#translator) can take one of these types as its parameter and ret
 
 ## User-defined casters
 
-A user-defined caster converts a type that the conversions above do not handle, or converts it in another way. Specialize `yyjson::caster<X>` and give it the static member functions below. The caster of a type takes precedence over every other conversion of that type.
+A user-defined caster converts a type that the conversions above do not handle, or converts it in another way. Specialize `yyjson::caster<X>` and give it the static member functions below. The caster of a type takes precedence over every other conversion of that type. To convert one field in another way and keep the conversion of its type elsewhere, see [A caster for one field](#a-caster-for-one-field).
 
 Some needs are met without a caster:
 
@@ -1423,6 +1423,58 @@ struct yyjson::caster<Account>
 ```
 
 The same applies to a translator that returns a `yyjson::value`, `yyjson::object` or `yyjson::array`: the strings it refers to must outlive the return, so move or copy a local string into it. The strings of the value it returns are copied into the document of the caller, so a translator does not need `ts...`.
+
+### A caster for one field
+
+A specialization of `yyjson::caster<T>` changes the conversion of `T` everywhere. To convert only one field, or the elements of one range, in another way, give the field the type [`yyjson::with_caster<T, X>`](reference.md#yyjsonwith_caster). It holds a `T` and converts it with the class `X`, which has the static member functions of a caster for `T`. The other values of type `T` keep their conversion:
+
+```cpp
+#include <charconv>
+#include <format>
+
+struct Hex
+{
+    static std::string to_json(int v) { return std::format("{:x}", v); }
+    static int from_json(std::string_view s)
+    {
+        auto v = 0;
+        const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), v, 16);
+        if (ec != std::errc() || end != s.data() + s.size()) throw yyjson::bad_cast("int is not constructible from JSON");
+        return v;
+    }
+};
+
+struct Mask
+{
+    static std::string to_json(const std::string&) { return "***"; }
+};
+
+struct Account
+{
+    yyjson::with_caster<int, Hex> id;
+    yyjson::with_caster<std::string, Mask> password;
+    std::vector<yyjson::with_caster<int, Hex>> keys;
+    int level = 0;
+};
+
+auto json = yyjson::write(Account{255, "pw", {10, 11}, 1});
+// -> {"id":"ff","password":"***","keys":["a","b"],"level":1}
+auto account = yyjson::read<Account>(R"({"id":"1f","password":"secret","keys":["c"]})");
+// -> id 31, password "secret", keys {12}
+int& id = account.id;  // the wrapper converts to a reference to the value that it holds
+```
+
+The rules:
+
+*   `X` takes the forms of a caster: a [translator](#translator), an [in-place translator](#reading-into-an-existing-field), an [emitter](#writing-members-with-an-emitter), a `from_json` that takes a [`json_view` or a JSON value](#reading-a-json-value-in-a-caster), and a `to_json` that [fills a JSON value](#writing-into-a-json-value-in-a-caster). `X` without `from_json` and `to_json` is a compile error.
+*   A direction that `X` leaves out converts `T` as the caster of `T` does. In the example, `Mask` has no `from_json`, so `password` reads the JSON string as it is. Such a field does not read back what it writes: `"***"` is read as `"***"`.
+*   `merge_into` replaces the whole `T` when `X` has no `from_json`, as for a [translator](#translator).
+*   A field of the wrapper is omitted when `X` has [`should_omit`](#omitting-a-field-with-no-value) and it returns `true`. The `should_omit` of the caster of `T` is not called.
+*   [`yyjson::default_`](#default-values-and-required-keys) compares the `T` values, not the JSON that `X` writes. With `Mask`, a password other than the default is written, though its JSON is the same `"***"`. `yyjson::default_from<&f>` takes a function that returns the wrapper type.
+*   To make the key optional, put the wrapper inside: `std::optional<yyjson::with_caster<T, X>>`, or `yyjson::nullable<...>` for `null`. In `yyjson::with_caster<std::optional<T>, X>`, `X` converts the whole `std::optional`, and the field has no default: its key is required, as for any other type.
+*   A map whose keys are wrappers is written as an array of `[key, value]` pairs, as maps whose keys have a user-defined caster are.
+*   An exception that `X` throws reaches the caller as it is. A `yyjson::bad_cast` gets the path of the field, such as `/id`, as in any caster.
+*   Of the [constraints](validation.md#constraints), the field takes `yyjson::satisfies<f>`, with a function of the wrapper type or of `T`. A keyword of a JSON kind, such as `yyjson::maximum`, is a compile error, as on any type with a user-defined caster.
 
 ## Recursive types
 

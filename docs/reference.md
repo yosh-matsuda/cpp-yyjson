@@ -82,6 +82,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
 *   [Utilities](#utilities)
     *   [`yyjson::nullable`](#yyjsonnullable)
     *   [`yyjson::indirect`](#yyjsonindirect)
+    *   [`yyjson::with_caster`](#yyjsonwith_caster)
     *   [`yyjson::any_of_variant`, `yyjson::alt`](#yyjsonany_of_variant-yyjsonalt)
     *   [`yyjson::one_of_variant`](#yyjsonone_of_variant)
     *   [`yyjson::overloaded`](#yyjsonoverloaded)
@@ -1707,7 +1708,7 @@ A field with a default:
 
 *   may leave out its key under [`yyjson::reject_missing_keys`](#read-policies) and `yyjson::strict`.
 *   gets its default when `yyjson::merge_into` reads `null` for it. Under `yyjson::reject_missing_keys`, `merge_into` accepts `null` only for a field with a default.
-*   is left out by `yyjson::write` when it is written as the same JSON as its default, unless [`yyjson::emit_defaults`](#yyjsonemit_defaults) applies. `-0.0` and `0.0` are different JSON. The library makes the default once, the first time that it writes the field, and compares each value with it. Thus `f` must return the same value each time.
+*   is left out by `yyjson::write` when it is equal to its default as a JSON value, unless [`yyjson::emit_defaults`](#yyjsonemit_defaults) applies. Numbers compare as in JSON Schema and in the [comparison of JSON values](#comparison), so `-0.0` is equal to `0.0`. The library makes the default once, the first time that it writes the field, and compares each value with it. Thus `f` must return the same value each time.
 
 A `std::optional` field also has a default: its value in `T()`. It is written when it has a value, and it is left out when it is empty. With `yyjson::default_` or `yyjson::default_from<f>`, it is left out when it is equal to that default.
 
@@ -2573,6 +2574,59 @@ auto expr = Expr{.op = "-", .lhs = yyjson::indirect<Expr>(Expr{.op = "1", .lhs =
 yyjson::write(expr);  // -> {"op":"-","lhs":{"op":"1"}}
 
 auto text = yyjson::indirect<std::string>(std::in_place, "text");  // not from "text" alone: std::string is a class
+```
+
+### `yyjson::with_caster`
+
+A value of `T` that the static member functions of `X` convert, instead of the caster of `T`. See [A caster for one field](conversions.md#a-caster-for-one-field).
+
+```cpp
+template <typename T, typename X>
+class with_caster
+{
+public:
+    using value_type = T;
+    using caster_type = X;
+
+    T value;
+
+    constexpr with_caster() = default;
+    template <typename U = T>
+    constexpr explicit(!std::is_convertible_v<U, T>) with_caster(U&& u);  // not from a with_caster or std::in_place
+    constexpr with_caster(std::initializer_list<E> list);                 // when T has a value_type E and takes such a list
+    template <typename... Args>
+    constexpr explicit with_caster(std::in_place_t, Args&&... args);
+
+    constexpr T& operator*() & noexcept;          // and the overloads for const T& and T&&
+    constexpr T* operator->() noexcept;           // and the overload for const T*
+    constexpr operator T&() & noexcept;
+    constexpr operator const T&() const& noexcept;
+    constexpr operator T() &&;
+};
+
+// == and <=> of two with_casters of the same T and X, and of a with_caster and a value of U, by the values;
+// == and <=> of with_casters of another T or X are deleted
+template <typename T, typename X>
+struct std::hash<yyjson::with_caster<T, X>>;               // when std::hash<T> is enabled
+template <typename T, typename X, typename CharT>
+struct std::formatter<yyjson::with_caster<T, X>, CharT>;   // formats the value as std::formatter<T, CharT> does
+// std::basic_common_reference: the common reference of T and U, so that with_caster<int, X> and int are comparable
+```
+
+`X` has the static member functions of a caster of `T`: `from_json`, `to_json` and `should_omit`, in the forms of [User-defined casters](conversions.md#user-defined-casters). It needs `from_json` or `to_json`. A direction that `X` leaves out converts `T` as the caster of `T` does.
+
+*   The wrapper has the size of `T`. It is trivial when `T` is, but it is not an aggregate.
+*   The reference that `operator*`, `operator->` and the conversions to a reference return refers to `value`. A compiler can warn when a reference binds to the value of a temporary wrapper, such as `const std::string& s = make().password;`.
+*   `with_caster<with_caster<T, X>, Y>` is a compile error.
+*   The formatter formats the value, not the JSON that `X` writes.
+*   A `with_caster<std::string, X>` has no common reference with a `std::string_view`, because a `std::string` and a `std::string_view` have none.
+
+```cpp
+yyjson::with_caster<int, Hex> h = 26;
+yyjson::write(h);                                         // -> "1a"
+yyjson::read<yyjson::with_caster<int, Hex>>(R"("ff")");  // -> holds 255
+auto less = h < 30;                                       // -> true
+std::format("{}", h);                                     // -> "26"
 ```
 
 ### `yyjson::any_of_variant`, `yyjson::alt`
