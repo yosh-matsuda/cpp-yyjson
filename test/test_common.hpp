@@ -258,8 +258,25 @@ namespace
         });
     }
 
+    inline std::string merge_patched(std::string_view json, std::string_view patch);
+
+    // reading the merge of `patch` into what `t` writes throws
+    template <typename T>
+    bool rejected_by_rule(const T& t, std::string_view patch)
+    {
+        try
+        {
+            static_cast<void>(yyjson::read<T>(merge_patched(std::string_view(yyjson::write(t)), patch)));
+            return false;
+        }
+        catch (const std::exception&)
+        {
+            return true;
+        }
+    }
+
     // `yyjson::merge_into` gives the same result with and without a document, and merging the same text again
-    // changes nothing; returns the result
+    // changes nothing unless the rule rejects it; returns the result
     template <typename T>
     std::string expect_merge_into(const T& t, std::string_view json, bool* merged_directly = nullptr)
     {
@@ -297,7 +314,12 @@ namespace
         try
         {
             yyjson::merge_into(json, twice);
-            EXPECT_EQ(merged(twice, json), expected) << json;
+            // the rule can reject a second merge when the write leaves out a default that the first merge gave
+            const auto again = merged(twice, json);
+            if (!again.starts_with("bad cast") || !rejected_by_rule(twice, json))
+            {
+                EXPECT_EQ(again, expected) << json;
+            }
         }
         catch (...)
         {
@@ -305,12 +327,77 @@ namespace
         return expected;
     }
 
+    // the RFC 7396 merge of the JSON text `patch` into the JSON text `json`
+    inline std::string merge_patched(std::string_view json, std::string_view patch)
+    {
+        const auto doc = yyjson_read(json.data(), json.size(), 0);
+        const auto diff = yyjson_read(patch.data(), patch.size(), 0);
+        const auto out = yyjson_mut_doc_new(nullptr);
+        yyjson_mut_doc_set_root(out, yyjson_merge_patch(out, yyjson_doc_get_root(doc), yyjson_doc_get_root(diff)));
+        auto len = std::size_t();
+        const auto text = yyjson_mut_write(out, 0, &len);
+        auto result = std::string(text, len);
+        std::free(text);
+        yyjson_mut_doc_free(out);
+        yyjson_doc_free(diff);
+        yyjson_doc_free(doc);
+        return result;
+    }
+
+    // whether T() writes an object without members, or cannot be written
+    template <typename T>
+    bool writes_no_member()
+    {
+        try
+        {
+            return std::string_view(yyjson::write(T())) == "{}";
+        }
+        catch (...)
+        {
+            return true;
+        }
+    }
+
+    // for a struct with conditions or counts, or with `Always`, whose text that `t` writes is valid, `merge_into` of
+    // `patch` accepts what reading the merge of `patch` into that text accepts, and gives the same value, unless the
+    // patch switches the alternative of a tagged variant, which it reads from the patch; returns the result
+    template <typename T, bool Always = false>
+    std::string expect_merge_rule(const T& t, std::string_view patch)
+    {
+        const auto result = expect_merge_into(t, patch);
+        if constexpr (Always || yyjson::detail::has_struct_conditions<T> || yyjson::detail::struct_property_counts<T>)
+        {
+            auto text = std::string();
+            try
+            {
+                text = std::string(yyjson::write(t));
+                static_cast<void>(yyjson::read<T>(text));
+            }
+            catch (const std::exception&)
+            {
+                return result;
+            }
+            const auto merged_text = merge_patched(text, patch);
+            const auto expected = read_or_error([&] { return yyjson::read<T>(merged_text); });
+            EXPECT_EQ(result.starts_with("bad cast"), expected.starts_with("bad cast"))
+                << text << " + " << patch << " = " << merged_text << "\n"
+                << result << "\n"
+                << expected;
+            if (!expected.starts_with("bad cast"))
+            {
+                EXPECT_EQ(result, expected) << text << " + " << patch;
+            }
+        }
+        return result;
+    }
+
     std::string written(const auto& t) { return std::string(yyjson::write(t)); }
 
     // reading `json` as `T` gives the same through a document, without one, into an empty `T` and merged into
-    // one, and writing the result gives the same with and without a document
+    // one, and writing the result gives the same with and without a document; a merge reads `merged_json`, which
+    // differs when a new key gets an object with null members
     template <typename T>
-    void expect_recursive(std::string_view json)
+    void expect_recursive(std::string_view json, std::optional<std::string_view> merged_json = std::nullopt)
     {
         const auto expected = yyjson::read(json).cast<T>();
         EXPECT_EQ(yyjson::read<T>(json), expected) << json;
@@ -320,7 +407,14 @@ namespace
         EXPECT_EQ(into, expected) << json;
         auto merged = T();
         yyjson::merge_into(json, merged);
-        EXPECT_EQ(merged, expected) << json;
+        if (merged_json)
+        {
+            EXPECT_EQ(merged, yyjson::read(*merged_json).template cast<T>()) << json;
+        }
+        else
+        {
+            EXPECT_EQ(merged, expected) << json;
+        }
         EXPECT_EQ(std::string_view(yyjson::write(expected)), std::string_view(yyjson::value(expected).write()))
             << json;
         EXPECT_EQ(yyjson::read(yyjson::write(expected)).template cast<T>(), expected) << json;

@@ -1019,10 +1019,10 @@ auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})")
 `read_into` reads a tagged variant as `read<T>` does. `merge_into` chooses what to merge by the tag:
 
 *   When the JSON has no tag, or the tag names the alternative that the variant holds, the JSON is merged into that alternative. A variant that holds `std::monostate` has nothing to merge into, so JSON without a tag throws `yyjson::bad_cast` there.
-*   When the tag names another alternative, the JSON is read as that alternative.
+*   When the tag names another alternative, the JSON is read as that alternative. The read removes each member whose value is null from the objects of the JSON, as for an empty `std::optional`. The members of the old alternative do not carry over, also when the new alternative has a member of the same name.
 *   With `internal_tag`, the JSON is an object that holds the tag. With `adjacent_tag`, the JSON is the member of the variant, of any kind, and the tag is its sibling.
 *   A tag without the member of the variant has to name the alternative that the variant holds, as for `read<T>`.
-*   JSON null gives the field its value in `T()`, as for any field.
+*   JSON null gives the field its value in `T()`, as for any field. The tag stays in the object unless the JSON gives null to the tag too. A tag without the member of the variant then has to name the alternative of the field in `T()`, as [Adjacent tag](#adjacent-tag) gives.
 
 A variant that is not tagged is replaced as a whole, as any other value is.
 

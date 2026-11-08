@@ -1,4 +1,9 @@
+#include <memory_resource>
 #include <regex>
+#include <version>
+#ifdef __cpp_lib_flat_map
+#include <flat_map>
+#endif
 #include "test_common.hpp"
 
 // NOLINTBEGIN
@@ -1437,6 +1442,274 @@ inline constexpr auto yyjson::annotations<Contact> =
                      yyjson::one_of(yyjson::required("email"), yyjson::required("phone")),
                      yyjson::all_of({yyjson::property("age", yyjson::minimum(0))},
                                     yyjson::not_(yyjson::required("id"), yyjson::property("id", yyjson::maximum(0)))));
+// the conditions that merge_into checks on the object after the merge: a port with a default that needs a
+// certificate, with and without yyjson::emit_defaults
+struct MergedServer
+{
+    std::string host;
+    int port = 8080;
+    std::optional<std::string> cert;
+    bool operator==(const MergedServer&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedServer> =
+    yyjson::annotate(yyjson::field("port", yyjson::default_), yyjson::dependent_required("port", {"cert"}));
+struct MergedEmitted
+{
+    std::string host;
+    int port = 8080;
+    std::optional<std::string> cert;
+    bool operator==(const MergedEmitted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedEmitted> = yyjson::annotate(
+    yyjson::field("port", yyjson::default_, yyjson::emit_defaults), yyjson::dependent_required("port", {"cert"}));
+// exactly one of "a" and "b"
+struct MergedChoice
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    bool operator==(const MergedChoice&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedChoice> =
+    yyjson::annotate(yyjson::one_of(yyjson::required("a"), yyjson::required("b")));
+// a key that the object needs
+struct MergedRequired
+{
+    int id = 0;
+    std::optional<int> n;
+    bool operator==(const MergedRequired&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedRequired> = yyjson::annotate(yyjson::required("id"));
+// counts of members: a field that the write leaves out when it is zero, and a default that the minimum writes
+struct OmittedZero
+{
+    static int to_json(int v) { return v; }
+    static int from_json(int v) { return v; }
+    static bool should_omit(int v) { return v == 0; }
+};
+struct MergedCounted
+{
+    int a = 0;
+    std::optional<int> b;
+    yyjson::with_caster<int, OmittedZero> z;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedCounted> = yyjson::annotate(yyjson::max_properties(2));
+struct MergedMinimum
+{
+    int a = 0;
+    std::optional<int> b;
+    bool operator==(const MergedMinimum&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedMinimum> =
+    yyjson::annotate(yyjson::field("a", yyjson::default_), yyjson::min_properties(2));
+// a closed subschema in yyjson::one_of
+struct MergedClosed
+{
+    std::optional<int> x;
+    std::optional<int> z;
+    bool operator==(const MergedClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedClosed> = yyjson::annotate(yyjson::one_of(
+    {yyjson::property("x"), yyjson::additional_properties(false)}, {yyjson::required("x"), yyjson::required("z")}));
+// the keywords of an object at a field
+struct MergedPoint
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const MergedPoint&) const = default;
+};
+struct MergedPath
+{
+    MergedPoint start;
+    std::optional<MergedPoint> end;
+    bool operator==(const MergedPath&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedPath> =
+    yyjson::annotate(yyjson::field("start", yyjson::required("y")), yyjson::field("end", yyjson::min_properties(2)));
+// values that a merge reads anew: a member initializer that is not the default of the type, and arrays
+struct MergedInit
+{
+    std::optional<int> x = 5;
+    std::optional<int> y;
+    bool operator==(const MergedInit&) const = default;
+};
+struct MergedArrays
+{
+    std::vector<MergedPoint> items;
+    std::vector<std::optional<int>> v;
+    bool operator==(const MergedArrays&) const = default;
+};
+struct MergedAbsent
+{
+    std::optional<MergedRequired> req;
+    std::optional<MergedInit> init;
+    std::optional<MergedPoint> point;
+    std::optional<MergedArrays> arrays;
+    std::map<std::string, MergedRequired> reqs;
+    std::map<std::string, MergedMinimum> mins;
+    bool operator==(const MergedAbsent&) const = default;
+};
+// a field that the write omits as equal to its default, which a merge reads from the patch as an absent value
+struct OmittedInner
+{
+    std::optional<int> y;
+    int z = 0;
+    bool operator==(const OmittedInner&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<OmittedInner> = yyjson::annotate(yyjson::dependent_required("y", {"z"}));
+struct OmittedOuter
+{
+    std::string name;
+    OmittedInner in;
+    MergedMinimum min;
+    bool operator==(const OmittedOuter&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<OmittedOuter> =
+    yyjson::annotate(yyjson::field("in", yyjson::default_), yyjson::field("min", yyjson::default_));
+// counts in a condition on a field that a patch does not name
+struct KeptGate
+{
+    std::optional<int> a;
+    std::set<int> s;
+    std::map<std::string, int> m;
+    bool operator==(const KeptGate&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeptGate> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::required("a")),
+    yyjson::then(yyjson::property("s", yyjson::min_items(2)), yyjson::property("m", yyjson::min_properties(2)))));
+// the maps of the keys that no field names
+struct MergedRest
+{
+    int a = 0;
+    std::map<std::string, MergedRequired> ks;
+    std::map<std::string, MergedRequired> rest;
+    bool operator==(const MergedRest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedRest> =
+    yyjson::annotate(yyjson::field("ks", yyjson::pattern_properties("^k")), yyjson::field("rest", yyjson::extra_keys));
+// fields that the write omits as defaults, and an adjacent tag whose null makes the merge use a document
+struct WrittenInner
+{
+    std::optional<int> y;
+    int z = 0;
+    bool operator==(const WrittenInner&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<WrittenInner> = yyjson::annotate(yyjson::field("z", yyjson::required));
+struct WrittenOuter
+{
+    WrittenInner in;
+    std::map<std::string, int> m;
+    std::variant<std::monostate, int, std::string> body;
+    bool operator==(const WrittenOuter&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<WrittenOuter> =
+    yyjson::annotate(yyjson::field("in", yyjson::default_), yyjson::field("m", yyjson::default_),
+                     yyjson::field("body", yyjson::adjacent_tag("t", {"num", "text"})));
+// the keywords on the members of a map in a combinator, which hold on each member but not on the whole map
+struct MergedMapCombinators
+{
+    std::map<std::string, int> no_short;
+    std::map<std::string, int> one_length;
+    std::map<std::string, int> no_small;
+    std::map<std::string, std::map<std::string, int>> inner;
+    bool operator==(const MergedMapCombinators&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedMapCombinators> = yyjson::annotate(
+    yyjson::field("no_short", yyjson::not_(yyjson::property_names(yyjson::max_length(1)))),
+    yyjson::field("one_length", yyjson::any_of(yyjson::property_names(yyjson::max_length(1)),
+                                               yyjson::property_names(yyjson::min_length(2)))),
+    yyjson::field("no_small", yyjson::not_(yyjson::additional_properties(yyjson::maximum(5)))),
+    yyjson::field("inner", yyjson::additional_properties(yyjson::not_(yyjson::property_names(yyjson::max_length(1))))));
+// a map whose comparator keeps a state
+struct ReversedOrder
+{
+    bool reversed = false;
+    bool operator()(const std::string& a, const std::string& b) const { return reversed ? b < a : a < b; }
+};
+struct MergedOrdered
+{
+    std::map<std::string, int, ReversedOrder> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedOrdered> =
+    yyjson::annotate(yyjson::field("m", yyjson::max_properties(3), yyjson::property_names(yyjson::min_length(1))));
+struct MergedResource
+{
+    std::pmr::map<std::string, int> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedResource> =
+    yyjson::annotate(yyjson::field("m", yyjson::max_properties(3), yyjson::property_names(yyjson::min_length(1))));
+// the counts of the items of a set in a combinator, which the input of the read gives
+struct MergedSets
+{
+    std::map<std::string, std::set<int>> least;
+    std::map<std::string, std::set<int>> most;
+    std::map<std::string, std::map<std::string, std::set<int>>> inner;
+    bool operator==(const MergedSets&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedSets> = yyjson::annotate(
+    yyjson::field("least",
+                  yyjson::any_of(yyjson::additional_properties(yyjson::min_items(2)), yyjson::max_properties(0))),
+    yyjson::field("most",
+                  yyjson::any_of(yyjson::additional_properties(yyjson::max_items(1)), yyjson::max_properties(0))),
+    yyjson::field("inner", yyjson::additional_properties(yyjson::any_of(
+                               yyjson::additional_properties(yyjson::min_items(2)), yyjson::max_properties(0)))));
+// the object keywords on a struct that a map holds, which the patch merges in place
+struct MergedSpot
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const MergedSpot&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedSpot> = yyjson::annotate(yyjson::field("x"), yyjson::field("y"));
+struct MergedStructs
+{
+    std::map<std::string, MergedSpot> least;
+    std::map<std::string, MergedSpot> most;
+    std::map<std::string, MergedSpot> rest;
+    std::map<std::string, std::map<std::string, MergedSpot>> deep;
+    bool operator==(const MergedStructs&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedStructs> = yyjson::annotate(
+    yyjson::field("least", yyjson::additional_properties(yyjson::min_properties(2))),
+    yyjson::field("most",
+                  yyjson::any_of(yyjson::additional_properties(yyjson::max_properties(1)), yyjson::max_properties(0))),
+    yyjson::field("rest", yyjson::extra_keys, yyjson::additional_properties(yyjson::min_properties(2))),
+    yyjson::field("deep", yyjson::additional_properties(yyjson::additional_properties(yyjson::min_properties(2)))));
+#ifdef __cpp_lib_flat_map
+// a map whose merge moves its members
+struct MergedFlatCounts
+{
+    std::flat_map<std::string, int> names;
+    std::flat_map<std::string, int> values;
+    bool operator==(const MergedFlatCounts&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedFlatCounts> = yyjson::annotate(
+    yyjson::field(
+        "names",
+        yyjson::any_of(yyjson::property_names(yyjson::max_length(1)), yyjson::property_names(yyjson::min_length(2))),
+        yyjson::max_properties(2)),
+    yyjson::field("values", yyjson::additional_properties(yyjson::maximum(5)), yyjson::max_properties(2)));
+#endif
 // matches in the conditions: an object in "auto" needs a name, "kind" is not null, and "point" read as
 // ConditionPoint, which strict reading does not do with another key, needs a label
 struct TypeTested
@@ -2208,10 +2481,12 @@ namespace
 
     // every read of `json`, with and without a document, throws `bad_cast` with `message` about the value at
     // `path`, and the reader without a document leaves it to the document; `merge_into` too unless `json` is a
-    // null that resets the field
+    // null that resets the field or T() writes members, and else it follows the merge of `json` into them
     template <typename T>
     void expect_rejected(std::string_view json, std::string_view message, std::string_view path, bool merged = true)
     {
+        merged = merged && writes_no_member<T>();
+        static_cast<void>(expect_merge_rule(T(), json));
         const auto check = [&](const yyjson::bad_cast& e) {
             EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
             EXPECT_EQ(e.path(), path) << json;
@@ -2975,7 +3250,7 @@ TEST(Constraints, ElementNullables)
 
 TEST(Constraints, ElementsMerge)
 {
-    // the keywords of a map check the members of the patch, not the values that the map keeps
+    // the keywords on the values check the members of the patch, and the counts count the map after the merge
     auto t = Elements();
     t.limits = {{"old", 200}};
     EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})").find(R"("limits":{"a":1,"old":200})") !=
@@ -2992,16 +3267,14 @@ TEST(Constraints, ElementsMerge)
     expect_merge_rejected(t, R"({"limits":{"a":101}})",
                           R"(an element of the value of the key "limits" of Elements is greater than the maximum 100)",
                           "/limits/a");
-    // yyjson::max_properties counts the members of the patch without null
     t.limits = {{"a", 1}, {"b", 2}, {"c", 3}};
     auto direct = false;
-    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"d":4}})", &direct).find(R"("limits":{"a":1,"b":2,"c":3,"d":4})") !=
-                std::string::npos);
+    EXPECT_TRUE(
+        expect_merge_into(t, R"({"limits":{"a":null,"d":4}})", &direct).find(R"("limits":{"b":2,"c":3,"d":4})") !=
+        std::string::npos);
     EXPECT_TRUE(direct);
-    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":null,"d":4,"e":5,"f":6}})")
-                    .find(R"("limits":{"b":2,"c":3,"d":4,"e":5,"f":6})") != std::string::npos);
-    expect_merge_rejected(t, R"({"limits":{"d":4,"e":5,"f":6,"g":7}})",
-                          limits("has more properties than the maximum 3"), "/limits");
+    for (const auto* json : {R"({"limits":{"d":4}})", R"({"limits":{"a":null,"d":4,"e":5}})"})
+        expect_merge_rejected(t, json, limits("has more properties than the maximum 3"), "/limits");
     // the elements of an array replace those of the range, which are checked as they are read
     auto merged = Elements();
     merged.scores = {-1};
@@ -3063,13 +3336,12 @@ TEST(Constraints, MergeHeldMaps)
     t.pointer = std::make_shared<Limits>(Limits{{"old", 200}});
     t.held = Limits{{"old", 200}};
     t.boxed = yyjson::indirect<Limits>(Limits{{"old", 200}});
-    t.nested = {{"k", {{"old", 200}}}, {"j", {}}};
+    t.nested = {{"k", {{"old", 200}}}};
     // a pointer takes the map of the patch, and the other holders keep the members that the patch does not give
-    EXPECT_EQ(expect_merge_into(t, R"({"pointer":{"a":1},"held":{"a":1},"boxed":{"a":1},"nested":{"k":{"a":1}}})"),
-              R"({"pointer":{"a":1},"held":{"a":1,"old":200},"boxed":{"a":1,"old":200},)"
-              R"("nested":{"j":{},"k":{"a":1,"old":200}}})");
-    const auto expect_merge_rejected = [&t](std::string_view json, std::string_view message, std::string_view path) {
-        auto value = t;
+    EXPECT_EQ(expect_merge_into(t, R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{}}})"),
+              R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{"old":200}}})");
+    const auto expect_merge_rejected = [](std::string_view json, std::string_view message, std::string_view path,
+                                          HeldLimits value = HeldLimits()) {
         const auto e = bad_cast_of([&] { yyjson::merge_into(json, value); });
         EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
         EXPECT_EQ(e.path(), path) << json;
@@ -3090,17 +3362,31 @@ TEST(Constraints, MergeHeldMaps)
     expect_merge_rejected(R"({"nested":{"k":{"a":1,"b":2}}})", element("nested") + "has more properties", "/nested/k");
     expect_merge_rejected(R"({"nested":{"k":{"a":1},"i":{}}})",
                           R"(the value of the key "nested" of HeldLimits has more properties)", "/nested");
+    // the counts count the members that the holders keep
+    for (const auto* key : {"held", "boxed"})
+        expect_merge_rejected(std::format(R"({{"{}":{{"a":1}}}})", key),
+                              std::format(R"(the value of the key "{}" of HeldLimits has more properties)", key),
+                              std::format("/{}", key), t);
+    expect_merge_rejected(R"({"nested":{"k":{"a":1}}})", element("nested") + "has more properties", "/nested/k", t);
+    expect_merge_rejected(R"({"nested":{"i":{}}})",
+                          R"(the value of the key "nested" of HeldLimits has more properties)", "/nested", t);
 }
 
 TEST(Constraints, MergeRepeatedKeys)
 {
     // a patch can give a key more than once; the checks look only at the members that the merged map has, and the
-    // counts count each member of the patch that is not null
+    // counts count the members of that map.  An absent map reads the patch, in which a null removes the members of
+    // its key before it, and the map that it reads counts its members only
     auto t = HeldLimits();
     t.boxed = yyjson::indirect<Limits>(Limits{});
     EXPECT_EQ(expect_merge_into(t, R"({"nested":{"a":{"x":1},"a":null}})"), expect_merge_into(t, R"({"nested":{}})"));
     EXPECT_EQ(expect_merge_into(t, R"({"held":{"a":1,"a":null}})"), expect_merge_into(t, R"({"held":{}})"));
-    EXPECT_TRUE(expect_merge_into(t, R"({"held":{"a":1,"a":null,"b":1}})")
+    EXPECT_EQ(merged(t, R"({"held":{"a":1,"a":null,"b":1}})"),
+              R"({"pointer":null,"held":{"b":1},"boxed":{},"nested":{}})");
+    t.held = Limits{};
+    EXPECT_EQ(merged(t, R"({"held":{"a":1,"a":null,"b":1}})"),
+              R"({"pointer":null,"held":{"b":1},"boxed":{},"nested":{}})");
+    EXPECT_TRUE(expect_merge_into(t, R"({"held":{"a":1,"b":null,"b":1}})")
                     .starts_with(R"(bad cast: the value of the key "held" of HeldLimits has more properties)"));
     const auto sets = RepeatedSets();
     EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1],"a":null}})"), R"({"m":{},"n":{}})");
@@ -3110,7 +3396,8 @@ TEST(Constraints, MergeRepeatedKeys)
     EXPECT_EQ(expect_merge_into(sets, R"({"n":{"a":11,"a":null,"b":9}})"), R"({"m":{},"n":{"b":9}})");
     EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":11}})")
                     .starts_with(R"(bad cast: an element of the value of the key "n" of RepeatedSets is greater)"));
-    EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":1,"c":1}})")
+    EXPECT_EQ(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":1,"c":1}})"), R"({"m":{},"n":{"b":1,"c":1}})");
+    EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"b":1,"c":null,"c":1}})")
                     .starts_with(R"(bad cast: the value of the key "n" of RepeatedSets has more properties)"));
     // a patch without a repeated key, through the document too
     EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1]},"n":{"a":1}})"), R"({"m":{"a":[1]},"n":{"a":1}})");
@@ -3747,12 +4034,15 @@ TEST(Constraints, CombinatorsDifferential)
 
 namespace
 {
-    // every read of `json` into T, alone and as an element, and `merge_into` unless `merged` is false: accepted, or
-    // rejected with `message` at `path`; the reader without a document reads the accepted ones as the document does
+    // every read of `json` into T, alone and as an element, and `merge_into` unless `merged` is false or T() writes
+    // members: accepted, or rejected with `message` at `path`; the reader without a document reads the accepted
+    // ones as the document does, and `merge_into` follows the merge of `json` into what T() writes
     template <typename T>
     void expect_conditions(std::string_view json, std::string_view message, std::string_view path = "",
                            bool merged = true)
     {
+        merged = merged && writes_no_member<T>();
+        static_cast<void>(expect_merge_rule(T(), json));
         const auto text = std::string(json);
         const auto reads = std::array<std::function<void()>, 5>{
             [&] { (void)yyjson::read<T>(text); }, [&] { (void)yyjson::read(text).template cast<T>(); },
@@ -3940,8 +4230,8 @@ TEST(Constraints, StructConditionsOfNull)
 
 TEST(Constraints, StructConditionsMerged)
 {
-    // merge_into checks the patch: the keys of the patch but those with a null, which removes a value, with the
-    // values that the merge gives
+    // merge_into checks the object after the merge: the members of the patch that are not null, and the fields that
+    // the patch does not name and that the write gives, with the values that the merge gives
     auto c = Contact{.name = "a", .email = "e"};
     yyjson::merge_into(R"({"name":"a","email":"e","age":3})", c);
     EXPECT_EQ(c.age, 3);
@@ -3949,9 +4239,16 @@ TEST(Constraints, StructConditionsMerged)
     EXPECT_TRUE(message_of(e).starts_with(R"(the value of the key "age" of Contact is less than the minimum 0)"))
         << e.what();
     EXPECT_EQ(e.path(), "/age");
-    e = bad_cast_of([&] { yyjson::merge_into(R"({"age":3})", c); });
+    yyjson::merge_into(R"({"age":4})", c);
+    EXPECT_EQ(c, (Contact{.name = "a", .email = "e", .age = 4}));
+    e = bad_cast_of([&] { yyjson::merge_into(R"({"name":null})", c); });
     EXPECT_TRUE(message_of(e).starts_with(
         R"(Contact is not constructible from JSON without all the keys of one of ["name"], ["id"])"))
+        << e.what();
+    c = Contact{.name = "a", .email = "e"};
+    e = bad_cast_of([&] { yyjson::merge_into(R"({"phone":"p"})", c); });
+    EXPECT_TRUE(message_of(e).starts_with(
+        R"(Contact is not constructible from JSON with all the keys of more than one of ["email"], ["phone"])"))
         << e.what();
     c = Contact{.name = "a", .email = "e"};
     yyjson::merge_into(R"({"name":"b","email":null,"phone":"p"})", c);
@@ -3969,6 +4266,339 @@ TEST(Constraints, StructConditionsMerged)
     auto p = ConditionPresence{};
     yyjson::read_into(R"({"d":1})", p);
     EXPECT_THROW(yyjson::read_into(R"({"a":1})", p), yyjson::bad_cast);
+}
+
+TEST(Constraints, MergedObject)
+{
+    const auto rejected = [](std::string_view result, std::string_view message) {
+        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    };
+    const auto cert = R"(MergedServer is not constructible from JSON without the key "cert", which )"
+                      R"(yyjson::dependent_required requires)";
+    // a field equal to its default is not in the object that the write gives, and a field with
+    // yyjson::emit_defaults is
+    const auto server = yyjson::read<MergedServer>(R"({"host":"a"})");
+    EXPECT_EQ(expect_merge_rule(server, R"({"host":"b"})"), R"({"host":"b","port":8080})");
+    EXPECT_EQ(expect_merge_rule(server, R"({"host":"b","cert":"x"})"), R"({"host":"b","port":8080,"cert":"x"})");
+    rejected(expect_merge_rule(server, R"({"port":8080})"), cert);
+    const auto secure = yyjson::read<MergedServer>(R"({"host":"a","port":9000,"cert":"x"})");
+    EXPECT_EQ(expect_merge_rule(secure, R"({"host":"b"})"), R"({"host":"b","port":9000,"cert":"x"})");
+    rejected(expect_merge_rule(secure, R"({"cert":null})"), cert);
+    EXPECT_EQ(expect_merge_rule(secure, R"({"cert":null,"port":null})"), R"({"host":"a","port":8080})");
+    EXPECT_EQ(expect_merge_rule(MergedServer{"a", 8080, "x"}, R"({"cert":null})"), R"({"host":"a","port":8080})");
+    rejected(expect_merge_rule(MergedEmitted{"a", 8080, "x"}, R"({"cert":null})"),
+             R"(MergedEmitted is not constructible from JSON without the key "cert")");
+
+    // the keys that the patch does not name stay in the object
+    const auto choice = yyjson::read<MergedChoice>(R"({"a":1})");
+    const auto many = R"(MergedChoice is not constructible from JSON with all the keys of more than one of )";
+    rejected(expect_merge_rule(choice, R"({"b":2})"), many);
+    EXPECT_EQ(expect_merge_rule(choice, R"({"x":1})"), R"({"a":1})");
+    EXPECT_EQ(expect_merge_rule(choice, R"({"a":null,"b":2})"), R"({"b":2})");
+    rejected(expect_merge_rule(choice, R"({"a":null})"),
+             R"(MergedChoice is not constructible from JSON without all the keys of one of )");
+
+    // a null removes the key that the object needs
+    EXPECT_EQ(expect_merge_rule(MergedRequired{1, {}}, R"({"n":2})"), R"({"id":1,"n":2})");
+    rejected(expect_merge_rule(MergedRequired{1, {}}, R"({"id":null})"),
+             R"(MergedRequired is not constructible from JSON without the key "id")");
+    EXPECT_THROW(yyjson::merge_into(R"({"id":null})", *std::make_unique<MergedRequired>()), yyjson::bad_cast);
+
+    // the counts take the members of the object after the merge
+    const auto counted = [](int a, std::optional<int> b, int z) {
+        auto t = MergedCounted{a, b, {}};
+        t.z = z;
+        return t;
+    };
+    const auto more = "MergedCounted has more properties than the maximum 2";
+    EXPECT_EQ(expect_merge_rule(counted(1, {}, 0), R"({"b":2})"), R"({"a":1,"b":2})");
+    EXPECT_EQ(expect_merge_rule(counted(1, {}, 0), R"({"z":3})"), R"({"a":1,"z":3})");
+    rejected(expect_merge_rule(counted(1, {}, 3), R"({"b":2})"), more);
+    rejected(expect_merge_rule(counted(1, {}, 0), R"({"b":2,"y":1})"), more);
+    EXPECT_EQ(expect_merge_rule(counted(1, {}, 3), R"({"b":2,"z":null})"), R"({"a":1,"b":2})");
+    const auto fewer = "MergedMinimum has fewer properties than the minimum 2";
+    EXPECT_EQ(expect_merge_rule(MergedMinimum{0, 1}, R"({"c":1})"), R"({"a":0,"b":1})");
+    EXPECT_EQ(expect_merge_rule(MergedMinimum{0, 1}, R"({"b":2})"), R"({"a":0,"b":2})");
+    rejected(expect_merge_rule(MergedMinimum{0, 1}, R"({"b":null})"), fewer);
+    rejected(expect_merge_rule(MergedMinimum{0, 1}, R"({"a":null,"b":null,"c":1})"), fewer);
+
+    // a closed subschema sees the keys of the object after the merge
+    const auto none = "MergedClosed satisfies none of the subschemas of yyjson::one_of";
+    EXPECT_EQ(expect_merge_rule(MergedClosed{1, {}}, R"({"x":2})"), R"({"x":2})");
+    EXPECT_EQ(expect_merge_rule(MergedClosed{1, {}}, R"({"z":1})"), R"({"x":1,"z":1})");
+    rejected(expect_merge_rule(MergedClosed{1, {}}, R"({"y":1})"), none);
+    EXPECT_EQ(expect_merge_rule(MergedClosed{1, 1}, R"({"z":null})"), R"({"x":1})");
+    rejected(expect_merge_rule(MergedClosed{1, 1}, R"({"x":null})"), none);
+}
+
+TEST(Constraints, MergedObjectAtField)
+{
+    const auto rejected = [](std::string_view result, std::string_view message) {
+        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    };
+    const auto keys = R"(the value of the key "start" of MergedPath does not have the keys and the values that )"
+                      R"(yyjson::property and required give at /start)";
+    const auto fewer = R"(the value of the key "end" of MergedPath has fewer properties than the minimum 2 at /end)";
+    const auto merge = [](const MergedPath& t, std::string_view patch) {
+        return expect_merge_rule<MergedPath, true>(t, patch);
+    };
+    const auto path = MergedPath{{1, 3}, {}};
+    EXPECT_EQ(merge(path, R"({"start":{"x":2}})"), R"({"start":{"x":2,"y":3}})");
+    rejected(merge(path, R"({"start":{"y":null}})"), keys);
+    rejected(merge(MergedPath{{1, {}}, {}}, R"({"start":{"x":2}})"), keys);
+    rejected(merge(path, R"({"end":{"x":2}})"), fewer);
+    rejected(merge(path, R"({"end":{"y":4}})"), fewer);
+    rejected(merge(path, R"({"end":{"x":2,"y":null}})"), fewer);
+    EXPECT_EQ(merge(path, R"({"end":{"x":2,"y":4}})"), R"({"start":{"x":1,"y":3},"end":{"x":2,"y":4}})");
+    const auto ended = MergedPath{{1, 3}, MergedPoint{2, 4}};
+    EXPECT_EQ(merge(ended, R"({"end":{"x":5}})"), R"({"start":{"x":1,"y":3},"end":{"x":5,"y":4}})");
+    rejected(merge(ended, R"({"end":{"y":null}})"), fewer);
+}
+
+TEST(Constraints, MergedAbsent)
+{
+    // a value that is absent, as an empty optional or a new key of a map, reads the patch without the null members
+    // of its objects
+    const auto rejected = [](std::string_view result, std::string_view message) {
+        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    };
+    const auto merge = [](std::string_view patch) {
+        return expect_merge_rule<MergedAbsent, true>(MergedAbsent(), patch);
+    };
+    const auto id = R"(MergedRequired is not constructible from JSON without the key "id")";
+    rejected(merge(R"({"req":{"n":1}})"), id);
+    rejected(merge(R"({"req":{"id":null,"n":1}})"), id);
+    EXPECT_EQ(merge(R"({"req":{"id":1,"n":null}})"), R"({"req":{"id":1},"reqs":{},"mins":{}})");
+    EXPECT_EQ(merge(R"({"init":{"x":null,"y":4}})"), R"({"init":{"x":5,"y":4},"reqs":{},"mins":{}})");
+    EXPECT_EQ(merge(R"({"point":{"x":null,"y":4}})"), R"({"point":{"x":0,"y":4},"reqs":{},"mins":{}})");
+    rejected(merge(R"({"reqs":{"k":{"n":1}}})"), id);
+    rejected(merge(R"({"reqs":{"k":{"id":null}}})"), id);
+    EXPECT_EQ(merge(R"({"reqs":{"k":{"id":1,"n":null}}})"), R"({"reqs":{"k":{"id":1}},"mins":{}})");
+    const auto fewer = "MergedMinimum has fewer properties than the minimum 2";
+    rejected(merge(R"({"mins":{"k":{"b":1}}})"), fewer);
+    rejected(merge(R"({"mins":{"k":{"b":1,"c":null}}})"), fewer);
+    EXPECT_EQ(merge(R"({"mins":{"k":{"a":1,"b":null,"c":2}}})"), R"({"reqs":{},"mins":{"k":{"a":1}}})");
+    // a null in an array stays, and so does a null member of an object in an array
+    EXPECT_EQ(merge(R"({"arrays":{"v":[1,null],"w":null}})"),
+              R"({"arrays":{"items":[],"v":[1,null]},"reqs":{},"mins":{}})");
+    EXPECT_TRUE(merge(R"({"arrays":{"items":[{"x":null}],"w":null}})").starts_with("bad cast"));
+    // a value that is present takes the null members of the patch
+    auto present = MergedAbsent();
+    present.point = MergedPoint{1, 2};
+    EXPECT_EQ((expect_merge_rule<MergedAbsent, true>(present, R"({"point":{"x":null,"y":4}})")),
+              R"({"point":{"x":0,"y":4},"reqs":{},"mins":{}})");
+}
+
+TEST(Constraints, MergedAbsentField)
+{
+    const auto rejected = [](std::string_view result, std::string_view message) {
+        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    };
+    // a field that the write omits is absent
+    const auto outer = OmittedOuter{.name = "a", .in = {}, .min = {}};
+    const auto merge = [](const OmittedOuter& t, std::string_view patch) {
+        return expect_merge_rule<OmittedOuter, true>(t, patch);
+    };
+    rejected(merge(outer, R"({"in":{"y":1}})"), R"(OmittedInner is not constructible from JSON without the key "z")");
+    EXPECT_EQ(merge(outer, R"({"in":{"y":1,"z":2}})"), R"({"name":"a","in":{"y":1,"z":2},"min":{"a":0}})");
+    rejected(merge(outer, R"({"min":{"b":1}})"), "MergedMinimum has fewer properties than the minimum 2");
+    EXPECT_EQ(merge(outer, R"({"min":{"a":1,"b":null,"c":2}})"), R"({"name":"a","in":{"z":0},"min":{"a":1}})");
+    auto written = outer;
+    written.in.z = 1;
+    EXPECT_EQ(merge(written, R"({"in":{"y":1}})"), R"({"name":"a","in":{"y":1,"z":1},"min":{"a":0}})");
+
+    // the counts in a condition count a field that the patch does not name
+    rejected(expect_merge_rule(KeptGate{{}, {1}, {{"k", 1}, {"l", 2}}}, R"({"a":1})"),
+             R"(the value of the key "s" of KeptGate has fewer items than the minimum 2)");
+    rejected(expect_merge_rule(KeptGate{{}, {1, 2}, {{"k", 1}}}, R"({"a":1})"),
+             R"(the value of the key "m" of KeptGate has fewer properties than the minimum 2)");
+    EXPECT_EQ(expect_merge_rule(KeptGate{{}, {1, 2}, {{"k", 1}}}, R"({"a":1,"m":{"l":2}})"),
+              R"({"a":1,"s":[1,2],"m":{"k":1,"l":2}})");
+    EXPECT_EQ(expect_merge_rule(KeptGate{{}, {1, 2}, {{"k", 1}, {"l", 2}}}, R"({"a":1})"),
+              R"({"a":1,"s":[1,2],"m":{"k":1,"l":2}})");
+
+    // a new key of a map of the keys that no field names is absent
+    const auto id = R"(MergedRequired is not constructible from JSON without the key "id")";
+    const auto rest = [](std::string_view patch) {
+        return expect_merge_rule<MergedRest, true>(MergedRest{.a = 1, .ks = {}, .rest = {{"r", {1, {}}}}}, patch);
+    };
+    rejected(rest(R"({"x":{"n":1}})"), id);
+    rejected(rest(R"({"k":{"n":1}})"), id);
+    EXPECT_EQ(rest(R"({"x":{"id":2,"n":null},"k":{"id":3,"n":null}})"),
+              R"({"a":1,"k":{"id":3},"r":{"id":1},"x":{"id":2}})");
+    EXPECT_EQ(rest(R"({"r":{"n":2}})"), R"({"a":1,"r":{"id":1,"n":2}})");
+    rejected(rest(R"({"r":{"id":null}})"), id);
+
+    // a field that the write wrote before a merge without a document changed it to its default is not absent in
+    // the merge through a document that follows, which the null of the adjacent tag starts
+    const auto fallback = [](const WrittenOuter& t, std::string_view patch) {
+        auto merged_directly = false;
+        static_cast<void>(expect_merge_into(t, patch, &merged_directly));
+        EXPECT_FALSE(merged_directly) << patch;
+        return expect_merge_rule<WrittenOuter, true>(t, patch);
+    };
+    EXPECT_EQ(fallback(WrittenOuter{{1, 0}, {}, {}}, R"({"in":{"y":null},"body":null,"t":null})"),
+              R"({"in":{"z":0},"m":{},"body":null})");
+    EXPECT_EQ(fallback(WrittenOuter{{}, {{"a", 1}}, {}}, R"({"m":{"a":null},"body":null,"t":null})"),
+              R"({"in":{"z":0},"m":{},"body":null})");
+    rejected(fallback(WrittenOuter(), R"({"in":{"y":1},"body":null,"t":null})"),
+             R"(WrittenInner is not constructible from JSON without the key "z")");
+}
+
+TEST(Constraints, MergedMapMembers)
+{
+    const auto rejected = [](std::string_view result) { EXPECT_TRUE(result.starts_with("bad cast: ")) << result; };
+    // a keyword on the members in a combinator checks the whole map
+    const auto t = MergedMapCombinators{{{"bb", 1}}, {{"bb", 1}}, {{"b", 10}}, {{"a", {{"bb", 1}}}}};
+    const auto merge = [&t](std::string_view patch) { return expect_merge_rule<MergedMapCombinators, true>(t, patch); };
+    EXPECT_EQ(merge(R"({"no_short":{"a":1}})"),
+              R"({"no_short":{"a":1,"bb":1},"one_length":{"bb":1},"no_small":{"b":10},"inner":{"a":{"bb":1}}})");
+    rejected(merge(R"({"no_short":{"bb":null,"a":1}})"));
+    rejected(merge(R"({"one_length":{"a":1}})"));
+    EXPECT_EQ(merge(R"({"one_length":{"cc":1}})"),
+              R"({"no_short":{"bb":1},"one_length":{"bb":1,"cc":1},"no_small":{"b":10},"inner":{"a":{"bb":1}}})");
+    EXPECT_EQ(merge(R"({"no_small":{"a":1}})"),
+              R"({"no_short":{"bb":1},"one_length":{"bb":1},"no_small":{"a":1,"b":10},"inner":{"a":{"bb":1}}})");
+    rejected(merge(R"({"no_small":{"b":null,"a":1}})"));
+    EXPECT_EQ(merge(R"({"inner":{"a":{"c":1}}})"),
+              R"({"no_short":{"bb":1},"one_length":{"bb":1},"no_small":{"b":10},"inner":{"a":{"bb":1,"c":1}}})");
+    rejected(merge(R"({"inner":{"a":{"bb":null,"c":1}}})"));
+    rejected(merge(R"({"inner":{"z":{"c":1}}})"));
+
+    // the merge keeps the comparator and the allocator of a map
+    for (const auto& [patch, expected] : {std::pair{R"({"m":{"c":3}})", R"({"m":{"c":3,"b":2,"a":1}})"},
+                                          std::pair{R"({"m":{"c":3,"a":null}})", R"({"m":{"c":3,"b":2}})"}})
+    {
+        auto ordered = MergedOrdered{decltype(MergedOrdered::m)(ReversedOrder{true})};
+        ordered.m = {{"a", 1}, {"b", 2}};
+        yyjson::merge_into(patch, ordered);
+        EXPECT_TRUE(ordered.m.key_comp().reversed) << patch;
+        EXPECT_EQ(written(ordered), expected) << patch;
+        auto from_value = MergedOrdered{decltype(MergedOrdered::m)(ReversedOrder{true})};
+        from_value.m = {{"a", 1}, {"b", 2}};
+        yyjson::detail::merge_text(patch, from_value, yyjson::ReadFlag::NoFlag);
+        EXPECT_EQ(written(from_value), written(ordered)) << patch;
+
+        auto resource = std::pmr::monotonic_buffer_resource();
+        auto pmr = MergedResource{std::pmr::map<std::string, int>(&resource)};
+        pmr.m = {{"a", 1}, {"b", 2}};
+        yyjson::merge_into(patch, pmr);
+        EXPECT_EQ(pmr.m.get_allocator().resource(), &resource) << patch;
+        EXPECT_EQ(written(pmr), written(MergedResource{{pmr.m.begin(), pmr.m.end()}})) << patch;
+        yyjson::detail::merge_text(R"({"m":{"d":4,"c":null}})", pmr, yyjson::ReadFlag::NoFlag);
+        EXPECT_EQ(pmr.m.get_allocator().resource(), &resource) << patch;
+    }
+    // the members of the patch in a check of the whole map count the items that their input gives
+    const auto sets = [](const MergedSets& start, std::string_view patch) {
+        return expect_merge_rule<MergedSets, true>(start, patch);
+    };
+    EXPECT_EQ(sets(MergedSets{{{"j", {1, 2}}}, {}, {}}, R"({"least":{"k":[1,1]}})"),
+              R"({"least":{"j":[1,2],"k":[1]},"most":{},"inner":{}})");
+    rejected(sets(MergedSets{{{"j", {1, 2}}}, {}, {}}, R"({"least":{"k":[1]}})"));
+    rejected(sets(MergedSets{{}, {{"j", {1}}}, {}}, R"({"most":{"k":[1,1]}})"));
+    EXPECT_EQ(sets(MergedSets{{}, {{"j", {1}}}, {}}, R"({"most":{"k":[2]}})"),
+              R"({"least":{},"most":{"j":[1],"k":[2]},"inner":{}})");
+    EXPECT_EQ(sets(MergedSets{{}, {}, {{"o", {{"j", {1, 2}}}}}}, R"({"inner":{"o":{"k":[1,1]}}})"),
+              R"({"least":{},"most":{},"inner":{"o":{"j":[1,2],"k":[1]}}})");
+    rejected(sets(MergedSets{{}, {}, {{"o", {{"j", {1, 2}}}}}}, R"({"inner":{"o":{"k":[1]}}})"));
+    // a struct merged in place counts the members of its object after the merge, and a struct read into a new key
+    // counts those of the patch without its null members
+    const auto structs = [](const MergedStructs& start, std::string_view patch) {
+        return expect_merge_rule<MergedStructs, true>(start, patch);
+    };
+    EXPECT_EQ(structs(MergedStructs{{{"a", {1, 2}}}, {}, {}, {}}, R"({"least":{"a":{"x":3}}})"),
+              R"({"least":{"a":{"x":3,"y":2}},"most":{},"deep":{}})");
+    rejected(structs(MergedStructs{{}, {{"a", {1, {}}}}, {}, {}}, R"({"most":{"a":{"y":3}}})"));
+    rejected(structs(MergedStructs{{{"a", {1, 2}}}, {}, {}, {}}, R"({"least":{"b":{"x":3}}})"));
+    rejected(structs(MergedStructs{{{"a", {1, 2}}}, {}, {}, {}}, R"({"least":{"b":{"x":3,"y":null}}})"));
+    rejected(structs(MergedStructs{{{"a", {1, 2}}}, {}, {}, {}}, R"({"least":{"b":{"y":3}}})"));
+    rejected(structs(MergedStructs{{}, {}, {{"r", {1, 2}}}, {}}, R"({"s":{"y":3}})"));
+    EXPECT_EQ(structs(MergedStructs{{}, {{"a", {1, {}}}}, {}, {}}, R"({"most":{"b":{"y":3,"x":null}}})"),
+              R"({"least":{},"most":{"a":{"x":1},"b":{"x":0,"y":3}},"deep":{}})");
+    EXPECT_EQ(structs(MergedStructs{{}, {}, {{"r", {1, 2}}}, {}}, R"({"r":{"x":3}})"),
+              R"({"least":{},"most":{},"deep":{},"r":{"x":3,"y":2}})");
+    rejected(structs(MergedStructs{{}, {}, {{"r", {1, 2}}}, {}}, R"({"s":{"x":3}})"));
+    rejected(structs(MergedStructs{{}, {}, {{"r", {1, 2}}}, {}}, R"({"s":{"x":3,"y":null}})"));
+    const auto deep = MergedStructs{{}, {}, {}, {{"o", {{"a", {1, 2}}}}}};
+    EXPECT_EQ(structs(deep, R"({"deep":{"o":{"a":{"x":3}}}})"),
+              R"({"least":{},"most":{},"deep":{"o":{"a":{"x":3,"y":2}}}})");
+    rejected(structs(deep, R"({"deep":{"o":{"b":{"y":3}}}})"));
+    rejected(structs(deep, R"({"deep":{"p":{"b":{"y":3}}}})"));
+    rejected(structs(deep, R"({"deep":{"p":{"b":{"x":1,"y":null}}}})"));
+    EXPECT_EQ(structs(deep, R"({"deep":{"p":{"b":{"x":1,"y":2}}}})"),
+              R"({"least":{},"most":{},"deep":{"o":{"a":{"x":1,"y":2}},"p":{"b":{"x":1,"y":2}}}})");
+#ifdef __cpp_lib_flat_map
+    // the counts of a map whose merge moves its members are of the map after the merge
+    const auto flat = [](const MergedFlatCounts& start, std::string_view patch) {
+        return expect_merge_rule<MergedFlatCounts, true>(start, patch);
+    };
+    rejected(flat(MergedFlatCounts{{{"bb", 1}}, {}}, R"({"names":{"cc":1,"dd":1}})"));
+    rejected(flat(MergedFlatCounts{{{"bb", 1}}, {}}, R"({"names":{"a":1}})"));
+    EXPECT_EQ(flat(MergedFlatCounts{{{"bb", 1}}, {}}, R"({"names":{"cc":1}})"),
+              R"({"names":{"bb":1,"cc":1},"values":{}})");
+    EXPECT_EQ(flat(MergedFlatCounts{{}, {{"b", 1}}}, R"({"values":{"a":2,"b":null,"c":1}})"),
+              R"({"names":{},"values":{"a":2,"c":1}})");
+    rejected(flat(MergedFlatCounts{{}, {{"b", 1}}}, R"({"values":{"a":2,"c":1}})"));
+    rejected(flat(MergedFlatCounts{{}, {{"b", 1}}}, R"({"values":{"a":9}})"));
+#endif
+
+    auto ordered = MergedOrdered{decltype(MergedOrdered::m)(ReversedOrder{true})};
+    ordered.m = {{"a", 1}, {"b", 2}};
+    EXPECT_THROW(yyjson::merge_into(R"({"m":{"c":3,"d":4}})", ordered), yyjson::bad_cast);
+    EXPECT_THROW(yyjson::merge_into(R"({"m":{"":3}})", ordered), yyjson::bad_cast);
+}
+
+#ifdef __cpp_lib_flat_map
+// a map whose elements move when it changes
+struct MergedFlat
+{
+    std::flat_map<std::string, MergedInit> m;
+    std::optional<MergedInit> o;
+    bool operator==(const MergedFlat&) const = default;
+};
+TEST(Constraints, MergedAbsentFlatMap)
+{
+    const auto merge = [](const MergedFlat& t, std::string_view patch) {
+        return expect_merge_rule<MergedFlat, true>(t, patch);
+    };
+    EXPECT_EQ(merge(MergedFlat(), R"({"o":{"x":null},"m":{"a":{"y":1},"c":{"x":null,"y":2}}})"),
+              R"({"m":{"a":{"x":5,"y":1},"c":{"x":5,"y":2}},"o":{"x":5}})");
+    EXPECT_EQ(merge(MergedFlat{{{"b", {}}}, {}}, R"({"m":{"a":{"y":1},"b":{"y":3},"c":{"y":2}}})"),
+              R"({"m":{"a":{"x":5,"y":1},"b":{"x":5,"y":3},"c":{"x":5,"y":2}}})");
+}
+#endif
+
+TEST(Constraints, MergedObjectRule)
+{
+    // merge_into accepts a patch when reading the merge of the patch into what `t` writes accepts it
+    const auto patches = std::array{R"({})",
+                                    R"({"host":"b"})",
+                                    R"({"port":8080})",
+                                    R"({"port":9000,"cert":"y"})",
+                                    R"({"cert":null})",
+                                    R"({"port":null})",
+                                    R"({"cert":null,"port":null})",
+                                    R"({"host":null,"z":1})",
+                                    R"({"a":1,"b":null})",
+                                    R"({"a":null,"b":2,"x":1})",
+                                    R"({"x":1,"z":1})",
+                                    R"({"x":null,"z":2,"y":null})",
+                                    R"({"id":null})",
+                                    R"({"id":3,"n":null})"};
+    for (const auto* patch : patches)
+    {
+        static_cast<void>(expect_merge_rule(MergedServer{"a", 8080, {}}, patch));
+        static_cast<void>(expect_merge_rule(MergedServer{"a", 9000, "x"}, patch));
+        static_cast<void>(expect_merge_rule(MergedEmitted{"a", 8080, "x"}, patch));
+        static_cast<void>(expect_merge_rule(MergedChoice{1, {}}, patch));
+        static_cast<void>(expect_merge_rule(MergedChoice{{}, 2}, patch));
+        static_cast<void>(expect_merge_rule(MergedRequired{1, 2}, patch));
+        static_cast<void>(expect_merge_rule(MergedMinimum{0, 1}, patch));
+        static_cast<void>(expect_merge_rule(MergedMinimum{3, {}}, patch));
+        static_cast<void>(expect_merge_rule(MergedClosed{1, {}}, patch));
+        static_cast<void>(expect_merge_rule(MergedClosed{1, 1}, patch));
+        static_cast<void>(expect_merge_rule(Contact{.name = "a", .email = "e"}, patch));
+    }
 }
 
 TEST(Constraints, StructConditionsOfValues)
@@ -4037,13 +4667,20 @@ TEST(Constraints, ClosedConditions)
     expect_conditions<ClosedAlternatives>(R"({"a":1,"type":"c"})", "");
     expect_conditions<ClosedAlternatives>(R"({"type":"c","a":1,"b":2})", closed("ClosedAlternative", "b"), "/b");
 
-    // merge_into checks the keys of the patch
+    // merge_into checks the keys of the object after the merge
     auto merged = ConditionClosed{"circle", 1.0, {}};
     yyjson::merge_into(R"({"kind":"circle","r":2})", merged);
     EXPECT_EQ(merged.r, 2.0);
-    // the patch has no key "kind", so yyjson::else_ applies
-    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"r":3})", merged); }).path(), "/r");
-    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":"circle","r":1,"w":1})", merged); });
+    // the key "kind" stays, so yyjson::then applies
+    yyjson::merge_into(R"({"r":3})", merged);
+    EXPECT_EQ(merged.r, 3.0);
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"w":1})", merged); }).path(), "/w");
+    // without the key "kind", yyjson::else_ applies, and the error is at the object, as the patch has no key "r"
+    auto e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":null})", merged); });
+    EXPECT_TRUE(message_of(e).starts_with(closed("ConditionClosed", "r"))) << e.what();
+    EXPECT_EQ(e.path(), "");
+    merged = ConditionClosed{"circle", 1.0, {}};
+    e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":"circle","r":1,"w":1})", merged); });
     EXPECT_EQ(e.path(), "/w");
 }
 

@@ -441,23 +441,27 @@ TEST(DomValue, Members)
     const auto json = std::string(
         R"({"a":1,"v":{"big":18446744073709551615,"s":"e\"\\\n"},"o":{"x":1},"arr":[1,"s"],"opt":{"q":[]},)"
         R"("vs":[1,"two",{"three":3},[4]],"m":{"k":{"z":null}},"var":{"w":true}})");
-    const auto check = [&](const DomMembers& t) {
-        EXPECT_EQ(write(t), json);
-        EXPECT_EQ(writer::value(t).write(), json);
+    const auto check = [&](const DomMembers& t, const std::string& expected) {
+        EXPECT_EQ(write(t), expected);
+        EXPECT_EQ(writer::value(t).write(), expected);
         EXPECT_EQ(write(t, WriteFlag::Pretty), writer::value(t).write(WriteFlag::Pretty));
     };
-    check(read(json).cast<DomMembers>());
-    check(read<DomMembers>(json));
-    check(writer::value(read(json)).cast<DomMembers>());
+    check(read(json).cast<DomMembers>(), json);
+    check(read<DomMembers>(json), json);
+    check(writer::value(read(json)).cast<DomMembers>(), json);
     auto into = DomMembers();
     read_into(json, into);
-    check(into);
+    check(into, json);
     read_into(json, into);
-    check(into);
+    check(into, json);
+    // a new key of a map reads its value without the null members of its objects
     auto merged = DomMembers();
     merge_into(json, merged);
-    check(merged);
-    for (const auto& t : read<std::vector<DomMembers>>("[" + json + "," + json + "]")) check(t);
+    auto merged_json = json;
+    const auto with_null = std::string_view(R"({"z":null})");
+    merged_json.replace(merged_json.find(with_null), with_null.size(), "{}");
+    check(merged, merged_json);
+    for (const auto& t : read<std::vector<DomMembers>>("[" + json + "," + json + "]")) check(t, json);
 
     // a member owns its document
     auto t = read<DomMembers>(json);

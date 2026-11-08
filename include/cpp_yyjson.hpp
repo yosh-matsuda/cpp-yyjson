@@ -381,6 +381,58 @@ namespace yyjson
                 e.state_->mutable_value = std::same_as<To, yyjson_mut_val>;
             }
 
+            // Makes the ordinals of `e` from `original` lead to the values in `original` that they lead to in `copy`,
+            // a copy of it without some members of its objects.  The copy keeps the last members of a key.
+            CPPYYJSON_COLD static void map_ordinals(bad_cast& e, yyjson_val* original, yyjson_val* copy) noexcept
+            {
+                if (e.state_ == nullptr || e.state_->value != original || e.state_->mutable_value) return;
+                const auto key_of = [](yyjson_val* key) {
+                    return std::string_view(yyjson_get_str(key), yyjson_get_len(key));
+                };
+                for (auto& n : e.state_->ordinals)
+                {
+                    if (yyjson_is_arr(copy))
+                    {
+                        original = yyjson_arr_get(original, n);
+                        copy = yyjson_arr_get(copy, n);
+                    }
+                    else if (yyjson_is_obj(copy))
+                    {
+                        yyjson_obj_iter it;
+                        yyjson_obj_iter_init(copy, &it);
+                        auto* value = static_cast<yyjson_val*>(nullptr);
+                        auto key = std::string_view();
+                        auto later = std::size_t{0};
+                        for (std::size_t i = 0; auto* const k = yyjson_obj_iter_next(&it); ++i)
+                            if (i == n)
+                            {
+                                key = key_of(k);
+                                value = yyjson_obj_iter_get_val(k);
+                            }
+                            else if (i > n && key_of(k) == key)
+                                ++later;
+                        auto count = std::size_t{0};
+                        yyjson_obj_iter_init(original, &it);
+                        while (auto* const k = yyjson_obj_iter_next(&it))
+                            if (key_of(k) == key) ++count;
+                        if (value == nullptr || later >= count) return;
+                        yyjson_obj_iter_init(original, &it);
+                        auto seen = std::size_t{0};
+                        for (std::size_t i = 0; auto* const k = yyjson_obj_iter_next(&it); ++i)
+                            if (key_of(k) == key && ++seen == count - later)
+                            {
+                                n = i;
+                                original = yyjson_obj_iter_get_val(k);
+                                break;
+                            }
+                        copy = value;
+                    }
+                    else
+                        return;
+                    if (original == nullptr || copy == nullptr) return;
+                }
+            }
+
             // Records that the path of `e` starts at the value at `at` in the text of a reader without a document,
             // unless a value within it was recorded before.
             CPPYYJSON_COLD static void set_text_value(bad_cast& e, const char* at) noexcept
@@ -9818,6 +9870,35 @@ namespace yyjson
         // What the direct `merge_into` keeps of the object that it merges into the map M.
         template <typename M>
         struct merge_record;
+        // The keys of the members that the direct `merge_into` merged into the map M without null.
+        template <typename M>
+        struct merged_keys
+        {
+            const std::vector<typename M::key_type>* keys;
+        };
+        // Whether `Input` is the patch of `merge_into` that a map was merged from, which the keywords of the map
+        // check alone if `merge_checks_patch` holds.
+        template <typename Input>
+        inline constexpr bool merge_input = false;
+        template <typename Json>
+        inline constexpr bool merge_input<merge_patch<Json>> = true;
+        template <typename M>
+        inline constexpr bool merge_input<merged_keys<M>> = true;
+        template <typename M>
+        inline constexpr bool merge_input<merge_record<M>*> = true;
+        template <typename M>
+        inline constexpr bool merge_input<const merge_record<M>*> = true;
+        // The patch of `merge_into` that a map was merged from, when its keywords check the whole map: the members
+        // of the patch with their input, the other members without.
+        template <typename Input>
+        struct whole_map
+        {
+            Input patch;
+        };
+        template <typename Input>
+        inline constexpr bool whole_map_input = false;
+        template <typename Input>
+        inline constexpr bool whole_map_input<whole_map<Input>> = true;
         // What the direct reader keeps of the JSON value of a field of the type F for the conditions of its struct.
         template <typename F>
         struct field_input;
@@ -9831,6 +9912,28 @@ namespace yyjson
         // merge.
         template <typename F>
         consteval bool merged_map_value();
+        // Whether F is a struct that `merge_into` merges an object into, or a map that holds one at some depth.
+        template <typename F>
+        consteval bool merged_struct_values();
+
+        // The members of the patch that the merge through a document read into new keys of a map, when a struct
+        // among the values counts its members.  The keywords check such a member as read, not as merged.
+        inline constinit thread_local std::vector<const void*>* absent_reads = nullptr;
+        struct absent_reads_scope
+        {
+            std::vector<const void*>* outer = absent_reads;
+            explicit absent_reads_scope(std::vector<const void*>& reads) noexcept { absent_reads = &reads; }
+            absent_reads_scope(const absent_reads_scope&) = delete;
+            absent_reads_scope& operator=(const absent_reads_scope&) = delete;
+            ~absent_reads_scope() { absent_reads = outer; }
+        };
+        // Whether `absent_reads` holds the member `json` of a patch.  Defined after the DOM.
+        template <typename Json>
+        bool read_as_absent(const Json& json) noexcept;
+        // Whether `holds(value, in)` holds, with `in` the input of `json` without the null members of its objects.
+        // Defined after the merge.
+        template <typename V, typename Json, typename Holds>
+        bool absent_holds(const V& value, const Json& json, const Holds& holds);
 
         // Whether `Schema` on F checks the JSON value that F was read from: a keyword of the whole array on a struct
         // annotated with `yyjson::as_array`, at any depth, counts the elements of the input.  Defined after the
@@ -9838,6 +9941,11 @@ namespace yyjson
         template <typename Schema, typename F>
         consteval bool counts_input();
 
+        // Whether the keywords of `Schema` on F take the patch of `merge_into` that F was merged from.  Those of a map
+        // take it if they give the same result on the members of the patch as on the whole map, whose other members
+        // satisfied them before the merge.  Defined after the concepts of ranges.
+        template <typename Schema, typename F>
+        consteval bool merge_checks_patch();
         // `input`, a pointer to the JSON value of F, if `Schema` on F checks it, or else `no_input`.
         // Whether `Input` points to a record of the direct reader, which keeps a variant or a tuple as its JSON
         // value.
@@ -9852,7 +9960,18 @@ namespace yyjson
         template <typename Schema, typename F, typename Input>
         CPPYYJSON_ALWAYS_INLINE inline auto input_for(Input input)
         {
-            if constexpr (std::same_as<Input, no_input> || !counts_input<Schema, F>())
+            if constexpr (std::same_as<Input, no_input>)
+                return no_input{};
+            else if constexpr (merge_input<Input>)
+            {
+                if constexpr (merge_checks_patch<Schema, F>())
+                    return input;
+                else if constexpr (counts_input<Schema, F>())
+                    return whole_map<Input>{input};
+                else
+                    return no_input{};
+            }
+            else if constexpr (!counts_input<Schema, F>())
                 return no_input{};
             else if constexpr (document_record<Input>)
                 return input->root.get();
@@ -10250,8 +10369,20 @@ namespace yyjson
         constraint_kind field_json_violation(const F& field, const Json& json)
         {
             if constexpr (Merge && (merged_map_value<F>() || object_struct_value<constrained_value_t<F>>()))
-                if (json.is_object()) return constraint_violation<Schema>(field, merge_patch<Json>{&json});
+                if (json.is_object())
+                    return constraint_violation<Schema>(field, input_for<Schema, F>(merge_patch<Json>{&json}));
             return constraint_violation<Schema>(field, input_for<Schema, F>(&json));
+        }
+
+        // Checks the keywords of the field K of S, into which the member `json` of a patch was merged.
+        template <typename S, std::size_t K, typename F, typename Json>
+        void check_merged_field_constraints(const F& field, const Json& json)
+        {
+            if constexpr (!object_struct_value<constrained_value_t<F>>())
+                check_field_constraints<S, K>(field, json);
+            else if (const auto kind = field_violation<S, K>(field, merge_patch<Json>{&json});
+                     kind != constraint_kind::none) [[unlikely]]
+                throw_field_violation<S, K, F>(json, kind);
         }
 
         // Whether a subschema of the conditions of T checks the object itself: its number of members, its keys, or
@@ -10404,9 +10535,24 @@ namespace yyjson
         template <typename T, std::size_t I, typename Seen, typename Obj = no_input>
         bool struct_node_holds(const T& t, const Seen& seen, Obj obj = {});
 
+        // The keyword of `Schema` that `field`, which a merge patch leaves out, does not satisfy as `write` writes
+        // it.  Defined after `yyjson::write`.
+        template <typename Schema, typename F>
+        constraint_kind kept_field_violation(const F& field);
+
+        // The keys of a merge patch, `patched`, with the records of the direct reader, `keys`, of their values.
+        template <typename Keys, std::size_t N>
+        struct merged_inputs
+        {
+            const Keys* keys;
+            const std::bitset<N>* patched;
+
+            const Keys* operator->() const noexcept { return keys; }
+        };
+
         // Whether the `yyjson::field` M of the conditions of T, and the later ones, hold for `t`, whose fields of the
-        // keys in `seen` were read from the object `*obj`.  A key that was not read satisfies the keywords of its
-        // value.
+        // keys in `seen` were read from the object `*obj`, or merged from it.  A field that a merge patch leaves out
+        // keeps its value, which is checked as `write` writes it.
         template <typename T, std::size_t M, typename Seen, typename Obj>
         bool struct_members_hold(const T& t, const Seen& seen, Obj obj)
         {
@@ -10418,7 +10564,12 @@ namespace yyjson
                 if constexpr (std::same_as<Obj, no_input> || !counts_input<N, F>())
                     return constraint_violation<N>(struct_field<k>(t)) == constraint_kind::none;
                 else if constexpr (requires { obj->inputs; })
+                {
+                    if constexpr (requires { obj.patched; })
+                        if (!(*obj.patched)[k])
+                            return kept_field_violation<N>(struct_field<k>(t)) == constraint_kind::none;
                     return std::get<k>(obj->inputs).template violation<N>(struct_field<k>(t)) == constraint_kind::none;
+                }
                 else
                 {
                     constexpr bool merge = requires { obj.obj; };
@@ -10431,7 +10582,7 @@ namespace yyjson
                     for (auto&& [key, value] : json)
                         if (key == struct_field_key<T, k>)
                             return field_json_violation<N, merge>(struct_field<k>(t), value) == constraint_kind::none;
-                    return true;
+                    return !merge || kept_field_violation<N>(struct_field<k>(t)) == constraint_kind::none;
                 }
             }();
             if constexpr (N::node.next != 0)
@@ -10526,15 +10677,22 @@ namespace yyjson
             }
             else
             {
+                auto named = false;
                 for (auto&& [key, value] : obj)
                 {
                     if (key != struct_field_key<T, k>) continue;
+                    named = true;
                     const auto kind = field_json_violation<N, Merge>(struct_field<k>(t), value);
                     if (kind == constraint_kind::none) break;
                     if constexpr ((N::constraints.bits & structure_constraints) != 0)
                         throw_located_violation<T, k, N, constrained_value_t<struct_field_type<T, k>>>(value, kind);
                     throw_constraint_violation<T, k, N>(value, kind, constraint_subject::value);
                 }
+                // the patch has no value of a field that it leaves out, so the object is the target
+                if constexpr (Merge)
+                    if (const auto kind = kept_field_violation<N>(struct_field<k>(t));
+                        !named && kind != constraint_kind::none)
+                        throw_constraint_violation<T, k, N>(obj, kind, constraint_subject::value);
             }
             if constexpr (N::node.next != 0) throw_struct_members<T, N::node.next, Merge>(t, seen, obj, via);
         }
@@ -10635,17 +10793,19 @@ namespace yyjson
             if (r.kind == constraint_kind::min_properties || r.kind == constraint_kind::max_properties)
                 throw_bad_cast_at(target_of(obj), "{} {} of yyjson::{}", type_name<T>(), constraint_what<N>(r.kind),
                                   via);
-            for (auto&& [key, value] : obj)
-            {
-                if (key != r.key) continue;
+            const auto throw_at = [&](const auto& target) {
                 if (r.kind == constraint_kind::closed_key)
-                    throw_bad_cast_at(target_of(value),
+                    throw_bad_cast_at(target,
                                       "{} has the key \"{}\", which yyjson::additional_properties(false) of yyjson::{} "
                                       "rejects",
                                       type_name<T>(), r.key, via);
-                throw_bad_cast_at(target_of(value), "a key of {} {} in yyjson::property_names of yyjson::{}",
-                                  type_name<T>(), constraint_what<typename N::template at<N::node.keys>>(r.kind), via);
-            }
+                throw_bad_cast_at(target, "a key of {} {} in yyjson::property_names of yyjson::{}", type_name<T>(),
+                                  constraint_what<typename N::template at<N::node.keys>>(r.kind), via);
+            };
+            for (auto&& [key, value] : obj)
+                if (key == r.key) throw_at(target_of(value));
+            // after a merge, the key can be one that the patch does not name
+            if (!r.key.empty()) throw_at(target_of(obj));
             throw_bad_cast_at(target_of(obj), "{} does not satisfy its conditions", type_name<T>());
         }
 
@@ -10739,24 +10899,50 @@ namespace yyjson
                 else
                     return struct_node_holds<T, 0>(t, keys);
             }
+            // The same after a merge patch that names the fields `patched`, whose values have records.
+            bool hold(const T& t, const std::bitset<struct_field_count<T>>& patched) const
+            {
+                if constexpr (struct_conditions_count_input<T>)
+                    return struct_node_holds<T, 0>(
+                        t, keys, merged_inputs<condition_keys, struct_field_count<T>>{this, &patched});
+                else
+                    return struct_node_holds<T, 0>(t, keys);
+            }
         };
 
-        // Checks the conditions of T on `t`, which the object `obj` was read into, or merged into if `merge`: the
-        // keys of `obj` are the keys that were read, but those whose null the read takes as a missing key or a
-        // merge takes as a removal.
-        template <bool Merge, typename T, typename Json>
+        // Checks the conditions of T on `t`, which the object `obj` was read into, or merged into if `Merge`.  A read
+        // sees the keys of `obj`, but those whose null it takes as a missing key.  A merge sees the keys of the
+        // object that the merge of the patch `obj` gives, as `merged_object_facts` tells them.
+        template <typename T, typename Json>
         void note_object_facts(object_facts<struct_field_count<T>>& facts, const Json& obj);
+
+        template <bool All = false, typename S, typename Present>
+        void complete_merged_presence(const S& s, Present& present, const std::bitset<struct_field_count<S>>& patched);
+        template <typename S, typename Json>
+        object_facts<struct_field_count<S>> merged_object_facts(const S& s, const Json& obj, std::string_view tag);
 
         template <bool Merge = false, typename T, typename Matcher, typename Json>
         CPPYYJSON_NOINLINE void check_struct_conditions(const T& t, const Json& obj, const Matcher& matcher)
         {
             constexpr auto n = struct_field_count<T>;
             auto seen = condition_seen<T>();
-            for (auto&& [key, value] : obj)
-                if (const auto k = matcher.find(key, 0);
-                    k < n && !(value.is_null() && (Merge || null_absent_fields<T>[k])))
-                    seen.set(k);
-            if constexpr (struct_conditions_object<T>) note_object_facts<Merge, T>(seen, obj);
+            if constexpr (Merge && struct_conditions_object<T>)
+                seen = merged_object_facts(t, obj, {});
+            else
+            {
+                [[maybe_unused]] auto patched = std::bitset<n>();
+                for (auto&& [key, value] : obj)
+                {
+                    const auto k = matcher.find(key, 0);
+                    if (k >= n) continue;
+                    if constexpr (Merge) patched.set(k);
+                    if (!(value.is_null() && (Merge || null_absent_fields<T>[k]))) seen.set(k);
+                }
+                if constexpr (Merge)
+                    complete_merged_presence(t, seen, patched);
+                else if constexpr (struct_conditions_object<T>)
+                    note_object_facts<T>(seen, obj);
+            }
             if (!struct_node_holds<T, 0>(t, seen, condition_object<Merge>(obj))) [[unlikely]]
             {
                 throw_struct_node<T, 0, Merge>(t, seen, obj, {});
@@ -10918,8 +11104,8 @@ namespace yyjson
         }
 
         // Throws if the object `obj` has the tag of a field of S tagged by `adjacent_tag` but not the field,
-        // unless the field of `s` holds the alternative of the tag already.
-        template <typename S, typename Obj>
+        // unless the field of `s` holds the alternative of the tag already.  A merge patch may remove the tag.
+        template <bool Merge = false, typename S, typename Obj>
         void check_adjacent_tags_without_values(const S& s, const Obj& obj)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
@@ -10933,6 +11119,7 @@ namespace yyjson
                                       for ([[maybe_unused]] auto&& [key, value] : obj)
                                       {
                                           if (std::string_view(key) == struct_field_key<S, Ks>) return;
+                                          if (Merge && std::string_view(key) == tags::key && value.is_null()) return;
                                       }
                                       const auto index = tagged_alternative<V, tags>(obj);
                                       if (index != std::variant_npos && index != struct_field<Ks>(s).index())
@@ -11611,18 +11798,21 @@ namespace yyjson
                 check_repeated_keys(obj, type);
         }
 
-        // Throws when the object `obj` read into the struct T has a number of members outside the bounds of T.  A
-        // merge counts the members that are not null, as it does for a map.
-        template <typename T, typename Val>
-        void check_struct_members(const Val* obj, bool merge)
+        // Throws when the merge patch `obj` removes with null the key of a field that T requires.
+        template <typename T, typename Json>
+        CPPYYJSON_NOINLINE void check_required_not_removed(const Json& obj)
         {
-            auto members = std::size_t{0};
-            if (merge)
-                for_each_member(obj, [&](std::string_view, const Val* value) {
-                    members += unsafe_yyjson_is_null(const_cast<Val*>(value)) ? 0 : 1;
-                });
-            else
-                members = unsafe_yyjson_get_len(const_cast<Val*>(obj));
+            const auto& rules = struct_rules<T>;
+            for (auto&& [key, value] : obj)
+                if (const auto k = rules.find(key, 0); k < rules.size && value.is_null() && rules.is_required(k))
+                    throw_missing_key(target_of(obj), rules.keys[k], rules.type);
+        }
+
+        // Throws when the object `obj` read into the struct T has a number of members outside the bounds of T.
+        template <typename T, typename Val>
+        void check_struct_members(const Val* obj)
+        {
+            const auto members = unsafe_yyjson_get_len(const_cast<Val*>(obj));
             if (const auto kind = struct_count_violation<T>(members); kind != constraint_kind::none) [[unlikely]]
                 throw_bad_cast_at(target_of(obj), "{} {}", type_name<T>(),
                                   constraint_what<struct_count_schema<T>>(kind));
@@ -11685,14 +11875,13 @@ namespace yyjson
             });
         }
 
-        template <bool Merge, typename T, typename Json>
+        template <typename T, typename Json>
         void note_object_facts(object_facts<struct_field_count<T>>& facts, const Json& obj)
         {
             const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(obj);
             const auto& rules = struct_rules<T>;
             for (auto&& [key, value] : obj)
             {
-                if (Merge && value.is_null()) continue;
                 ++facts.members;
                 if (const auto k = rules.find(key, 0); k < rules.size)
                     facts.keys.set(k);
@@ -11712,7 +11901,7 @@ namespace yyjson
             if constexpr (struct_property_names<T>)
                 check_struct_names<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj), merge);
             if constexpr (struct_property_counts<T>)
-                check_struct_members<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj), merge);
+                if (!merge) check_struct_members<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj));
         }
 
         // Reads into the field of `yyjson::extra_keys` of `t` each member of the object `obj` whose key no field,
@@ -12166,14 +12355,250 @@ namespace yyjson
             }
         }
 
-        // Whether `field`, the field R of S as `forward_field` or `writable_field` gives it, is written as its default
-        // value, unless the write takes `yyjson::emit_defaults`.
+        // Whether `field`, the field R of S as `forward_field` or `writable_field` gives it, equals its default
+        // value, and whether it is written as its default value, unless the write takes `yyjson::emit_defaults`.
+        template <typename S, std::size_t R, typename Field>
+        bool equals_default(const Field& field)
+        {
+            const auto& d = writable_field(stored_default<S, R>());
+            return json_equal<std::remove_cvref_t<decltype(d)>>(d, field);
+        }
         template <typename S, std::size_t R, typename Field>
         bool holds_default(const Field& field)
         {
             if (write_emit_defaults) return false;
-            const auto& d = writable_field(stored_default<S, R>());
-            return json_equal<std::remove_cvref_t<decltype(d)>>(d, field);
+            return equals_default<S, R>(field);
+        }
+
+        // Whether `yyjson::write(s)` writes the key of the field K of `s`, by its index among the fields that are
+        // read, as `emplace_struct_field` decides it.
+        template <typename S, std::size_t K>
+        bool written_field(const S& s)
+        {
+            constexpr auto r = struct_declared_index<S, K>;
+            if constexpr (adjacent_declared_field<S, r>)
+                return true;
+            else
+            {
+                decltype(auto) field = writable_field(struct_field<K>(s));
+                if constexpr (omits_default<S, r>)
+                {
+                    if (equals_default<S, r>(field)) return false;
+                }
+                if constexpr (omittable<decltype(field)>)
+                {
+                    if (should_omit_field(field)) return false;
+                }
+                return true;
+            }
+        }
+
+        // Whether `write(s)` can leave out the field K of S while it holds a value, which `written_field` tells.
+        template <typename S, std::size_t K>
+        inline constexpr bool omits_held_field = []() {
+            constexpr auto r = struct_declared_index<S, K>;
+            using F = std::remove_cvref_t<struct_field_type<S, K>>;
+            if constexpr (adjacent_declared_field<S, r>)
+                return false;
+            else if constexpr (omits_default<S, r>)
+                return true;
+            else
+                return omittable<decltype(writable_field(std::declval<const F&>()))> && !is_std_optional<F>::value &&
+                       !nullable_value<F> && !indirect_value<F>;
+        }();
+
+        // The alternative that the tag of the field K of S tagged by `adjacent_tag` names in `write(s)`, or
+        // `std::variant_npos` if `write` writes no tag or one that names no alternative.
+        template <typename S, std::size_t K>
+        std::size_t written_adjacent_tag(const S& s)
+        {
+            using tags = struct_field_tags<S, K>;
+            if constexpr (writes_adjacent_tag<S, tags>)
+            {
+                const auto index = struct_field<K>(s).index();
+                return index == tags::monostate ? std::variant_npos : index;
+            }
+            else
+            {
+                constexpr auto j = adjacent_tag_field<S, K>;
+                if (!written_field<S, j>(s)) return std::variant_npos;
+                const auto& tag = struct_field<j>(s);
+                if constexpr (std::is_enum_v<std::remove_cvref_t<decltype(tag)>>)
+                    return tags::alternative(enum_name_of(tag));
+                else
+                    return tags::alternative(std::string_view(tag));
+            }
+        }
+
+        // Throws as `read<S>` throws for the object that the merge patch `obj` gives `write(s)`, where `obj` removes
+        // the value or the tag of a field tagged by `adjacent_tag`: a tag left without its value, or a value left
+        // without its tag.  A patch that removes both gives the field its value in `S()`.
+        template <typename S, typename Obj>
+        CPPYYJSON_NOINLINE void check_removed_adjacent_members(const S& s, const Obj& obj)
+        {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                [[maybe_unused]] const bool done[] = {
+                    true,
+                    (
+                        [&] {
+                            if constexpr (adjacent_field<S, Ks>)
+                            {
+                                using tags = struct_field_tags<S, Ks>;
+                                using V = struct_field_type<S, Ks>;
+                                const auto value = obj.find(struct_field_key<S, Ks>);
+                                const auto tag = obj.find(tags::key);
+                                const bool has_value = value != obj.end();
+                                const bool has_tag = tag != obj.end();
+                                if (has_tag && tag->second.is_null())
+                                {
+                                    if (has_value && value->second.is_null()) return;
+                                    if (has_value)
+                                        throw_variant_tag_missing(target_of(value->second), tags::key, type_name<V>());
+                                    // `write` gives null to the value of `std::monostate` only
+                                    if (struct_field<Ks>(s).index() != tags::monostate)
+                                        throw_variant_tag_missing(target_of(obj), tags::key, type_name<V>());
+                                }
+                                else if (has_value && value->second.is_null())
+                                {
+                                    const auto index =
+                                        has_tag ? tagged_alternative<V, tags>(obj) : written_adjacent_tag<S, Ks>(s);
+                                    // value-initialization, because the default constructor of `indirect` is explicit
+                                    S initial = S();
+                                    if (index != std::variant_npos && index != struct_field<Ks>(initial).index())
+                                        throw_variant_tag_without_value(target_of(obj), tags::key, tags::ids[index],
+                                                                        struct_field_key<S, Ks>, type_name<S>());
+                                }
+                            }
+                        }(),
+                        true)...};
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+
+        // The fields of S whose keys a member of its conditions names, which are the only ones whose presence the
+        // members and the combinators read.
+        template <typename S>
+        consteval std::array<bool, struct_field_count<S>> make_condition_member_fields()
+        {
+            auto fields = std::array<bool, struct_field_count<S>>{};
+            for (const auto& node : struct_tree<S>::tree.nodes)
+                if (node.named || node.required)
+                    if (const auto k = struct_field_of_key<S>(node.key.view()); k < fields.size()) fields[k] = true;
+            return fields;
+        }
+
+        template <typename S>
+        inline constexpr auto condition_member_fields = make_condition_member_fields<S>();
+
+        // Sets in `present` each field of `s` that a merge patch with the keys of the fields `patched` does not name
+        // and that `write` writes: the object that the patch is merged into keeps its key.  Only the fields of
+        // `condition_member_fields` unless `All`.
+        template <bool All, typename S, typename Present>
+        void complete_merged_presence(const S& s, Present& present, const std::bitset<struct_field_count<S>>& patched)
+        {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (
+                    [&] {
+                        if constexpr (All || condition_member_fields<S>[Ks])
+                            if (!patched[Ks] && written_field<S, Ks>(s)) present.set(Ks);
+                    }(),
+                    ...);
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+
+        // Completes `facts` of a merge patch into the facts of the merged object of `s`, which `patched` names the
+        // fields of.  `facts.others` holds the keys of the patch that no field has and that are not null, and
+        // `internal_tags(add)` calls `add` for the key of each tag of `yyjson::internal_tag`.
+        template <typename S, std::size_t N, typename InternalTags>
+        void complete_merged_facts(const S& s, object_facts<N>& facts, const std::bitset<N>& patched,
+                                   const InternalTags& internal_tags)
+        {
+            complete_merged_presence<true>(s, facts.present, patched);
+            // the tags and the members of the maps are taken again from `s`
+            std::erase_if(facts.others, [](const auto& other) {
+                if constexpr (has_extra_keys<S>)
+                    return true;
+                else if constexpr (has_pattern_fields<S>)
+                    return other.second || matches_any_pattern<S>(other.first);
+                else
+                    return other.second;
+            });
+            internal_tags([&](std::string_view key) {
+                if (std::ranges::find(facts.others, std::pair<std::string, bool>(key, true)) == facts.others.end())
+                    facts.others.emplace_back(key, true);
+            });
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (
+                    [&] {
+                        constexpr auto r = struct_declared_index<S, Ks>;
+                        if constexpr (adjacent_declared_field<S, r>)
+                        {
+                            using tags = field_tags<S, r>;
+                            if constexpr (writes_adjacent_tag<S, tags>)
+                            {
+                                const auto index = struct_field<Ks>(s).index();
+                                if (index != tags::monostate && index != std::variant_npos)
+                                    facts.others.emplace_back(tags::key, true);
+                            }
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<struct_field_count<S>>{});
+            if constexpr (has_key_maps<S>)
+                std::apply(
+                    [&](const auto&... map) {
+                        (
+                            [&] {
+                                for (const auto& kv : map)
+                                    facts.others.emplace_back(std::string_view(std::get<0>(kv)), false);
+                            }(),
+                            ...);
+                    },
+                    key_maps_of(s));
+            facts.keys = facts.present;
+            facts.members = facts.present.count() + facts.others.size();
+        }
+
+        // The facts of the object of `s` after the merge of the patch `obj` into the object that `write(s)` gave
+        // before.  `tag` is the key of an internal tag.
+        template <typename S, typename Json>
+        CPPYYJSON_NOINLINE object_facts<struct_field_count<S>> merged_object_facts(const S& s, const Json& obj,
+                                                                                   std::string_view tag)
+        {
+            constexpr auto n = struct_field_count<S>;
+            const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(obj);
+            const auto& rules = struct_rules<S>;
+            auto facts = object_facts<n>();
+            auto patched = std::bitset<n>();
+            for (const auto& kv : obj)
+            {
+                const auto key = std::string_view(std::get<0>(kv));
+                const auto& value = std::get<1>(kv);
+                if (const auto k = rules.find(key, 0); k < n)
+                {
+                    patched.set(k);
+                    if (!value.is_null()) facts.present.set(k);
+                }
+                else if (!value.is_null())
+                    facts.others.emplace_back(key, (tag.data() != nullptr && key == tag) ||
+                                                       rules.is_adjacent_tag(key) ||
+                                                       internal_tag_key::contains(raw, key));
+            }
+            complete_merged_facts(s, facts, patched, [&](const auto& add) {
+                if (tag.data() != nullptr) add(tag);
+                internal_tag_key::for_each_key(raw, add);
+            });
+            return facts;
+        }
+
+        // Throws when the object of `t` after the merge of the patch `obj` has a number of members outside the
+        // bounds of T.
+        template <typename T, typename Json>
+        CPPYYJSON_NOINLINE void check_merged_members(const T& t, const Json& obj)
+        {
+            const auto members = merged_object_facts(t, obj, {}).members;
+            if (const auto kind = struct_count_violation<T>(members); kind != constraint_kind::none) [[unlikely]]
+                throw_bad_cast_at(target_of(dependent_t<writer::detail::json_value_access, Json>::get(obj)), "{} {}",
+                                  type_name<T>(), constraint_what<struct_count_schema<T>>(kind));
         }
 
         // Emplaces the field R of the struct S, by its index among all the fields, with `emitter`.  A variant
@@ -15816,6 +16241,7 @@ namespace yyjson
         namespace detail
         {
             class direct_reader;
+            struct absent_copy;
         }
 
         class abstract_value_ref
@@ -15896,6 +16322,7 @@ namespace yyjson
             friend class const_object_iter;
             friend class const_object_ref;
             friend class detail::direct_reader;
+            friend struct detail::absent_copy;
             friend class yyjson::json_view;
             friend class yyjson::json_object_view;
             friend class yyjson::json_array_view;
@@ -17831,6 +18258,47 @@ namespace yyjson
                 return operands;
         }
 
+        // Whether `Schema`, or a combinator in it, checks the keys or the values of the members of a map.
+        template <typename Schema>
+        consteval bool checks_members();
+        template <typename Schema, std::size_t R>
+        consteval bool combinators_check_members()
+        {
+            using N = typename Schema::template at<R>;
+            const bool operands = []<std::size_t... J>(std::index_sequence<J...>) {
+                return (checks_members<typename Schema::template at<N::node.operands_first + J>>() || ...);
+            }(std::make_index_sequence<N::node.operands_count>());
+            if constexpr (N::node.next != 0)
+                return operands || combinators_check_members<Schema, N::node.next>();
+            else
+                return operands;
+        }
+        template <typename Schema>
+        consteval bool checks_members()
+        {
+            constexpr const schema_node& n = Schema::node;
+            if constexpr (n.keys != 0 || n.properties != 0)
+                return true;
+            else if constexpr (n.combinators != 0)
+                return combinators_check_members<Schema, n.combinators>();
+            else
+                return false;
+        }
+
+        // A keyword on the members in a combinator, such as `yyjson::not_`, can reject a map whose members each
+        // satisfy it, and is checked on the whole map.  The counts are of the whole map.
+        template <typename Schema, typename F>
+        consteval bool merge_checks_patch()
+        {
+            using V = constrained_value_t<F>;
+            if constexpr (!object_written_range<V> || dom_checked<V>)
+                return counts_input<Schema, F>();
+            else if constexpr (Schema::node.combinators != 0)
+                return !combinators_check_members<Schema, Schema::node.combinators>();
+            else
+                return true;
+        }
+
         template <typename V>
         consteval bool object_struct_value()
         {
@@ -18242,27 +18710,79 @@ namespace yyjson
             std::vector<merge_member<M>> members;
         };
 
-        // The number of the members of the JSON object that the map `v` was read from, or of those that are not
-        // null in the object that `merge_into` merged into it, as `input` gives it.
+        // The number of the members of the JSON object that the map `v` was read from, as `input` gives it, or of
+        // the map after `merge_into` merged an object into it.
         template <typename V, typename Input>
         std::size_t input_members(const V& v, Input input)
         {
             if constexpr (record_input<Input>)
                 return input->size;
-            else if constexpr (requires { input->keys; })
-                return input->keys.size();
-            else if constexpr (requires { input.patch; })
-            {
-                auto size = std::size_t{0};
-                const auto obj = input.patch->as_object();
-                for (const auto& kv : *obj) size += std::get<1>(kv).is_null() ? 0 : 1;
-                return size;
-            }
-            else if constexpr (!std::same_as<Input, no_input>)
+            else if constexpr (!std::same_as<Input, no_input> && !merge_input<Input> && !whole_map_input<Input>)
             {
                 if (const auto o = input->as_object(); o.has_value()) return o->size();
             }
             return static_cast<std::size_t>(std::ranges::distance(v));
+        }
+
+        // Whether `holds(value, in)` holds for the value of each member of the map `v` that the patch `input` of
+        // `merge_into` merged, with `in` the input of that member.
+        template <typename V, typename Input, typename Holds>
+        bool patch_members_hold(const V& v, Input input, const Holds& holds)
+        {
+            using E = std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>;
+            if constexpr (requires { input.keys; })
+            {
+                for (const auto& key : *input.keys)
+                    if (const auto it = v.find(key); it != v.end() && !holds(it->second, no_input{})) return false;
+            }
+            else if constexpr (requires { input->keys; })
+            {
+                for (const auto& m : input->members)
+                {
+                    // a later null of a repeated key erases the member
+                    const auto it = v.find(m.key);
+                    if (it == v.end()) continue;
+                    const auto& value = it->second;
+                    if constexpr (merged_map_value<E>())
+                    {
+                        if (m.merged != nullptr)
+                        {
+                            if (!holds(value, m.merged.get())) return false;
+                            continue;
+                        }
+                    }
+                    if (!holds(value, &m.read)) return false;
+                }
+            }
+            else
+            {
+                const auto obj = input.patch->as_object();
+                for (const auto& kv : *obj)
+                {
+                    const auto& json = std::get<1>(kv);
+                    if (json.is_null()) continue;
+                    const auto it = v.find(patch_key<V>(kv));
+                    if (it == v.end()) continue;
+                    const auto& value = it->second;
+                    using Json = std::remove_cvref_t<decltype(json)>;
+                    if constexpr (merged_struct_values<E>())
+                        if (read_as_absent(json)) [[unlikely]]
+                        {
+                            if (!absent_holds(value, json, holds)) return false;
+                            continue;
+                        }
+                    if constexpr (merged_map_value<E>() || object_struct_value<constrained_value_t<E>>())
+                    {
+                        if (json.is_object())
+                        {
+                            if (!holds(value, merge_patch<Json>{&json})) return false;
+                            continue;
+                        }
+                    }
+                    if (!holds(value, &json)) return false;
+                }
+            }
+            return true;
         }
 
         // The keyword of `Schema` that a map written as a JSON object does not satisfy.  The keywords on the values
@@ -18288,7 +18808,7 @@ namespace yyjson
                     return constraint_violation<properties, true>(value, input_for<properties, E>(in)) ==
                            constraint_kind::none;
                 };
-                if constexpr (std::same_as<Input, no_input> || !counts_input<properties, E>())
+                if constexpr (std::same_as<Input, no_input> || (!merge_input<Input> && !counts_input<properties, E>()))
                 {
                     for (const auto& e : v)
                         if (constraint_violation<properties, true>(std::get<1>(e)) != constraint_kind::none)
@@ -18299,47 +18819,24 @@ namespace yyjson
                     for (const auto& m : input->members)
                         if (!holds(m.value, &m.record)) return constraint_kind::additional_properties;
                 }
-                else if constexpr (requires { input->keys; })
+                else if constexpr (merge_input<Input>)
                 {
-                    for (const auto& m : input->members)
-                    {
-                        // a later null of a repeated key erases the member
-                        const auto it = v.find(m.key);
-                        if (it == v.end()) continue;
-                        const auto& value = it->second;
-                        if constexpr (merged_map_value<E>())
-                        {
-                            if (m.merged != nullptr)
-                            {
-                                if (!holds(value, m.merged.get())) return constraint_kind::additional_properties;
-                                continue;
-                            }
-                        }
-                        if (!holds(value, &m.read)) return constraint_kind::additional_properties;
-                    }
+                    if (!patch_members_hold(v, input, holds)) return constraint_kind::additional_properties;
                 }
-                else if constexpr (requires { input.patch; })
+                else if constexpr (whole_map_input<Input>)
                 {
-                    const auto obj = input.patch->as_object();
-                    for (const auto& kv : *obj)
-                    {
-                        const auto& json = std::get<1>(kv);
-                        if (json.is_null()) continue;
-                        const auto it = v.find(patch_key<V>(kv));
-                        if (it == v.end()) continue;
-                        const auto& value = it->second;
-                        using Json = std::remove_cvref_t<decltype(json)>;
-                        if constexpr (merged_map_value<E>())
-                        {
-                            if (json.is_object())
-                            {
-                                if (!holds(value, merge_patch<Json>{&json}))
-                                    return constraint_kind::additional_properties;
-                                continue;
-                            }
-                        }
-                        if (!holds(value, &json)) return constraint_kind::additional_properties;
-                    }
+                    // the members of the patch with their input, which a set in them can count, then the others
+                    auto named = std::vector<const E*>();
+                    if (!patch_members_hold(v, input.patch, [&named, &holds](const E& value, auto in) {
+                            named.push_back(&value);
+                            return holds(value, in);
+                        }))
+                        return constraint_kind::additional_properties;
+                    std::ranges::sort(named);
+                    for (const auto& e : v)
+                        if (const auto* value = &std::get<1>(e);
+                            !std::ranges::binary_search(named, value) && !holds(*value, no_input{}))
+                            return constraint_kind::additional_properties;
                 }
                 else
                 {
@@ -18355,10 +18852,35 @@ namespace yyjson
                 }
             }
             if constexpr (n.keys != 0)
-                for (const auto& e : v)
-                    if (key_violation<typename Schema::template at<Schema::node.keys>>(std::get<0>(e)) !=
-                        constraint_kind::none)
-                        return constraint_kind::property_names;
+            {
+                using names = typename Schema::template at<Schema::node.keys>;
+                const auto key_holds = [](const auto& map, const auto& key) {
+                    // a later null of a repeated key erases the member
+                    const auto it = map.find(key);
+                    return it == map.end() || key_violation<names>(std::get<0>(*it)) == constraint_kind::none;
+                };
+                if constexpr (requires { input.keys; })
+                {
+                    for (const auto& key : *input.keys)
+                        if (!key_holds(v, key)) return constraint_kind::property_names;
+                }
+                else if constexpr (merge_input<Input> && requires { input->keys; })
+                {
+                    for (const auto& key : input->keys)
+                        if (!key_holds(v, key)) return constraint_kind::property_names;
+                }
+                else if constexpr (merge_input<Input>)
+                {
+                    const auto obj = input.patch->as_object();
+                    for (const auto& kv : *obj)
+                        if (!std::get<1>(kv).is_null() && !key_holds(v, patch_key<V>(kv)))
+                            return constraint_kind::property_names;
+                }
+                else
+                    for (const auto& e : v)
+                        if (key_violation<names>(std::get<0>(e)) != constraint_kind::none)
+                            return constraint_kind::property_names;
+            }
             return constraint_kind::none;
         }
 
@@ -18640,28 +19162,30 @@ namespace yyjson
                 "of a struct alternative of that variant, has");
             const auto obj = json.as_object();
             if (!obj.has_value()) return constraint_kind::none;
-            const auto& rules = struct_rules<S>;
-            const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(*obj);
+            [[maybe_unused]] const auto& rules = struct_rules<S>;
+            [[maybe_unused]] const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(*obj);
             auto facts = object_facts<n>();
-            for (const auto& kv : *obj)
-            {
-                const auto key = std::string_view(std::get<0>(kv));
-                const auto& value = std::get<1>(kv);
-                if (Merge && value.is_null()) continue;
-                ++facts.members;
-                if (const auto k = rules.find(key, 0); k < n)
+            if constexpr (Merge)
+                facts = merged_object_facts(s, *obj, tag);
+            else
+                for (const auto& kv : *obj)
                 {
-                    facts.keys.set(k);
-                    if (!value.is_null() || !null_absent_fields<S>[k]) facts.present.set(k);
+                    const auto key = std::string_view(std::get<0>(kv));
+                    const auto& value = std::get<1>(kv);
+                    ++facts.members;
+                    if (const auto k = rules.find(key, 0); k < n)
+                    {
+                        facts.keys.set(k);
+                        if (!value.is_null() || !null_absent_fields<S>[k]) facts.present.set(k);
+                    }
+                    else
+                    {
+                        // A `tag` without data is no tag, so that the empty key is not taken for one.
+                        const bool is_tag = (tag.data() != nullptr && key == tag) || rules.is_adjacent_tag(key) ||
+                                            internal_tag_key::contains(raw, key);
+                        facts.others.emplace_back(key, is_tag);
+                    }
                 }
-                else
-                {
-                    // A `tag` without data is no tag, so that the empty key is not taken for one.
-                    const bool is_tag = (tag.data() != nullptr && key == tag) || rules.is_adjacent_tag(key) ||
-                                        internal_tag_key::contains(raw, key);
-                    facts.others.emplace_back(key, is_tag);
-                }
-            }
             if constexpr (node.closed)
             {
                 for (std::size_t k = 0; k < n; ++k)
@@ -19422,6 +19946,17 @@ namespace yyjson
         template <typename F>
         using merged_map_t = std::remove_cvref_t<decltype(merged_map_of(std::declval<F&>()))>;
 
+        template <typename F>
+        consteval bool merged_struct_values()
+        {
+            if constexpr (object_struct_value<constrained_value_t<F>>())
+                return true;
+            else if constexpr (merged_map_value<F>())
+                return merged_struct_values<typename merged_map_t<F>::mapped_type>();
+            else
+                return false;
+        }
+
         // Whether the keywords of the field K of S check the values of a map of maps, which `merge_into` merges
         // member by member.
         template <typename S, std::size_t K, typename M>
@@ -19429,17 +19964,6 @@ namespace yyjson
         {
             return field_schema<S, struct_declared_index<S, K>>::node.properties != 0 &&
                    merged_map_value<typename M::mapped_type>();
-        }
-
-        // The keys of the members of the JSON object `patch` that are not null, as keys of the map M.
-        template <typename M, typename Json>
-        std::vector<typename M::key_type> patch_keys(const Json& patch)
-        {
-            auto keys = std::vector<typename M::key_type>();
-            const auto obj = patch.as_object();
-            for (const auto& kv : *obj)
-                if (!std::get<1>(kv).is_null()) keys.push_back(patch_key<M>(kv));
-            return keys;
         }
 
         template <typename E>
@@ -19478,107 +20002,8 @@ namespace yyjson
             }
         };
 
-        // Leaves in a map only the members of some keys, and puts the other members back at the end.  The nodes
-        // move whole, so that no value is moved.  With `Nested`, a value that the JSON patch merged an object into
-        // keeps only the members of that object too.
-        template <typename M, bool Nested = false>
-        class patch_members
-        {
-            static consteval auto inner_type()
-            {
-                if constexpr (Nested)
-                {
-                    using I = merged_map_t<typename M::mapped_type>;
-                    return std::type_identity<
-                        std::forward_list<patch_members<I, merged_map_value<typename I::mapped_type>()>>>();
-                }
-                else
-                    return std::type_identity<std::monostate>();
-            }
-            M& map_;
-            M kept_;
-            typename decltype(inner_type())::type inner_;
-
-            void borrow(const std::vector<typename M::key_type>& keys)
-            {
-                for (const auto& key : keys)
-                    if (auto node = map_.extract(key); !node.empty()) kept_.insert(std::move(node));
-                std::ranges::swap(map_, kept_);
-            }
-            void restore() noexcept
-            {
-                std::ranges::swap(map_, kept_);
-                while (!kept_.empty()) map_.insert(kept_.extract(kept_.begin()));
-            }
-
-        public:
-            // `input` is the JSON patch as `merge_patch`, or points to the `merge_record` of the direct reader.
-            template <typename Input>
-            patch_members(M& map, const std::vector<typename M::key_type>& keys, Input input) : map_(map)
-            {
-                borrow(keys);
-                if constexpr (Nested && requires { input.patch; })
-                {
-                    try
-                    {
-                        const auto obj = input.patch->as_object();
-                        for (const auto& kv : *obj)
-                            if (const auto& value = std::get<1>(kv); value.is_object())
-                            {
-                                using Json = std::remove_cvref_t<decltype(value)>;
-                                const auto it = map_.find(patch_key<M>(kv));
-                                if (it == map_.end()) continue;
-                                auto& inner = merged_map_of(it->second);
-                                inner_.emplace_front(inner, patch_keys<merged_map_t<decltype(inner)>>(value),
-                                                     merge_patch<Json>{&value});
-                            }
-                    }
-                    catch (...)
-                    {
-                        inner_.clear();
-                        restore();
-                        throw;
-                    }
-                }
-                else if constexpr (Nested && !std::same_as<Input, no_input>)
-                {
-                    try
-                    {
-                        for (const auto& m : input->members)
-                            if (m.merged != nullptr)
-                            {
-                                const auto it = map_.find(m.key);
-                                if (it == map_.end()) continue;
-                                auto& inner = merged_map_of(it->second);
-                                inner_.emplace_front(inner, m.merged->keys, m.merged.get());
-                            }
-                    }
-                    catch (...)
-                    {
-                        inner_.clear();
-                        restore();
-                        throw;
-                    }
-                }
-            }
-            patch_members(const patch_members&) = delete;
-            patch_members& operator=(const patch_members&) = delete;
-            ~patch_members() { restore(); }
-        };
-
-        // The keyword of the field K of S that the map of `field` does not satisfy on the members of the keys `keys`,
-        // which a JSON patch `*input` has merged into it without null.  The rest of the map is not checked.  Calls
-        // `f` with the members while they are checked.
-        template <typename S, std::size_t K, typename F, typename Key, typename Input, typename Then>
-        void merged_map_violation(F& field, const std::vector<Key>& keys, Input input, Then f)
-        {
-            using M = merged_map_t<F>;
-            const auto members = patch_members<M, checks_merged_values<S, K, M>()>(merged_map_of(field), keys, input);
-            f(std::as_const(field), field_violation<S, K>(std::as_const(field), input));
-        }
-
-        // Checks the field K of S, a map that `merge_into` has merged the JSON object `patch` into, on the members
-        // that the patch gives without null, and throws at the member or the map.
+        // Checks the field K of S, a map that `merge_into` has merged the JSON object `patch` into, and throws at a
+        // member of the patch or at the map.
         template <typename S, std::size_t K, typename F, typename Json>
         void check_merged_map_constraints(F& field, const Json& patch)
         {
@@ -19586,57 +20011,63 @@ namespace yyjson
             using Key = typename M::key_type;
             using schema = field_schema<S, struct_declared_index<S, K>>;
             constexpr const schema_node& n = schema::node;
+            const auto kind = field_violation<S, K>(std::as_const(field), merge_patch<Json>{&patch});
+            if (kind == constraint_kind::none) [[likely]]
+                return;
+            const auto& map = merged_map_of(std::as_const(field));
             const auto obj = patch.as_object();
-            const auto keys = patch_keys<M>(patch);
-            merged_map_violation<S, K>(
-                field, keys, merge_patch<Json>{&patch}, [&](const F& members, constraint_kind kind) {
-                    if (kind == constraint_kind::none) return;
-                    const auto& map = merged_map_of(members);
-                    std::size_t i = 0;
-                    for (const auto& kv : *obj)
+            for (const auto& kv : *obj)
+            {
+                const auto& value = std::get<1>(kv);
+                if (value.is_null()) continue;
+                // a later null of a repeated key erases the member
+                const auto it = map.find(patch_key<M>(kv));
+                if (it == map.end()) continue;
+                if constexpr (n.keys != 0)
+                    if (kind == constraint_kind::property_names)
                     {
-                        const auto& value = std::get<1>(kv);
-                        if (value.is_null()) continue;
-                        const auto& key = keys[i++];
-                        // a later null of a repeated key erases the member
-                        const auto it = map.find(key);
-                        if (it == map.end()) continue;
-                        if constexpr (n.keys != 0)
-                            if (kind == constraint_kind::property_names)
-                            {
-                                using names = typename schema::template at<n.keys>;
-                                const auto text = std::string_view(std::get<0>(kv));
-                                auto violated = constraint_kind::none;
-                                if constexpr (constraint_string<Key> && std::constructible_from<Key, std::string_view>)
-                                    violated = constraint_violation<names, true>(Key(text));
-                                else
-                                    violated = constraint_violation<names, true>(text);
-                                if (violated != constraint_kind::none)
-                                    throw_constraint_violation<S, K, names>(value, violated, constraint_subject::key);
-                            }
-                        if constexpr (n.properties != 0)
-                            if (kind == constraint_kind::additional_properties)
-                            {
-                                using properties = typename schema::template at<n.properties>;
-                                using E = typename M::mapped_type;
-                                const auto& e = it->second;
-                                const auto violated = [&] {
-                                    using Member = std::remove_cvref_t<decltype(value)>;
-                                    if constexpr (merged_map_value<E>())
-                                        if (value.is_object())
-                                            return constraint_violation<properties, true>(
-                                                e, input_for<properties, E>(merge_patch<Member>{&value}));
-                                    return constraint_violation<properties, true>(e, input_for<properties, E>(&value));
-                                }();
-                                if (violated == constraint_kind::none) continue;
-                                if constexpr ((properties::constraints.bits & structure_constraints) != 0)
-                                    throw_located_violation<S, K, properties, constrained_value_t<E>>(value, violated);
-                                throw_constraint_violation<S, K, properties>(value, violated,
-                                                                             constraint_subject::element);
-                            }
+                        using names = typename schema::template at<n.keys>;
+                        const auto text = std::string_view(std::get<0>(kv));
+                        auto violated = constraint_kind::none;
+                        if constexpr (constraint_string<Key> && std::constructible_from<Key, std::string_view>)
+                            violated = constraint_violation<names, true>(Key(text));
+                        else
+                            violated = constraint_violation<names, true>(text);
+                        if (violated != constraint_kind::none)
+                            throw_constraint_violation<S, K, names>(value, violated, constraint_subject::key);
                     }
-                    throw_constraint_violation<S, K, schema>(patch, kind, constraint_subject::value);
-                });
+                if constexpr (n.properties != 0)
+                    if (kind == constraint_kind::additional_properties)
+                    {
+                        using properties = typename schema::template at<n.properties>;
+                        using E = typename M::mapped_type;
+                        const auto& e = it->second;
+                        const auto violated = [&] {
+                            using Member = std::remove_cvref_t<decltype(value)>;
+                            if constexpr (merged_struct_values<E>())
+                                if (read_as_absent(value)) [[unlikely]]
+                                {
+                                    auto kind = constraint_kind::none;
+                                    absent_holds(e, value, [&](const E& held, const auto* in) {
+                                        kind =
+                                            constraint_violation<properties, true>(held, input_for<properties, E>(in));
+                                        return kind == constraint_kind::none;
+                                    });
+                                    return kind;
+                                }
+                            if constexpr (merged_map_value<E>() || object_struct_value<constrained_value_t<E>>())
+                                if (value.is_object())
+                                    return constraint_violation<properties, true>(
+                                        e, input_for<properties, E>(merge_patch<Member>{&value}));
+                            return constraint_violation<properties, true>(e, input_for<properties, E>(&value));
+                        }();
+                        if (violated == constraint_kind::none) continue;
+                        if constexpr ((properties::constraints.bits & structure_constraints) != 0)
+                            throw_located_violation<S, K, properties, constrained_value_t<E>>(value, violated);
+                        throw_constraint_violation<S, K, properties>(value, violated, constraint_subject::element);
+                    }
+            }
+            throw_constraint_violation<S, K, schema>(patch, kind, constraint_subject::value);
         }
 
         // A string is a range of characters, but is read from a JSON string only.
@@ -28113,12 +28544,9 @@ namespace yyjson
             };
 
         // A field of a map, or of a holder of one that `merged_map_of` opens, whose keywords `merge_into` checks on the
-        // members of the patch only.
+        // map after the merge.
         template <typename F>
-        concept merged_map_field = requires(yyjson::detail::merged_map_t<F>& map) {
-            requires map_mergeable<yyjson::detail::merged_map_t<F>>;
-            map.insert(map.extract(map.begin()));
-        };
+        concept merged_map_field = map_mergeable<yyjson::detail::merged_map_t<F>>;
 
         // A variant tagged by `internal_tag`, whose alternative `merge_into` merges an object into unless the
         // object names another alternative.
@@ -28229,15 +28657,131 @@ namespace yyjson
         template <typename T>
         void merge_from(T& t, const const_value_ref& v);
 
+        // Whether the value `v` of an immutable document holds null, which the document stores after it and before
+        // the value that follows it.
+        inline bool holds_null(const yyjson_val* v) noexcept
+        {
+            auto* p = const_cast<yyjson_val*>(v);  // NOLINT(*-const-cast): not const before yyjson 0.13
+            for (const auto* const end = unsafe_yyjson_get_next(p); p != end; ++p)
+                if (unsafe_yyjson_get_type(p) == YYJSON_TYPE_NULL) return true;
+            return false;
+        }
+
+        // Whether the mergeable `t` is an optional or an indirect value that holds no value.
+        template <typename T>
+        concept may_be_absent =
+            !struct_mergeable<T> && !map_mergeable<T> && !tagged_mergeable<T> && !transparent_mergeable<T>;
+
+        template <typename T>
+        bool absent_value(const T& t) noexcept
+        {
+            if constexpr (yyjson::detail::indirect_value<T>)
+                return t.valueless_after_move();
+            else if constexpr (!may_be_absent<T>)
+                return false;
+            else
+                return !t.has_value();
+        }
+
+        // The address and the type of a value that was absent before a merge read it.  A struct and its first
+        // field share the address, but not the type.
+        using absent_key = std::pair<const void*, const void*>;
+        template <typename T>
+        inline char absent_type = 0;
+        template <typename T>
+        absent_key absent_key_of(const T& t) noexcept
+        {
+            return {std::addressof(t), &absent_type<T>};
+        }
+
+        // The values that a merge without a document read as absent before it failed.  The merge through a
+        // document that follows reads each of them anew as absent, not as present.
+        inline thread_local std::vector<absent_key>* absent_before = nullptr;
+
+        struct absent_before_scope
+        {
+            std::vector<absent_key>* outer = absent_before;
+            // A merge that `merge_into` starts anew, such as in a caster, takes no values of the outer merge.
+            absent_before_scope() noexcept { absent_before = nullptr; }
+            explicit absent_before_scope(std::vector<absent_key>& keys) noexcept
+            {
+                absent_before = keys.empty() ? nullptr : &keys;
+            }
+            absent_before_scope(const absent_before_scope&) = delete;
+            absent_before_scope& operator=(const absent_before_scope&) = delete;
+            ~absent_before_scope() { absent_before = outer; }
+        };
+
+        // Each key is taken once, as a patch that names a value twice merges into it the second time.
+        CPPYYJSON_NOINLINE inline bool take_absent_before(absent_key key) noexcept
+        {
+            auto& keys = *absent_before;
+            const auto it = std::ranges::find(keys, key);
+            if (it == keys.end()) return false;
+            keys.erase(it);
+            return true;
+        }
+
+        template <typename T>
+        CPPYYJSON_ALWAYS_INLINE inline bool was_absent(const T& t) noexcept
+        {
+            return absent_before != nullptr && take_absent_before(absent_key_of(t));
+        }
+
+        // A field that `write(t)` can leave out, which `write(t)` wrote before a merge without a document changed
+        // it.
+        template <typename T>
+        inline char written_type = 0;
+        template <typename T>
+        absent_key written_key_of(const T& t) noexcept
+        {
+            return {std::addressof(t), &written_type<T>};
+        }
+        template <typename T>
+        CPPYYJSON_ALWAYS_INLINE inline bool was_written(const T& t) noexcept
+        {
+            return absent_before != nullptr && take_absent_before(written_key_of(t));
+        }
+
+        // Makes the optional or the indirect value `t` absent.
+        template <typename T>
+        void make_absent(T& t)
+        {
+            if constexpr (yyjson::detail::indirect_value<T>)
+            {
+                [[maybe_unused]] const auto moved = std::move(t);
+            }
+            else if constexpr (may_be_absent<T>)
+                t.reset();
+        }
+
+        // Calls `f` with the value that a merge of `v` into a value that is absent gives: `v` without the null
+        // members of its objects, but with those of the objects in an array (RFC 7396).
+        template <typename F>
+        CPPYYJSON_ALWAYS_INLINE inline void read_absent(const const_value_ref& v, F&& f)
+        {
+            if (v.is_object() && holds_null(writer::detail::json_value_access::get(v))) [[unlikely]]
+                yyjson::detail::dependent_t<absent_copy, F>::read(
+                    writer::detail::json_value_access::get(v),
+                    [](void* context, const const_value_ref& json) {
+                        (*static_cast<std::remove_reference_t<F>*>(context))(json);
+                    },
+                    std::addressof(f));
+            else
+                f(v);
+        }
+
         // Merges `v` into the variant `t` tagged by Tags as the alternative `index` that its tag names: into the
         // alternative that `t` holds when the tag names it or `index` is `std::variant_npos` for no tag, and as a
         // new alternative otherwise.  `std::monostate` takes nothing to merge into.
         template <typename Tags, typename V>
         void merge_tagged(V& t, std::size_t index, const const_value_ref& v)
         {
-            if (index != std::variant_npos && index != t.index())
+            // a new alternative is read as a merge into an absent value reads it
+            if (const bool before = was_absent(t); index != std::variant_npos && (index != t.index() || before))
             {
-                t = yyjson::detail::cast_alternative<V>(index, v);
+                read_absent(v,
+                            [&](const const_value_ref& json) { t = yyjson::detail::cast_alternative<V>(index, json); });
                 return;
             }
             if (t.index() == Tags::monostate || t.valueless_by_exception())
@@ -28252,15 +28796,30 @@ namespace yyjson
         }
 
         // Throws at `value`, the member of `key` of a patch, if `merged`, the value that it merged into, does not
-        // satisfy the keywords of the values of the field R of S that receives the keys of no field.
+        // satisfy the keywords of the values of the field R of S that receives the keys of no field.  `in_place`
+        // tells that `value` was merged into a value that was there, and not read into an absent one.
         template <typename S, std::size_t R, typename E, typename Json>
-        void check_merged_value(const E& merged, std::string_view key, const Json& value)
+        void check_merged_value(const E& merged, std::string_view key, const Json& value, bool in_place = true)
         {
             namespace d = yyjson::detail;
             if constexpr (d::extra_keys_schema<S, R>::node.properties != 0)
             {
                 const auto violated = [&] {
+                    if constexpr (d::merged_struct_values<E>())
+                        if (!in_place) [[unlikely]]
+                        {
+                            auto kind = d::constraint_kind::none;
+                            d::absent_holds(merged, value, [&](const E& held, const auto* in) {
+                                kind = d::extra_value_violation<S, R>(held, in);
+                                return kind == d::constraint_kind::none;
+                            });
+                            return kind;
+                        }
                     if constexpr (d::merged_map_value<E>())
+                        if (value.is_object())
+                            return d::extra_value_violation<S, R>(
+                                merged, d::merge_patch<std::remove_cvref_t<decltype(value)>>{&value});
+                    if constexpr (d::object_struct_value<d::constrained_value_t<E>>())
                         if (value.is_object())
                             return d::extra_value_violation<S, R>(
                                 merged, d::merge_patch<std::remove_cvref_t<decltype(value)>>{&value});
@@ -28275,7 +28834,7 @@ namespace yyjson
         // no field, as `merge_map_from` merges it into a map, and checks it unless it is null.  Returns the merged
         // value, or null for a key that null removes.
         template <typename S, std::size_t R, typename M, typename Json>
-        typename M::mapped_type* merge_key_map_member(M& map, std::string_view key, const Json& value)
+        typename M::mapped_type* merge_key_map_member(M& map, std::string_view key, const Json& value, bool& in_place)
         {
             namespace d = yyjson::detail;
             using E = typename M::mapped_type;
@@ -28286,16 +28845,30 @@ namespace yyjson
             }
             d::check_extra_key<S, R>(key, value);
             auto it = map.find(typename M::key_type(key));
-            if (it != map.end())
-                merge_from(it->second, value);
-            else if ((d::read_policies | d::struct_policies<E>) != 0)
-                it = map.try_emplace(typename M::key_type(key), d::cast_nested<E>(value)).first;
+            in_place = it != map.end() && !was_absent(it->second);
+            if (in_place)
+            {
+                if constexpr (d::merged_map_value<E>() && d::merged_struct_values<E>())
+                {
+                    auto reads = std::vector<const void*>();
+                    const auto scope = d::absent_reads_scope(reads);
+                    merge_from(it->second, value);
+                    check_merged_value<S, R>(it->second, key, value);
+                    return &it->second;
+                }
+                else
+                    merge_from(it->second, value);
+            }
             else
             {
+                // a new key is absent in the object that the patch merges into
+                if (it != map.end()) map.erase(it);
                 it = map.try_emplace(typename M::key_type(key)).first;
-                merge_from(it->second, value);
+                read_absent(value, [&added = it->second](const const_value_ref& json) {
+                    d::assign_reflected_field(added, json, true);
+                });
             }
-            check_merged_value<S, R>(it->second, key, value);
+            check_merged_value<S, R>(it->second, key, value, in_place);
             return &it->second;
         }
 
@@ -28322,14 +28895,14 @@ namespace yyjson
         // `yyjson::pattern_properties` would take the key and `merged`, the value that the patch merged into.  A
         // value of another type is read again from its JSON.
         template <typename S, std::size_t P, typename F, typename Json>
-        void check_merged_pattern(const F& merged, std::string_view key, const Json& value)
+        void check_merged_pattern(const F& merged, std::string_view key, const Json& value, bool in_place)
         {
             namespace d = yyjson::detail;
             constexpr auto r = d::pattern_field_indices<S>[P];
             using E = typename d::pattern_type<S, P>::mapped_type;
             d::check_extra_key<S, r>(key, value);
             if constexpr (std::same_as<F, E>)
-                check_merged_value<S, r>(merged, key, value);
+                check_merged_value<S, r>(merged, key, value, in_place);
             else if constexpr (d::dom_kind_of<E> != d::dom_kind::value ||
                                d::extra_keys_schema<S, r>::node.properties != 0)
                 check_merged_json<S, r, E>(::yyjson::value(merged), key, value);
@@ -28337,12 +28910,12 @@ namespace yyjson
         // As `check_merged_pattern` for each field of `mask`, a result of `pattern_mask`.
         template <typename S, typename F, typename Json>
         CPPYYJSON_NOINLINE void check_merged_patterns(std::uint64_t mask, const F& merged, std::string_view key,
-                                                      const Json& value)
+                                                      const Json& value, bool in_place = true)
         {
             [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
                 (
                     [&] {
-                        if ((mask >> Ps & 1) != 0) check_merged_pattern<S, Ps>(merged, key, value);
+                        if ((mask >> Ps & 1) != 0) check_merged_pattern<S, Ps>(merged, key, value, in_place);
                     }(),
                     ...);
             }(std::make_index_sequence<yyjson::detail::pattern_count<S>>{});
@@ -28381,10 +28954,11 @@ namespace yyjson
             const auto p = d::first_pattern<T>(key);
             if (p == d::pattern_count<T>) return false;
             d::call_at_index<d::pattern_count<T>>(p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
-                if (const auto* merged =
-                        merge_key_map_member<T, d::pattern_field_indices<T>[P]>(d::pattern_field<P>(t), key, value))
+                auto in_place = true;
+                if (const auto* merged = merge_key_map_member<T, d::pattern_field_indices<T>[P]>(d::pattern_field<P>(t),
+                                                                                                 key, value, in_place))
                     if (const auto mask = d::pattern_mask<T>(key, P + 1); mask != 0) [[unlikely]]
-                        check_merged_patterns<T>(mask, *merged, key, value);
+                        check_merged_patterns<T>(mask, *merged, key, value, in_place);
             });
             return true;
         }
@@ -28408,7 +28982,30 @@ namespace yyjson
                 else if (!d::extra_key_of<T>(raw, key, hint))
                     continue;
                 if constexpr (d::has_extra_keys<T>)
-                    merge_key_map_member<T, d::extra_keys_index<T>>(d::extra_keys_field(t), key, value);
+                {
+                    auto in_place = true;
+                    merge_key_map_member<T, d::extra_keys_index<T>>(d::extra_keys_field(t), key, value, in_place);
+                }
+            }
+        }
+
+        // Merges `v` into the map of the field K of S and checks the field.  A struct among the values, at some
+        // depth, checks a member of `v` that a new key took as read, so the merge keeps those members.
+        template <typename S, std::size_t K, typename F>
+        void merge_checked_map(F& field, const const_value_ref& v)
+        {
+            using values = typename yyjson::detail::merged_map_t<F>::mapped_type;
+            if constexpr (yyjson::detail::merged_struct_values<values>())
+            {
+                auto reads = std::vector<const void*>();
+                const auto scope = yyjson::detail::absent_reads_scope(reads);
+                merge_from(field, v);
+                yyjson::detail::check_merged_map_constraints<S, K>(field, v);
+            }
+            else
+            {
+                merge_from(field, v);
+                yyjson::detail::check_merged_map_constraints<S, K>(field, v);
             }
         }
 
@@ -28419,6 +29016,9 @@ namespace yyjson
             [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
             auto defaults = struct_defaults<T>();
             yyjson::detail::check_struct_object<T>(obj, true);
+            if constexpr (yyjson::detail::has_required_fields<T>) yyjson::detail::check_required_not_removed<T>(obj);
+            if constexpr (yyjson::detail::has_adjacent_fields<T>)
+                yyjson::detail::check_removed_adjacent_members(t, obj);
             yyjson::detail::assign_struct_fields_by_key<T, struct_key_matcher<T>()>(
                 obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const const_value_ref& value,
                                         const auto&... object) {
@@ -28442,11 +29042,30 @@ namespace yyjson
                     {
                         if (value.is_object())
                         {
-                            merge_from(field, value);
+                            // a field that `write(t)` leaves out is absent in the object that the patch merges into
+                            auto omitted = false;
+                            if constexpr (yyjson::detail::omits_held_field<T, I>)
+                            {
+                                const bool written = was_written(field);
+                                omitted = !written && !yyjson::detail::written_field<T, I>(t);
+                            }
+                            const bool before = may_be_absent<field_type> && was_absent(field);
+                            if (absent_value(field) || before || omitted) [[unlikely]]
+                            {
+                                make_absent(field);
+                                read_absent(value, [&](const const_value_ref& json) {
+                                    yyjson::detail::assign_reflected_field(field, json, false);
+                                    if constexpr (yyjson::detail::constrained_field<T, I>)
+                                        yyjson::detail::check_field_constraints<T, I>(field, json);
+                                });
+                                return;
+                            }
                             if constexpr (yyjson::detail::constrained_field<T, I> && merged_map_field<field_type>)
-                                yyjson::detail::check_merged_map_constraints<T, I>(field, value);
-                            else if constexpr (yyjson::detail::constrained_field<T, I>)
-                                yyjson::detail::check_field_constraints<T, I>(field, value);
+                                merge_checked_map<T, I>(field, value);
+                            else
+                                merge_from(field, value);
+                            if constexpr (yyjson::detail::constrained_field<T, I> && !merged_map_field<field_type>)
+                                yyjson::detail::check_merged_field_constraints<T, I>(field, value);
                             return;
                         }
                     }
@@ -28456,7 +29075,8 @@ namespace yyjson
                 });
             if constexpr (yyjson::detail::has_key_maps<T>) merge_extra_keys(t, obj);
             if constexpr (yyjson::detail::has_adjacent_fields<T>)
-                yyjson::detail::check_adjacent_tags_without_values(t, obj);
+                yyjson::detail::check_adjacent_tags_without_values<true>(t, obj);
+            if constexpr (yyjson::detail::struct_property_counts<T>) yyjson::detail::check_merged_members(t, obj);
             if constexpr (yyjson::detail::has_struct_conditions<T>)
                 yyjson::detail::check_struct_conditions<true>(t, obj, struct_key_matcher<T>());
         }
@@ -28479,16 +29099,19 @@ namespace yyjson
                 {
                     if (const auto it = t.find(key); it != t.end()) t.erase(it);
                 }
-                else if ((yyjson::detail::read_policies | yyjson::detail::struct_policies<mapped_type>) != 0)
-                {
-                    // under a read policy a new key is read whole, so that its policies see the whole value
-                    if (const auto it = t.find(key); it != t.end())
-                        merge_from(it->second, value);
-                    else
-                        t.try_emplace(std::move(key), yyjson::detail::cast_nested<mapped_type>(value));
-                }
+                else if (auto it = t.find(key); it != t.end() && !was_absent(it->second))
+                    merge_from(it->second, value);
                 else
-                    merge_from(t.try_emplace(key).first->second, value);
+                {
+                    if constexpr (yyjson::detail::merged_struct_values<mapped_type>())
+                        if (yyjson::detail::absent_reads != nullptr)
+                            yyjson::detail::absent_reads->push_back(writer::detail::json_value_access::get(value));
+                    if (it != t.end()) t.erase(it);
+                    auto& added = t.try_emplace(std::move(key)).first->second;
+                    read_absent(value, [&added](const const_value_ref& json) {
+                        yyjson::detail::assign_reflected_field(added, json, true);
+                    });
+                }
             }
         }
 
@@ -28517,32 +29140,25 @@ namespace yyjson
                     else if constexpr (transparent_mergeable<T>)
                     {
                         [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                        merge_from(struct_field<0>(t), v);
                         if constexpr (yyjson::detail::constrained_field<T, 0> &&
                                       merged_map_field<yyjson::detail::struct_field_type<T, 0>>)
-                            yyjson::detail::check_merged_map_constraints<T, 0>(struct_field<0>(t), v);
-                        else if constexpr (yyjson::detail::constrained_field<T, 0>)
-                            yyjson::detail::check_field_constraints<T, 0>(struct_field<0>(t), v);
-                    }
-                    else if constexpr (yyjson::detail::indirect_value<T>)
-                    {
-                        if (t.valueless_after_move())
-                            t = yyjson::detail::cast_nested<T>(v);
+                            merge_checked_map<T, 0>(struct_field<0>(t), v);
                         else
-                            merge_from(*t, v);
+                        {
+                            merge_from(struct_field<0>(t), v);
+                            if constexpr (yyjson::detail::constrained_field<T, 0>)
+                                yyjson::detail::check_field_constraints<T, 0>(struct_field<0>(t), v);
+                        }
                     }
-                    else if constexpr (tagged_mergeable<typename T::value_type>)
+                    else if (const bool before = was_absent(t); absent_value(t) || before) [[unlikely]]
                     {
-                        if (t.has_value())
-                            merge_from(*t, v);
-                        else
-                            t = yyjson::detail::cast_nested<T>(v);
+                        make_absent(t);
+                        read_absent(v, [&t](const const_value_ref& json) {
+                            yyjson::detail::assign_reflected_field(t, json, false);
+                        });
                     }
                     else
-                    {
-                        if (!t.has_value()) t.emplace();
                         merge_from(*t, v);
-                    }
                     return;
                 }
             }
@@ -28556,6 +29172,26 @@ namespace yyjson
         consteval bool merged_map_value()
         {
             return reader::detail::merged_map_field<F>;
+        }
+
+        template <typename Json>
+        bool read_as_absent(const Json& json) noexcept
+        {
+            if constexpr (std::same_as<Json, reader::const_value_ref>)
+                return absent_reads != nullptr &&
+                       std::ranges::find(*absent_reads,
+                                         static_cast<const void*>(writer::detail::json_value_access::get(json))) !=
+                           absent_reads->end();
+            else
+                return false;
+        }
+        template <typename V, typename Json, typename Holds>
+        bool absent_holds(const V& value, const Json& json, const Holds& holds)
+        {
+            auto held = true;
+            reader::detail::read_absent(
+                json, [&](const reader::const_value_ref& stripped) { held = holds(value, &stripped); });
+            return held;
         }
 
         // Reads `json` into a document and calls `f` with it, adding to a `bad_cast` that `f` throws the position
@@ -28625,6 +29261,19 @@ namespace yyjson
                 return static_cast<std::string_view>(v) == *constant;
             else
                 return json_equal(v, *constant);
+        }
+
+        template <typename Schema, typename F>
+        constraint_kind kept_field_violation(const F& field)
+        {
+            if constexpr (!counts_input<Schema, F>())
+                return constraint_violation<Schema>(field);
+            else
+            {
+                const auto doc = reader::read(yyjson::write(field));
+                const reader::const_value_ref json = doc;
+                return constraint_violation<Schema>(field, input_for<Schema, F>(&json));
+            }
         }
 
         // Merges the document of `json` into `t`, as `yyjson::merge_into` does.
@@ -28708,6 +29357,83 @@ namespace yyjson
             }
         };
     }  // namespace detail
+
+    namespace reader::detail
+    {
+        // Removes the null members of the object `obj` and of each object that is a member of it.  A null member
+        // removes the earlier members with its key too, as a merge of the members one by one does.
+        inline void remove_null_members(yyjson_mut_val* obj)
+        {
+            const auto key_of = [](yyjson_mut_val* key) {
+                return std::string_view(yyjson_mut_get_str(key), yyjson_mut_get_len(key));
+            };
+            auto objects = std::vector<yyjson_mut_val*>{obj};
+            // the key and the index of each null member, sorted by the key and then by the index
+            auto nulls = std::vector<std::pair<std::string_view, std::size_t>>();
+            while (!objects.empty())
+            {
+                auto* const current = objects.back();
+                objects.pop_back();
+                nulls.clear();
+                auto iter = yyjson_mut_obj_iter_with(current);
+                for (std::size_t i = 0; auto* const key = yyjson_mut_obj_iter_next(&iter); ++i)
+                    if (yyjson_mut_is_null(yyjson_mut_obj_iter_get_val(key))) nulls.emplace_back(key_of(key), i);
+                if (nulls.empty()) [[likely]]
+                {
+                    iter = yyjson_mut_obj_iter_with(current);
+                    while (auto* const key = yyjson_mut_obj_iter_next(&iter))
+                        if (auto* const value = yyjson_mut_obj_iter_get_val(key); yyjson_mut_is_obj(value))
+                            objects.push_back(value);
+                    continue;
+                }
+                std::ranges::sort(nulls);
+                iter = yyjson_mut_obj_iter_with(current);
+                for (std::size_t i = 0; auto* const key = yyjson_mut_obj_iter_next(&iter); ++i)
+                {
+                    auto* const value = yyjson_mut_obj_iter_get_val(key);
+                    const auto k = key_of(key);
+                    const auto last =
+                        std::ranges::upper_bound(nulls, k, {}, &std::pair<std::string_view, std::size_t>::first);
+                    if (last != nulls.begin() && std::prev(last)->first == k && i <= std::prev(last)->second)
+                        yyjson_mut_obj_iter_remove(&iter);
+                    else if (yyjson_mut_is_obj(value))
+                        objects.push_back(value);
+                }
+            }
+        }
+
+        struct absent_copy
+        {
+            // Calls `call(context, json)` with `json` a copy of the object `original` without the null members that
+            // `read_absent` removes.
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD static void read(const yyjson_val* original,
+                                                               void (*call)(void*, const const_value_ref&),
+                                                               void* context)
+            {
+                const auto mut = writer::detail::mutable_document();
+                // the value is const from yyjson 0.13, and not modified before
+                auto* const copy = yyjson_val_mut_copy(mut.ptrs->self, const_cast<yyjson_val*>(original));
+                if (copy == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                remove_null_members(copy);
+                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
+                    yyjson_mut_val_imut_copy(copy, nullptr), &yyjson_doc_free);
+                if (doc == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                auto* const root = yyjson_doc_get_root(doc.get());
+                try
+                {
+                    yyjson::detail::with_copy_of(original, root,
+                                                 [=](yyjson_val* r) { call(context, const_value_ref(r)); });
+                }
+                catch (bad_cast& e)
+                {
+                    yyjson::detail::bad_cast_access::map_ordinals(e, const_cast<yyjson_val*>(original), root);
+                    throw;
+                }
+            }
+        };
+    }  // namespace reader::detail
 
 #if YYJSON_VERSION_HEX >= 0x000C00
     namespace reader::detail
@@ -29166,6 +29892,8 @@ namespace yyjson
             ReadFlag flg_;
             bool inv_;
             bool into_ = false;
+            // the values that a merge read as absent, for the document to read anew if the merge fails
+            std::vector<absent_key>* absent_ = nullptr;
             // the read policies of the call, which the thread has while the reader reads
             std::uint8_t policies_ = yyjson::detail::read_policies;
             // The key of the tag of `yyjson::internal_tag` in the object at `object`, which is being read as an
@@ -29723,7 +30451,16 @@ namespace yyjson
             template <typename T>
             void merge_root(T& t)
             {
+                auto absent = std::vector<absent_key>();
+                merge_root(t, absent);
+            }
+
+            // Merges the text into `t`, and keeps in `absent` the values that it reads as absent.
+            template <typename T>
+            void merge_root(T& t, std::vector<absent_key>& absent)
+            {
                 into_ = true;
+                absent_ = &absent;
                 merge_value(t);
                 if (cur_ != end_) fail();
             }
@@ -31678,7 +32415,11 @@ namespace yyjson
                 using tags = Tags;
                 const char* const start = cur_;
                 if (*cur_ != '"') [[unlikely]]
+                {
+                    // a merge patch removes a tag with null, which the document tells apart
+                    if (*cur_ == 'n') fail();
                     throw_at(start, [] { yyjson::detail::throw_variant_tag_not_string({}, tags::key, name<T>); });
+                }
                 const auto id = read_short_string(buf);
                 const auto i = tags::alternative(id);
                 if (i == std::variant_npos) [[unlikely]]
@@ -31898,7 +32639,7 @@ namespace yyjson
                     else if (alternative_policies<V> || policies_ != 0) [[unlikely]]
                         fail();  // the document reads a new alternative whole under a read policy
                     else
-                        struct_field<I>(t) = read_new_alternative<V>(index, start);
+                        switch_alternative(struct_field<I>(t), index, start);
                 }
                 else
                     read_adjacent_alternative<T, I>(t, index, start);
@@ -32643,6 +33384,22 @@ namespace yyjson
                 auto result = std::optional<T>();
                 read_tagged_alternative<T>(variant_maker(result), index, start);
                 return std::move(*result);
+            }
+
+            // Reads the value at `start` into the variant `t` as its new alternative `index`, as a merge into an
+            // absent value reads it.  The document reads an object without its null members.
+            template <typename V>
+            void switch_alternative(V& t, std::size_t index, const char* start)
+            {
+                if (*start == '{')
+                {
+                    const auto guard = cursor_guard{*this, cur_};
+                    cur_ = start;
+                    if (value_holds_null_text()) [[unlikely]]
+                        fail();
+                }
+                t = read_new_alternative<V>(index, start);
+                note_absent(t);
             }
 
             // Whether an alternative of the variant V is a struct that declares a read policy.
@@ -33971,29 +34728,79 @@ namespace yyjson
                             [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                             merge_field_value<T, 0>(struct_field<0>(t));
                         }
-                        else if constexpr (yyjson::detail::indirect_value<T>)
-                        {
-                            if (t.valueless_after_move())
-                                t = read_value<T>();
-                            else
-                                merge_value(*t);
-                        }
+                        else if (absent_value(t)) [[unlikely]]
+                            read_absent(t);
                         else if constexpr (tagged_mergeable<typename T::value_type>)
-                        {
-                            if (t.has_value())
-                                merge_tagged_variant(*t);
-                            else
-                                read_value_into(t);
-                        }
+                            merge_tagged_variant(*t);
                         else
-                        {
-                            if (!t.has_value()) t.emplace();
                             merge_value(*t);
-                        }
                         return;
                     }
                 }
                 read_value_into(t);
+            }
+
+            // Reads the object at `cur_` into the absent `t` as `read` reads it.  The document reads it without its
+            // null members, so this fails for the text "null" anywhere in it.
+            template <typename T>
+            CPPYYJSON_NOINLINE void read_absent(T& t)
+            {
+                if (value_holds_null_text()) [[unlikely]]
+                    fail();
+                note_absent(t);
+                into_ = false;
+                read_field(t, false);
+                into_ = true;
+            }
+
+            // Reads the object at `cur_` as `read_absent` does, for a new key of a map.
+            template <typename T>
+            CPPYYJSON_NOINLINE T read_absent_value()
+            {
+                if (value_holds_null_text()) [[unlikely]]
+                    fail();
+                return read_value<T>();
+            }
+
+            template <typename T>
+            void note_absent(const T& t)
+            {
+                absent_->push_back(absent_key_of(t));
+            }
+
+            // Fails before a change of the map M that can move its values, such as of a `std::flat_map`, if a
+            // value was noted as absent: the document finds such values by their addresses.
+            template <typename M>
+            CPPYYJSON_ALWAYS_INLINE void fail_moving_elements() const
+            {
+                if constexpr (!requires { typename M::node_type; })
+                    if (!absent_->empty()) [[unlikely]]
+                        fail();
+            }
+
+            // Fails for an object with a null member at `cur_` that a merge reads into the absent map `field`: a
+            // document reads the object without it.
+            template <typename F>
+            void fail_absent_with_null(const F& field)
+            {
+                if constexpr (yyjson::detail::is_std_optional<F>::value || yyjson::detail::nullable_value<F>)
+                    if (*cur_ == '{' && !field.has_value() && value_holds_null_text()) [[unlikely]]
+                        fail();
+            }
+
+            // Whether a cast to T may read a JSON object.
+            template <typename T>
+            static constexpr bool reads_objects =
+                (yyjson::detail::accepted_json_kinds<T, const_value_ref>() & yyjson::detail::json_kind_object) != 0;
+
+            // Whether the text of the value at `cur_` holds "null", which is checked but not read.
+            CPPYYJSON_NOINLINE bool value_holds_null_text()
+            {
+                const char* const start = cur_;
+                skip_value();
+                const auto text = std::string_view(start, static_cast<std::size_t>(cur_ - start));
+                cur_ = start;
+                return text.find("null") != std::string_view::npos;
             }
 
             // Merges the object at `cur_` into the variant `t` tagged by `internal_tag` as `merge_tagged` does.
@@ -34010,27 +34817,42 @@ namespace yyjson
                 else if (alternative_policies<T> || policies_ != 0) [[unlikely]]
                     fail();  // the document reads a new alternative whole under a read policy
                 else
-                    t = read_new_alternative<T>(index, start);
+                    switch_alternative(t, index, start);
             }
 
             template <typename T>
             void merge_struct(T& t)
             {
-                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                namespace d = yyjson::detail;
+                [[maybe_unused]] const auto guard = d::recursion_guard<T>();
+                [[maybe_unused]] const char* const open = cur_;
                 auto defaults = struct_defaults<T>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                [[maybe_unused]] auto keys = yyjson::detail::condition_keys<T>();
-                auto assign =
-                    [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        // a null removes the field from the patch
-                        if constexpr (yyjson::detail::has_struct_conditions<T>)
-                            if (*cur_ != 'n') keys.note(index);
-                        with_struct_field<T>(
-                            index,
-                            [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                [[maybe_unused]] auto keys = d::condition_keys<T>();
+                [[maybe_unused]] auto patched =
+                    std::conditional_t<d::has_struct_conditions<T>, std::bitset<d::struct_field_count<T>>,
+                                       std::monostate>();
+                auto assign = [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    // a null removes the key from the merged object
+                    if constexpr (d::has_struct_conditions<T>)
+                    {
+                        patched.set(index);
+                        if (*cur_ != 'n') keys.note(index);
+                    }
+                    with_struct_field<T>(
+                        index,
+                        [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
+                            CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                if constexpr (d::presence_of<T, d::struct_declared_index<T, I>>.required)
+                                {
+                                    if (*cur_ == 'n') [[unlikely]]
+                                        fail();
+                                }
                                 if constexpr (yyjson::detail::adjacent_field<T, I>)
                                 {
-                                    if (merge_adjacent_null<I>(t, adjacent, defaults)) return;
+                                    // the document checks the removed value against the tag that the object keeps
+                                    if (*cur_ == 'n') [[unlikely]]
+                                        fail();
                                 }
                                 // a lambda of its own, so that the other captures nothing more
                                 if constexpr (yyjson::detail::struct_conditions_count_input<T> ||
@@ -34041,7 +34863,7 @@ namespace yyjson
                                     read_struct_field<T, I, true>(t, adjacent, keys,
                                                                   [&](auto&) { merge_field<I>(t, defaults); });
                             });
-                    };
+                };
                 if constexpr (yyjson::detail::has_key_maps<T>)
                 {
                     auto extra = extra_members<T>{&t};
@@ -34051,23 +34873,32 @@ namespace yyjson
                     read_fields<T, true>(struct_key_matcher<T>(), std::move(assign), keys);
                 read_skipped_adjacent_fields<true>(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
-                if (!keys.hold(t)) [[unlikely]]
-                    fail();
+                if constexpr (d::struct_conditions_object<T> || d::struct_property_counts<T>)
+                {
+                    auto facts = merged_patch_facts(t, open);
+                    if constexpr (d::struct_property_counts<T>)
+                        if (d::struct_count_violation<T>(facts.members) != d::constraint_kind::none) [[unlikely]]
+                            fail();
+                    if constexpr (d::struct_conditions_object<T>) keys.keys = std::move(facts);
+                }
+                else if constexpr (d::has_struct_conditions<T>)
+                    d::complete_merged_presence(t, keys.keys, patched);
+                if constexpr (d::has_struct_conditions<T>)
+                    if (!keys.hold(t, patched)) [[unlikely]]
+                        fail();
             }
 
-            // Gives the adjacently tagged field I its value in `T()` if its member at `cur_` is null, which skips
-            // the check of its tag.  A second member of the field is left to the document, as in
-            // `read_adjacent_field`.
-            template <std::size_t I, typename T, typename Adjacent>
-            CPPYYJSON_ALWAYS_INLINE bool merge_adjacent_null(T& t, Adjacent& adjacent, struct_defaults<T>& defaults)
+            // Fails for an object merged into the field I of `t` that `write(t)` leaves out: the document reads it
+            // as absent.  Notes a field that `write(t)` writes, which the merge can change to one that it leaves out.
+            template <std::size_t I, typename T>
+            CPPYYJSON_ALWAYS_INLINE void fail_omitted(const T& t)
             {
-                if (*cur_ != 'n') return false;
-                if (adjacent.at[I] != nullptr) [[unlikely]]
-                    fail();
-                adjacent.at[I] = cur_;
-                read_literal("null");
-                defaults.template reset<I>(t);
-                return true;
+                if constexpr (yyjson::detail::omits_held_field<T, I>)
+                {
+                    if (!yyjson::detail::written_field<T, I>(t)) [[unlikely]]
+                        fail();
+                    absent_->push_back(written_key_of(struct_field<I>(t)));
+                }
             }
 
             template <std::size_t I, typename T>
@@ -34087,6 +34918,7 @@ namespace yyjson
                 {
                     if (*cur_ == '{')
                     {
+                        fail_omitted<I>(t);
                         merge_field_value<T, I>(field);
                         return;
                     }
@@ -34120,6 +34952,7 @@ namespace yyjson
                 {
                     if (*cur_ == '{')
                     {
+                        fail_omitted<I>(t);
                         merge_recorded_value<T, I>(field, input);
                         return;
                     }
@@ -34167,7 +35000,7 @@ namespace yyjson
             }
 
             // Merges the value at `cur_` into the field K of S, and checks its keywords.  Those of a map check the
-            // members of the patch only.
+            // members of the patch if `merge_checks_patch` holds, and else the whole map.
             template <typename S, std::size_t K, typename F>
             CPPYYJSON_ALWAYS_INLINE void merge_field_value(F& field)
             {
@@ -34179,18 +35012,24 @@ namespace yyjson
                         merge_recorded_value<S, K>(field, static_cast<std::nullptr_t*>(nullptr));
                     else
                     {
+                        fail_absent_with_null(field);
                         if constexpr (yyjson::detail::is_std_optional<F>::value || yyjson::detail::nullable_value<F>)
-                            if (!field.has_value()) field.emplace();
+                        {
+                            if (!field.has_value())
+                            {
+                                note_absent(field);
+                                field.emplace();
+                            }
+                        }
                         if constexpr (yyjson::detail::indirect_value<F>)
                             if (field.valueless_after_move()) fail();
                         auto& map = yyjson::detail::merged_map_of(field);
                         auto keys = std::vector<typename M::key_type>();
                         merge_map(map, &keys);
-                        yyjson::detail::merged_map_violation<S, K>(
-                            field, keys, yyjson::detail::no_input{}, [](const auto&, auto kind) {
-                                if (kind != yyjson::detail::constraint_kind::none) [[unlikely]]
-                                    fail();
-                            });
+                        if (yyjson::detail::field_violation<S, K>(std::as_const(field),
+                                                                  yyjson::detail::merged_keys<M>{&keys}) !=
+                            yyjson::detail::constraint_kind::none) [[unlikely]]
+                            fail();
                     }
                 }
                 else if constexpr (!std::is_empty_v<yyjson::detail::record_t<F>> &&
@@ -34213,8 +35052,15 @@ namespace yyjson
                 if constexpr (merged_map_field<F>)
                 {
                     using M = d::merged_map_t<F>;
+                    fail_absent_with_null(field);
                     if constexpr (d::is_std_optional<F>::value || d::nullable_value<F>)
-                        if (!field.has_value()) field.emplace();
+                    {
+                        if (!field.has_value())
+                        {
+                            note_absent(field);
+                            field.emplace();
+                        }
+                    }
                     if constexpr (d::indirect_value<F>)
                         if (field.valueless_after_move()) fail();
                     auto local = std::conditional_t<conditions, std::nullptr_t, d::merge_record<M>>();
@@ -34230,10 +35076,9 @@ namespace yyjson
                     }();
                     merge_map_recorded(d::merged_map_of(field), rec);
                     if constexpr (d::constrained_field<S, K>)
-                        d::merged_map_violation<S, K>(field, rec.keys, &rec, [](const auto&, auto kind) {
-                            if (kind != d::constraint_kind::none) [[unlikely]]
-                                fail();
-                        });
+                        if (d::field_violation<S, K>(std::as_const(field), &std::as_const(rec)) !=
+                            d::constraint_kind::none) [[unlikely]]
+                            fail();
                 }
                 else if constexpr (!std::is_empty_v<d::record_t<F>>)
                 {
@@ -34249,11 +35094,18 @@ namespace yyjson
                             return local;
                     }();
                     const char* const start = cur_;
+                    [[maybe_unused]] bool merged = true;
+                    if constexpr (mergeable<F>)
+                    {
+                        // an object read into an absent value is checked as read
+                        if (*cur_ == '{' && absent_value(field)) merged = false;
+                    }
                     merge_value(field);
                     if constexpr (requires { rec.root; })
                         record_document(rec, start);
                     else
                         fail();
+                    if constexpr (requires { rec.merged; }) rec.merged = merged;
                     check_recorded_field<S, K>(field, rec);
                 }
                 else
@@ -34296,15 +35148,39 @@ namespace yyjson
                     if (*cur_ == 'n')
                     {
                         read_literal("null");
-                        if (it != t.end()) next = t.erase(it);
+                        if (it != t.end())
+                        {
+                            fail_moving_elements<T>();
+                            next = t.erase(it);
+                        }
                         return;
                     }
                     // `find` has put the key into `lookup` when it is not in the map
                     if (it == t.end())
                     {
+                        using E = typename T::mapped_type;
                         // under a read policy the document reads a new value whole
-                        if ((policies_ | yyjson::detail::struct_policies<typename T::mapped_type>) != 0) [[unlikely]]
+                        if ((policies_ | yyjson::detail::struct_policies<E>) != 0) [[unlikely]]
                             fail();
+                        fail_moving_elements<T>();
+                        if constexpr (mergeable<E>)
+                        {
+                            if (*cur_ == '{')
+                            {
+                                // a value that fails to be read is not added, and the document reads it as new
+                                it = t.try_emplace(next, lookup, read_absent_value<E>());
+                                next = std::next(it);
+                                note_absent(it->second);
+                                (keys->push_back(it->first), ...);
+                                return;
+                            }
+                        }
+                        else if constexpr (reads_objects<E>)
+                        {
+                            // the document reads a new value without the null members of its objects
+                            if (*cur_ == '{' && value_holds_null_text()) [[unlikely]]
+                                fail();
+                        }
                         it = t.try_emplace(next, lookup);
                     }
                     next = std::next(it);
@@ -34330,15 +35206,26 @@ namespace yyjson
                     if (*cur_ == 'n')
                     {
                         read_literal("null");
-                        if (it != t.end()) t.erase(it);
+                        if (it != t.end())
+                        {
+                            fail_moving_elements<M>();
+                            t.erase(it);
+                        }
                         return;
                     }
                     // `find` has put the key into `lookup` when it is not in the map
-                    if (it == t.end())
+                    const bool absent = it == t.end();
+                    if (absent)
                     {
                         if ((policies_ | d::struct_policies<E>) != 0) [[unlikely]]
                             fail();
+                        fail_moving_elements<M>();
+                        // the document reads a new object without its null members
+                        if constexpr (mergeable<E>)
+                            if (*cur_ == '{' && value_holds_null_text()) [[unlikely]]
+                                fail();
                         it = t.try_emplace(t.end(), lookup);
+                        if (*cur_ == '{') note_absent(it->second);
                     }
                     auto& member = rec.members.emplace_back(d::merge_member<M>{it->first, {}, nullptr});
                     auto& value = it->second;
@@ -34359,11 +35246,26 @@ namespace yyjson
                     if constexpr (requires { member.read.root; })
                     {
                         const char* const start = cur_;
-                        merge_value(value);
+                        if constexpr (requires { member.read.merged; })
+                        {
+                            // an object read into an absent value is checked as read
+                            member.read.merged = !absent;
+                            if constexpr (mergeable<E>)
+                                if (*cur_ == '{' && absent_value(value)) member.read.merged = false;
+                        }
+                        if (absent)
+                            read_value_into(value);
+                        else
+                            merge_value(value);
                         record_document(member.read, start);
                     }
                     else if constexpr (std::is_empty_v<d::record_t<E>>)
-                        merge_value(value);
+                    {
+                        if (absent)
+                            read_value_into(value);
+                        else
+                            merge_value(value);
+                    }
                     else
                         value = read_recorded<E>(member.read);
                     rec.keys.push_back(it->first);
@@ -35091,7 +35993,7 @@ namespace yyjson
             template <typename T, bool Merge, typename Tally>
             CPPYYJSON_ALWAYS_INLINE void note_other_keys(Tally& keys, const char* open)
             {
-                if constexpr (requires { keys.unnamed; } && !std::same_as<Tally, object_tally<T>>)
+                if constexpr (requires { keys.unnamed; } && !std::same_as<Tally, object_tally<T>> && !Merge)
                     if constexpr (yyjson::detail::struct_conditions_object<T>)
                         if (keys.unnamed) [[unlikely]]
                             collect_other_keys<T>(keys.keys.others, open, Merge);
@@ -35119,6 +36021,42 @@ namespace yyjson
                     ++cur_;
                     skip_ws();
                 }
+            }
+
+            // The facts of the object of `t` after the merge of the patch at `open` into the object that `write(t)`
+            // gave, as `yyjson::detail::merged_object_facts` gives them for a document.
+            template <typename T>
+            CPPYYJSON_NOINLINE auto merged_patch_facts(const T& t, const char* open)
+            {
+                constexpr auto n = yyjson::detail::struct_field_count<T>;
+                const auto guard = cursor_guard{*this, cur_};
+                const auto& rules = yyjson::detail::struct_rules<T>;
+                auto facts = yyjson::detail::object_facts<n>();
+                auto patched = std::bitset<n>();
+                cur_ = open + 1;
+                skip_ws();
+                while (*cur_ == '"')
+                {
+                    const auto key = read_string(scratch_);
+                    read_colon();
+                    if (const auto k = rules.find(key, 0); k < n)
+                    {
+                        patched.set(k);
+                        if (*cur_ != 'n') facts.present.set(k);
+                    }
+                    else if (*cur_ != 'n')
+                        facts.others.emplace_back(key, rules.is_adjacent_tag(key) || is_internal_tag(open, key));
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ != ',') break;
+                    ++cur_;
+                    skip_ws();
+                }
+                yyjson::detail::complete_merged_facts(t, facts, patched, [&](const auto& add) {
+                    for (const auto* p = tags_; p != nullptr; p = p->outer)
+                        if (p->object == open) add(p->key);
+                });
+                return facts;
             }
 
             // The struct T whose fields of `yyjson::extra_keys` and of `yyjson::pattern_properties` `read_fields`
@@ -35203,7 +36141,11 @@ namespace yyjson
                     if (*cur_ == 'n')
                     {
                         read_literal("null");
-                        if (const auto it = map.find(typename M::key_type(key)); it != map.end()) map.erase(it);
+                        if (const auto it = map.find(typename M::key_type(key)); it != map.end())
+                        {
+                            fail_moving_elements<M>();
+                            map.erase(it);
+                        }
                         return;
                     }
                 }
@@ -35215,9 +36157,27 @@ namespace yyjson
                     {
                         // under a read policy the document reads a new value whole
                         if ((policies_ | d::struct_policies<E>) != 0) fail();
-                        it = map.try_emplace(typename M::key_type(key)).first;
+                        fail_moving_elements<M>();
+                        // a new key is absent in the object that the patch merges into
+                        if constexpr (mergeable<E>)
+                        {
+                            if (*cur_ == '{')
+                                it = map.try_emplace(typename M::key_type(key), read_absent_value<E>()).first;
+                        }
+                        else if constexpr (reads_objects<E>)
+                        {
+                            if (*cur_ == '{' && value_holds_null_text()) fail();
+                        }
+                        if (it != map.end())
+                            note_absent(it->second);
+                        else
+                        {
+                            it = map.try_emplace(typename M::key_type(key)).first;
+                            merge_value(it->second);
+                        }
                     }
-                    merge_value(it->second);
+                    else
+                        merge_value(it->second);
                     if (d::extra_value_violation<T, R>(it->second) != d::constraint_kind::none) fail();
                     check_later_patterns<T>(key, it->second, from);
                 }
@@ -35304,7 +36264,7 @@ namespace yyjson
                     if constexpr (names)
                         if (kept.unnamed) [[unlikely]]
                             check_object_names<T>(open, Merge);
-                    if constexpr (yyjson::detail::struct_property_counts<T>)
+                    if constexpr (yyjson::detail::struct_property_counts<T> && !Merge)
                         if (yyjson::detail::struct_count_violation<T>(kept.members) !=
                             yyjson::detail::constraint_kind::none) [[unlikely]]
                             fail();
@@ -36195,6 +37155,7 @@ namespace yyjson
     {
         yyjson::detail::assert_reads_owned_strings<T>();
         yyjson::detail::assert_reads_through_casters<T>();
+        const auto outer = reader::detail::absent_before_scope();
         if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
         {
             using reader::detail::direct_reader;
@@ -36203,10 +37164,11 @@ namespace yyjson
             if (const auto root = direct_reader::find_root(json, read_flag, first, last);
                 root != direct_reader::root_kind::none) [[likely]]
             {
+                auto absent = std::vector<reader::detail::absent_key>();
                 reader::detail::direct_reader r(root, first, last, read_flag);
                 try
                 {
-                    r.merge_root(t);
+                    r.merge_root(t, absent);
                     return;
                 }
                 catch (const std::bad_alloc&)
@@ -36238,9 +37200,13 @@ namespace yyjson
                     // the exception of a caster, which the cast of a document throws too unless the text is invalid
                     if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag)) throw;
                 }
+                // merging the same patch again gives the same result, whatever part of it was merged before, if
+                // the values that were absent are read as absent again
+                const auto scope = reader::detail::absent_before_scope(absent);
+                yyjson::detail::merge_text(json, t, read_flag);
+                return;
             }
         }
-        // merging the same patch again gives the same result, whatever part of it was merged before
         yyjson::detail::merge_text(json, t, read_flag);
     }
 #else
@@ -36268,6 +37234,7 @@ namespace yyjson
     {
         yyjson::detail::assert_reads_owned_strings<T>();
         yyjson::detail::assert_reads_through_casters<T>();
+        const auto outer = reader::detail::absent_before_scope();
         yyjson::detail::merge_text(json, t, read_flag);
     }
 #endif

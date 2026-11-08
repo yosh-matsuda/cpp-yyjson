@@ -676,10 +676,10 @@ TEST(Reader, RecursiveTransparent)
     expect_recursive<TrMap>(R"({"a":{"b":{}},"c":{}})");
     expect_recursive<TrVisitable>("[[],[[]]]");
     expect_recursive<TrHolder>(R"({"nest":[["x"]],"ind":"y","maps":[{"a":{}}]})");
-    expect_recursive<TrVariantMap>(R"({"a":"x","b":{"c":null,"d":{}}})");
+    expect_recursive<TrVariantMap>(R"({"a":"x","b":{"c":null,"d":{}}})", R"({"a":"x","b":{"d":{}}})");
     expect_recursive<TrUnion>(R"("abc")");
     expect_recursive<TrUnion>("1");
-    expect_recursive<TrUnionMap>(R"({"a":"x","b":{"c":null,"d":{}}})");
+    expect_recursive<TrUnionMap>(R"({"a":"x","b":{"c":null,"d":{}}})", R"({"a":"x","b":{"d":{}}})");
     // a string longer than the alternative allows reads into no alternative at any level
     EXPECT_THROW((void)yyjson::read<TrUnion>(R"("abcd")"), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read(R"("abcd")").cast<TrUnion>(), yyjson::bad_cast);

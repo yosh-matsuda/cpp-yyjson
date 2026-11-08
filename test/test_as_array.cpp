@@ -490,7 +490,8 @@ namespace
     }
 
     // every read of `json` under the read policies `ps` throws `bad_cast` whose message holds `message`, about the
-    // value at `path`; the reader without a document leaves it to the document
+    // value at `path`; the reader without a document leaves it to the document; `merge_into` follows the merge of
+    // `json` into what T() writes
     template <typename T, typename... Ps>
     void expect_rejected(std::string_view json, std::string_view message, std::string_view path, Ps... ps)
     {
@@ -507,10 +508,13 @@ namespace
         check(bad_cast_of([&] { (void)yyjson::value(yyjson::read(json)).cast<T>(ps...); }));
         if constexpr (sizeof...(Ps) == 0)
         {
-            check(bad_cast_of([&] {
-                auto t = T();
-                yyjson::merge_into(json, t);
-            }));
+            if (writes_no_member<T>())
+                check(bad_cast_of([&] {
+                    auto t = T();
+                    yyjson::merge_into(json, t);
+                }));
+            else
+                static_cast<void>(expect_merge_rule(T(), json));
             EXPECT_FALSE(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value()) << json;
         }
     }
@@ -838,7 +842,9 @@ TEST(AsArray, FieldArrayConditions)
     auto gate = PointGate{{1, 2}, 4};
     yyjson::merge_into(R"({"p":[3,4,5],"k":2})", gate);
     EXPECT_EQ(gate, (PointGate{{3, 4}, 2}));
-    EXPECT_THROW(yyjson::merge_into(R"({"p":[3,4,5]})", gate), yyjson::bad_cast);
+    // the key "k" stays in the object after the merge
+    EXPECT_EQ(expect_merge_rule(gate, R"({"p":[6,7,8]})"), R"({"p":[6,7],"k":2})");
+    EXPECT_THROW(yyjson::merge_into(R"({"p":[3,4,5],"k":null})", gate), yyjson::bad_cast);
 }
 
 TEST(AsArray, ArrayConditions)

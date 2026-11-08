@@ -1526,24 +1526,31 @@ TEST(PropertyCounts, Tags)
 
 TEST(PropertyCounts, MergeInto)
 {
-    // the members of the patch that are not null count, as for a map
-    const auto t = CountedPt{1, 2, 3};
-    EXPECT_EQ(merge_with(t, R"({"a":4})"), R"({"a":4,"b":2,"c":3})");
+    // the members of the object after the merge count: the fields that the patch does not name and that the write
+    // gives, and the members of the patch that are not null
+    const auto t = CountedPt{1, 2, {}};
+    EXPECT_EQ(merge_with(t, R"({"a":4})"), R"({"a":4,"b":2})");
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(merge_with(t, R"({"z":1,"c":null})"), R"({"a":1,"b":2})");
-    EXPECT_EQ(merge_with(t, R"({"a":4,"z":null,"c":null,"b":5})"), R"({"a":4,"b":5})");
-    EXPECT_EQ(merge_with(t, R"({})"), fewer("CountedPt", 1));
-    EXPECT_EQ(merge_with(t, R"({"c":null})"), fewer("CountedPt", 1));
-    EXPECT_EQ(merge_with(t, R"({ "c" : null })"), fewer("CountedPt", 1));
-    EXPECT_EQ(merge_with(t, R"({ "a" : 4 , "b" : null })"), R"({"a":4,"b":0,"c":3})");
+    EXPECT_EQ(merge_with(t, R"({})"), R"({"a":1,"b":2})");
+    EXPECT_EQ(merge_with(t, R"({"c":3})"), more("CountedPt", 2));
+    EXPECT_EQ(merge_with(t, R"({"z":1})"), more("CountedPt", 2));
+    EXPECT_EQ(merge_with(t, R"({"z":1,"a":null})"), R"({"a":0,"b":2})");
+    EXPECT_EQ(merge_with(t, R"({ "c" : 3 , "b" : null })"), R"({"a":1,"b":0,"c":3})");
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(merge_with(t, R"({"a":4,"b":5,"z":6})"), more("CountedPt", 2));
-    EXPECT_EQ(merge_with(t, R"({"a":4,"a":5,"a":6})"), more("CountedPt", 2));
-    EXPECT_EQ(merge_with(CountedPtV{1, 2, 3}, R"({"c":null})"), fewer("CountedPtV", 1));
-    EXPECT_EQ(merge_with(CountedWide(), R"({"j":1,"k":null,"a":1})"),
-              R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
-    EXPECT_EQ(merge_with(CountedWide(), R"({"j":1,"k":1,"a":1})"), more("CountedWide", 2));
-    EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":null}})"), fewer("CountedPt", 1) + " at /p");
+    EXPECT_EQ(merge_with(t, R"({"a":null,"b":null})"), fewer("CountedPt", 1));
+    EXPECT_EQ(merge_with(t, R"({"a":null,"z":null,"b":null})"), fewer("CountedPt", 1));
+    EXPECT_EQ(merge_with(t, R"({"a":4,"a":5,"c":6})"), more("CountedPt", 2));
+    EXPECT_EQ(merge_with(CountedPt{1, 2, 3}, R"({"c":null})"), R"({"a":1,"b":2})");
+    EXPECT_EQ(merge_with(CountedPtV{1, 2, {}}, R"({"c":3})"), more("CountedPtV", 2));
+    EXPECT_EQ(merge_with(CountedPtV{1, 2, {}}, R"({"c":3,"a":null})"), R"({"a":0,"b":2,"c":3})");
+    EXPECT_EQ(merge_with(CountedWide(), R"({"a":null,"b":null,"c":null,"d":null,"e":null,"f":null,"g":null,)"
+                                        R"("h":null,"j":1})"),
+              R"({"a":0,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
+    EXPECT_EQ(merge_with(CountedWide(), R"({"a":null,"b":null,"c":null,"d":null,"e":null,"f":null,"g":null,)"
+                                        R"("j":1})"),
+              more("CountedWide", 2));
+    EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":null}})"), R"({"p":{"a":0,"b":0},"v":[]})");
+    EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":1}})"), more("CountedPt", 2) + " at /p");
     EXPECT_EQ(merge_with(CountedShape(CountedRect{1, 2}), R"({"type":"rect","h":3,"w":null})"),
               fewer("CountedRect", 3));
 }
@@ -1804,16 +1811,19 @@ TEST(RequiredGroups, Read)
 
 TEST(DependentRequired, MergeInto)
 {
-    // the keys of the members of the patch that are not null are present, and the keys that it leaves out are not
+    // the keys of the object after the merge are present: the members of the patch that are not null, and the
+    // fields that the patch does not name and that the write gives
     const auto t = Billing{"n", "c", "a", 1};
     const auto all = std::string(R"({"name":"n","card":"c","address":"a","postal":1})");
     EXPECT_EQ(merge_with(t, R"({"name":"n"})"), all);
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(merge_with(t, R"({"card":"c"})"), dependent("Billing", "address"));
-    EXPECT_EQ(merge_with(t, R"({"card":"c","address":"a","postal":1})"), all);
+    EXPECT_EQ(merge_with(t, R"({"card":"c"})"), all);
     EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"card":"c","address":"a","postal":1})"), all);
     EXPECT_EQ(merge_with(t, R"({"card":"c","address":"a","postal":null})"), dependent("Billing", "postal"));
+    EXPECT_EQ(merge_with(t, R"({"address":null})"), dependent("Billing", "address"));
     EXPECT_EQ(merge_with(t, R"({"card":null})"), R"({"name":"n","address":"a","postal":1})");
+    EXPECT_EQ(merge_with(Billing{"n", {}, "a", {}}, R"({"card":"c"})"), dependent("Billing", "postal"));
 }
 
 TEST(RequiredGroups, MergeInto)
@@ -1822,13 +1832,15 @@ TEST(RequiredGroups, MergeInto)
     const auto m = Measure{"a", "e", {}, {}};
     EXPECT_EQ(merge_with(m, R"({"env":"f"})"), R"({"name":"a","env":"f"})");
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(merge_with(m, R"({"value":1,"u":"m"})"), R"({"name":"a","env":"e","value":1,"u":"m"})");
+    EXPECT_EQ(merge_with(m, R"({"name":"b"})"), R"({"name":"b","env":"e"})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(m, R"({"value":1,"u":"m"})"), many_of("Measure", R"(["env"], ["value", "u"])"));
     EXPECT_EQ(merge_with(m, R"({"env":null,"value":1,"u":"m"})"), R"({"name":"a","value":1,"u":"m"})");
-    EXPECT_EQ(merge_with(m, R"({"name":"b"})"), none_of("Measure", R"(["env"], ["value", "u"])"));
+    EXPECT_EQ(merge_with(m, R"({"env":null})"), none_of("Measure", R"(["env"], ["value", "u"])"));
     EXPECT_EQ(merge_with(m, R"({"env":"f","value":1,"u":"m"})"), many_of("Measure", R"(["env"], ["value", "u"])"));
     EXPECT_EQ(merge_with(ExclusiveVisitable{1, {}}, R"({"a":null,"b":2})"), R"({"b":2})");
-    // the key "a" that the patch leaves out counts as missing, as the merge checks the keys of the patch
-    EXPECT_EQ(merge_with(ExclusiveVisitable{1, {}}, R"({"b":2})"), R"({"a":1,"b":2})");
+    EXPECT_EQ(merge_with(ExclusiveVisitable{1, {}}, R"({"b":2})"), many_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+    EXPECT_EQ(merge_with(ExclusiveVisitable{1, {}}, R"({"x":1})"), R"({"a":1})");
 }
 
 TEST(RequiredGroups, Write)

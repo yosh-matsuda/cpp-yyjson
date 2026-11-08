@@ -253,6 +253,23 @@ TEST(ErrorPath, Position)
     EXPECT_EQ(m.path(), "/items/1/x");
     EXPECT_EQ(m.position(), (yyjson::text_position{1, 24, 23}));
 
+    // the null members that a merge removes from a new value are still in the text
+    for (const auto text : {std::string_view(R"({"x":{"z":null,"a":{"z":null,"k":"no"}}})"),
+                            std::string_view(R"({"x":{"a":{"k":1,"k":null,"k":2,"k":"no"}}})")})
+    {
+        auto maps = std::map<std::string, std::map<std::string, std::map<std::string, int>>>();
+        const auto n = bad_cast_of([&] { yyjson::merge_into(text, maps); });
+        EXPECT_EQ(n.path(), "/x/a/k");
+        EXPECT_EQ(n.position(), (yyjson::text_position{1, text.find("\"no\"") + 1, text.find("\"no\"")}));
+    }
+    // a direct merge leaves such a value to the document
+    auto pairs = std::map<std::string, std::vector<std::pair<std::string, std::optional<int>>>>();
+    const auto pairs_text = std::string_view(R"({"x":{"z":null,"k":"no"}})");
+    const auto p = bad_cast_of([&] { yyjson::merge_into(pairs_text, pairs); });
+    EXPECT_EQ(p.path(), "/x/k");
+    const auto at = pairs_text.find("\"no\"");
+    EXPECT_EQ(p.position(), (yyjson::text_position{1, at + 1, at}));
+
     // a comment before the value leaves its position unknown, one after it does not
     auto c = bad_cast_of(
         [] { (void)yyjson::read<std::vector<int>>(R"([1, /* c */ "a"])", yyjson::ReadFlag::AllowComments); });

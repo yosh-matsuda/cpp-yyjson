@@ -204,15 +204,21 @@ In this section, the *default* of a field or a value is its value in a value-ini
 *   a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts;
 *   a map with unique `std::string` keys;
 *   the alternative that a [tagged variant](conversions.md#tagged-variants) holds;
-*   a `std::optional` of one of them. If it is empty, it first gets a default struct or map, or a tagged variant read from the object.
+*   a `std::optional` or a `yyjson::indirect` of one of them that holds a value.
+
+An empty `std::optional`, a `yyjson::indirect` without a value and a key that a map does not have yet hold no value to merge into. A field that `yyjson::write(t)` leaves out, such as a field with [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from) that equals its default, holds none either. `merge_into` reads the JSON object into them as `read<T>` reads it, with every check of `read<T>`. It first removes each member whose value is `null` from the object and from the objects in it. A `null` in an array stays. RFC 7396 merges a patch into a missing value in the same way.
+
+A tag that names another alternative of a [tagged variant](conversions.md#tagged-variants) replaces the value. `merge_into` reads the new alternative from the JSON object, as it reads an empty `std::optional`. The members of the old alternative do not carry over. This is an exception to RFC 7396, which keeps the members that the object does not name.
 
 Each member of the JSON object is merged into the field or the map value that its key names:
 
 *   `null` gives a field its default and erases a key from a map.
-*   A JSON object is merged in the same way. A key that a map does not have yet is first added with a default value.
+*   A JSON object is merged in the same way, or read as above when the field or the key has no value.
 *   Any other value replaces the field or the map value, as `read_into` reads it. A JSON array therefore replaces a range as a whole.
 
 Fields and keys that the object does not name keep their values. If a key appears twice in an object, which of its members are applied, and in which order, is [unspecified](validation.md#repeated-keys).
+
+`merge_into` checks the [constraints](validation.md#constraints) of a struct on the object that `yyjson::write(t)` gives, with the patch merged into it. It accepts the patch when `read<T>` accepts that object, and it does not check again an object that the patch does not name. [How constraints are checked](validation.md#how-constraints-are-checked) gives the details.
 
 If the JSON string is not an object, `merge_into` reads it into `t` as `read_into` does. Thus a `null` throws `yyjson::bad_cast` for a struct or a map, and sets a `std::optional` of a struct or a map to `std::nullopt`.
 
@@ -1623,7 +1629,7 @@ inline constexpr extra_keys_t extra_keys{};
 
 *   The field is a map with string keys that is written as a JSON object, such as `std::map<std::string, yyjson::value>` or `std::unordered_map<std::string, int>`.
 *   The field has no key of its own. Every read puts each key that no field and no tag names, and that no [pattern](#yyjsonpattern_properties) matches, into the map, with its value. `read<T>` and `read_into` start from the map of `T()`. `merge_into` adds the members of the patch to the map, and a member with `null` removes its key.
-*   The field takes [`yyjson::additional_properties(s...)`](#constraints-of-elements) for the values and `yyjson::property_names(s...)` for the keys. The read checks a key before its value. `merge_into` checks only the members of the patch that are not `null`.
+*   The field takes [`yyjson::additional_properties(s...)`](#constraints-of-elements) for the values and `yyjson::property_names(s...)` for the keys. The read checks a key before its value. `merge_into` checks the map after the merge. When no combinator holds these settings, it checks only the members of the patch that are not `null`, with the same result.
 *   The settings of the struct, such as `yyjson::min_properties` and `yyjson::property_names`, count and check the keys of the map too. `yyjson::reject_unknown_keys` accepts them.
 *   Every write puts the members of the map after the fields and the tags. It throws `std::invalid_argument` when the map has the key of a field or a tag of the struct.
 
@@ -1961,7 +1967,7 @@ The settings `s...` and `p` are the [constraints](#constraints), the settings of
 
 `yyjson::additional_properties(false)` is a setting of a struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). It makes the struct [closed](validation.md#closed-structs): every read rejects a key that names no field and no tag of the struct. A subschema of the conditions of a struct and a field that holds a struct take it too. There, it accepts only the keys that [`yyjson::property`](#yyjsonproperty) names in the same subschema, and the keys of the tags. A key of `yyjson::required("key", ...)` is not one of them, as in JSON Schema. A closed struct accepts the keys that a field of [`yyjson::pattern_properties`](#yyjsonpattern_properties) receives, but a closed subschema rejects them. `additional_properties(true)`, `additional_properties(s...)` on a struct, and `additional_properties(false)` on a struct with `yyjson::transparent` or `yyjson::as_array` are compile errors. So are `additional_properties(false)` on a struct with a field of [`yyjson::extra_keys`](#yyjsonextra_keys) and on a field that holds no struct.
 
-`yyjson::min_properties(n)` and `yyjson::max_properties(n)` are also settings of a struct for `yyjson::annotate`. Every read then counts the members of the object, as for a map. `merge_into` counts the members of the patch that are not `null`. A struct with `yyjson::min_properties` writes the fields that equal their defaults. See [The number of members of a struct](validation.md#the-number-of-members-of-a-struct). On a struct with `yyjson::transparent` or `yyjson::as_array`, they are compile errors. The subschemas of the conditions of a struct and a field that holds a struct take them too. There, `yyjson::min_properties` changes the write only in a `yyjson::all_of` of the struct.
+`yyjson::min_properties(n)` and `yyjson::max_properties(n)` are also settings of a struct for `yyjson::annotate`. Every read then counts the members of the object, as for a map. `merge_into` counts the members of the object that `yyjson::write(t)` gives, with the patch merged into it. A struct with `yyjson::min_properties` writes the fields that equal their defaults. See [The number of members of a struct](validation.md#the-number-of-members-of-a-struct). On a struct with `yyjson::transparent` or `yyjson::as_array`, they are compile errors. The subschemas of the conditions of a struct and a field that holds a struct take them too. There, `yyjson::min_properties` changes the write only in a `yyjson::all_of` of the struct.
 
 `yyjson::property_names(s...)` is also a setting of a struct for `yyjson::annotate`. Every read then checks each key of the object, as for a map. This includes the keys of the fields and of the tags. `merge_into` checks the keys of the patch whose values are not `null`. The function `f` of `yyjson::satisfies<f>` in `s` takes a `std::string_view` or a `std::string`. See [The names of the members of a struct](validation.md#the-names-of-the-members-of-a-struct). On a struct with `yyjson::transparent` or `yyjson::as_array`, it is a compile error. The subschemas of the conditions of a struct and a field that holds a struct take it too.
 

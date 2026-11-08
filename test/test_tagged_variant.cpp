@@ -62,6 +62,15 @@ struct TagBare
 };
 template <>
 inline constexpr auto yyjson::annotations<TagBare> = yyjson::annotate(yyjson::field("body", tag_body_or_none));
+// a field whose default constructor is explicit beside the variant
+struct TagIndirectBare
+{
+    yyjson::indirect<int> id;
+    TagBodyOrNone body;
+    bool operator==(const TagIndirectBare&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagIndirectBare> = yyjson::annotate(yyjson::field("body", tag_body_or_none));
 // a skipped field before the variant, which `write` reaches through a const struct
 struct TagSkippedEnvelope
 {
@@ -193,6 +202,34 @@ struct TagManyHolder
     bool operator==(const TagManyHolder&) const = default;
 };
 
+// alternatives with a member of the same name, which a switch of the alternative does not carry over
+struct TagNamedCircle
+{
+    std::string name;
+    double r = 0;
+    bool operator==(const TagNamedCircle&) const = default;
+};
+struct TagNamedRect
+{
+    std::string name;
+    double w = 0;
+    double h = 0;
+    bool operator==(const TagNamedRect&) const = default;
+};
+using TagNamed = std::variant<TagNamedCircle, TagNamedRect>;
+template <>
+inline constexpr auto yyjson::annotations<TagNamed> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+struct TagNamedHolder
+{
+    TagNamed s;
+    TagNamed body;
+    bool operator==(const TagNamedHolder&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagNamedHolder> =
+    yyjson::annotate(yyjson::field("body", yyjson::adjacent_tag("t", {"circle", "rect"})));
+
 TEST(TaggedVariant, Internal)
 {
     using namespace yyjson;
@@ -276,9 +313,10 @@ TEST(TaggedVariant, Internal)
               R"({"type":"map","a":"b","c":"d"})");
     // an object with another tag that fails to read leaves the old alternative to the document that
     // `merge_into` falls back to, which then reads the object as the new alternative and fails as well
-    for (const auto* json :
-         {R"({"type":"zzz"})", R"({"type":1,"h":5})", R"({"h":"x"})", R"({"type":"circle","r":null})"})
+    for (const auto* json : {R"({"type":"zzz"})", R"({"type":1,"h":5})", R"({"h":"x"})"})
         EXPECT_TRUE(expect_merge_into(rect, json).starts_with("bad cast")) << json;
+    // a new alternative is read without the null members of the object, as an absent value is
+    EXPECT_EQ(expect_merge_into(rect, R"({"type":"circle","r":null})"), R"({"type":"circle","r":0.0})");
     // `std::monostate` has nothing to merge into
     EXPECT_TRUE(expect_merge_into(TagShapeOrNone(), R"({"r":1})").starts_with("bad cast"));
     EXPECT_EQ(expect_merge_into(TagShapeOrNone(), R"({"r":1,"type":"circle"})"), R"({"type":"circle","r":1.0})");
@@ -289,7 +327,9 @@ TEST(TaggedVariant, Internal)
     auto copy = nested;
     EXPECT_THROW(read_into(R"({"maybe":{"h":7}})", copy), bad_cast);
     EXPECT_TRUE(expect_merge_into(TagNested(), R"({"maybe":{"h":7}})").starts_with("bad cast"));
-    EXPECT_TRUE(expect_merge_into(TagNested(), R"({"maybe":{"type":"circle","r":null}})").starts_with("bad cast"));
+    // an empty optional reads the patch without its null members
+    EXPECT_EQ((expect_merge_rule<TagNested, true>(TagNested(), R"({"maybe":{"type":"circle","r":null}})")),
+              written(TagNested{{}, TagCircle{}, {}}));
 }
 
 TEST(TaggedVariant, Adjacent)
@@ -445,8 +485,15 @@ TEST(TaggedVariant, Adjacent)
             << json;
         EXPECT_TRUE(merged_directly) << json;
     }
-    EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null})"), R"({"id":1,"body":null,"extra":3})");
-    EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null,"t":"text"})"), R"({"id":1,"body":null,"extra":3})");
+    // a null value leaves its tag without a value, as `read<T>` sees it, unless the patch removes the tag too
+    for (const auto* json : {R"({"body":null})", R"({"body":null,"t":"text"})", R"({"t":null})"})
+        EXPECT_TRUE((expect_merge_rule<TagBare, true>(bares[0], json)).starts_with("bad cast")) << json;
+    EXPECT_EQ((expect_merge_rule<TagBare, true>(bares[0], R"({"body":null,"t":null})")),
+              R"({"id":1,"body":null,"extra":3})");
+    const auto indirect_bare = TagIndirectBare{yyjson::indirect<int>(1), TagCircle{2}};
+    EXPECT_TRUE((expect_merge_rule<TagIndirectBare, true>(indirect_bare, R"({"body":null})")).starts_with("bad cast"));
+    EXPECT_EQ((expect_merge_rule<TagIndirectBare, true>(indirect_bare, R"({"body":null,"t":null})")),
+              R"({"id":1,"body":null})");
     EXPECT_EQ(expect_merge_into(bares[0], R"({"id":4})"), R"({"id":4,"t":"circle","body":{"r":2.0},"extra":3})");
     EXPECT_EQ(expect_merge_into(bares[0], R"({"t":"circle","id":4})"),
               R"({"id":4,"t":"circle","body":{"r":2.0},"extra":3})");
@@ -466,7 +513,7 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_EQ(expect_merge_into(envelope, R"({"kind":"rect"})"), R"({"kind":"rect","data":{"w":1,"h":2}})");
     EXPECT_TRUE(expect_merge_into(envelope, R"({"kind":"circle"})").starts_with("bad cast"));
     for (const auto* json : {R"({"kind":"circle","data":{"r":null}})", R"({"data":{"r":null},"kind":"circle"})"})
-        EXPECT_TRUE(expect_merge_into(envelope, json).starts_with("bad cast")) << json;
+        EXPECT_EQ(expect_merge_into(envelope, json), R"({"kind":"circle","data":{"r":0.0}})") << json;
 
     // `adjacent_tag` tags a field, so the variant type is untagged elsewhere and tagged per field
     EXPECT_EQ(read<TagBody>(R"({"r":1})"), TagBody(TagCircle{1}));
@@ -494,6 +541,25 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_THROW((void)write(TagOuter(TagHolder{})), std::invalid_argument);
     EXPECT_THROW((void)value(TagOuter(TagHolder{})), std::invalid_argument);
     EXPECT_EQ(write(TagOuter(TagRect{1, 2})), R"({"kind":"rect","w":1,"h":2})");
+}
+
+TEST(TaggedVariant, SwitchedAlternative)
+{
+    // a switch of the alternative reads the new alternative from the patch without its null members
+    const auto holder = TagNamedHolder{TagNamedCircle{"n", 1}, TagNamedCircle{"n", 1}};
+    const auto switched = [&](TagNamed s, TagNamed body) {
+        return written(TagNamedHolder{std::move(s), std::move(body)});
+    };
+    const auto rect = TagNamed(TagNamedRect{"", 2, 0});
+    for (const auto* json : {R"({"s":{"type":"rect","w":2}})", R"({"s":{"type":"rect","w":2,"h":null}})",
+                             R"({"s":{"w":2,"name":null,"type":"rect"}})"})
+        EXPECT_EQ(expect_merge_into(holder, json), switched(rect, holder.body)) << json;
+    for (const auto* json : {R"({"t":"rect","body":{"w":2}})", R"({"t":"rect","body":{"w":2,"h":null}})",
+                             R"({"body":{"w":2,"name":null},"t":"rect"})"})
+        EXPECT_EQ(expect_merge_into(holder, json), switched(holder.s, rect)) << json;
+    // the same alternative keeps its members
+    EXPECT_EQ(expect_merge_into(holder, R"({"s":{"type":"circle","r":null},"t":"circle","body":{"r":2}})"),
+              switched(TagNamedCircle{"n", 0}, TagNamedCircle{"n", 2}));
 }
 
 TEST(TaggedVariant, AdjacentAfterSkippedField)
