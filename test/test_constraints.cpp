@@ -4867,6 +4867,11 @@ struct UnionReasonField
 {
     std::variant<int, UnionPoint> v;
 };
+struct UnionReasonLine
+{
+    UnionPoint from;
+    std::vector<UnionPoint> to;
+};
 struct UnionReasonNode
 {
     std::variant<int, OneOfX> v;
@@ -4875,24 +4880,34 @@ struct UnionReasonNode
 
 namespace
 {
+    // the reason why an alternative does not read a value, about the value at `at` within it
+    struct alternative_reason
+    {
+        alternative_reason(const char* r, std::string_view a = {}) : reason(r), at(a) {}         // NOLINT
+        alternative_reason(const std::string& r, std::string_view a = {}) : reason(r), at(a) {}  // NOLINT
+        std::string_view reason;
+        std::string_view at;
+    };
+
     // the message of a value that no alternative of V reads, with the reason of each alternative
     template <typename V>
-    std::string read_by_none_because(std::initializer_list<std::string_view> reasons)
+    std::string read_by_none_because(std::initializer_list<alternative_reason> reasons)
     {
         const auto names = []<std::size_t... Is>(std::index_sequence<Is...>) {
             return std::array{yyjson::detail::variant_name<std::variant_alternative_t<Is, V>>()...};
         }(std::make_index_sequence<std::variant_size_v<V>>());
         auto message = read_by_none<V>();
-        for (auto i = std::size_t(0); const auto reason : reasons)
+        for (auto i = std::size_t(0); const auto& r : reasons)
         {
-            message += std::format("{} alternative {} ({}): {}", i == 0 ? ":" : ";", i, names[i], reason);
+            message += std::format("{} alternative {} ({}){}: {}", i == 0 ? ":" : ";", i, names[i],
+                                   r.at.empty() ? std::string() : " at " + std::string(r.at), r.reason);
             ++i;
         }
         return message;
     }
 
     // reading `json` into T under `policies` throws `bad_cast` with exactly `message` about the value at `path`,
-    // with and without a document
+    // with and without a document, and from a mutable document
     template <typename T, typename... Policies>
     void expect_reasons(std::string_view json, std::string_view message, std::string_view path, Policies... policies)
     {
@@ -4902,6 +4917,7 @@ namespace
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json, policies...); }));
         check(bad_cast_of([&] { (void)yyjson::read(json).cast<T>(policies...); }));
+        check(bad_cast_of([&] { (void)yyjson::value(yyjson::read(json)).cast<T>(policies...); }));
     }
 }  // namespace
 
@@ -4938,11 +4954,10 @@ TEST(Constraints, UnionFailureReasons)
     const auto no_null = "reads no JSON null";
     expect_reasons<std::vector<Kinds>>(R"([1,"a",null])", read_by_none_because<Kinds>({no_null, no_null, no_null}),
                                        "/2");
-    // the reason of a struct gives the value within it without its path, and the path of the variant ends the
-    // message once
+    // the reason of a struct gives the path of the value within it, and the path of the variant ends the message once
     using IntOrPoint = std::variant<int, UnionPoint>;
     const auto point_reasons =
-        read_by_none_because<IntOrPoint>({"reads no JSON object", "int is not constructible from JSON string"});
+        read_by_none_because<IntOrPoint>({"reads no JSON object", {"int is not constructible from JSON string", "/x"}});
     expect_reasons<IntOrPoint>(R"({"x":"a"})", point_reasons, "");
     expect_reasons<UnionReasonField>(R"({"v":{"x":"a"}})", point_reasons, "/v");
     try
@@ -4966,7 +4981,7 @@ TEST(Constraints, UnionFailureReasons)
     expect_reasons<ClosedOrXZ>(
         R"({"z":1})",
         read_by_none_because<ClosedOrXZ>(
-            {R"(OneOfClosedX has the key "z", which yyjson::additional_properties(false) rejects)",
+            {{R"(OneOfClosedX has the key "z", which yyjson::additional_properties(false) rejects)", "/z"},
              R"(OneOfXZ is not constructible from JSON without the key "x")"}),
         "");
     // the one that matches under those policies and fails under the policies of the call gives its own failure
@@ -4977,8 +4992,22 @@ TEST(Constraints, UnionFailureReasons)
     using IntOrX = std::variant<int, OneOfX>;
     expect_reasons<UnionReasonNode>(
         R"({"v":1,"next":{"v":{"x":1,"k":2},"next":null}})",
-        read_by_none_because<IntOrX>({"reads no JSON object", R"(OneOfX has no field of the key "k")"}), "/next/v",
-        yyjson::reject_unknown_keys);
+        read_by_none_because<IntOrX>({"reads no JSON object", {R"(OneOfX has no field of the key "k")", "/k"}}),
+        "/next/v", yyjson::reject_unknown_keys);
+
+    // the path within an alternative goes through its members and elements, and a failure of the whole value has none
+    using IntOrLine = std::variant<int, UnionReasonLine>;
+    expect_reasons<IntOrLine>(R"({"from":{"x":1,"y":2},"to":[{"x":3,"y":4},{"x":5,"y":true}]})",
+                              read_by_none_because<IntOrLine>(
+                                  {"reads no JSON object", {"int is not constructible from JSON bool", "/to/1/y"}}),
+                              "");
+    expect_reasons<IntOrLine>("[]", read_by_none_because<IntOrLine>({"reads no JSON array", "reads no JSON array"}),
+                              "");
+    using IntOrMap = std::variant<int, std::map<std::string, int>>;
+    expect_reasons<IntOrMap>(R"({"a/b~c":"x"})",
+                             read_by_none_because<IntOrMap>(
+                                 {"reads no JSON object", {"int is not constructible from JSON string", "/a~1b~0c"}}),
+                             "");
 
     // a variant within an alternative gives no reasons of its own alternatives, which bounds the work
     using Nested = std::variant<int, std::variant<std::string, std::variant<bool, UnionPoint>>>;

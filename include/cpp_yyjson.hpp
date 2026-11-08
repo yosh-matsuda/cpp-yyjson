@@ -313,6 +313,18 @@ namespace yyjson
                 return false;
             }
 
+            // A C string ends at a null character of a key, so control characters are written escaped.
+            static void append_printable(std::string& out, std::string_view path)
+            {
+                for (const auto c : path)
+                {
+                    if (static_cast<unsigned char>(c) < 0x20)
+                        out += std::format("\\u{:04x}", static_cast<unsigned>(c));
+                    else
+                        out += c;
+                }
+            }
+
             static void update_what(bad_cast& e)
             {
                 auto& s = *e.state_;
@@ -320,14 +332,7 @@ namespace yyjson
                 if (!s.path.empty())
                 {
                     what += " at ";
-                    // a C string ends at a null character of a key, so control characters are written escaped
-                    for (const auto c : s.path)
-                    {
-                        if (static_cast<unsigned char>(c) < 0x20)
-                            what += std::format("\\u{:04x}", static_cast<unsigned>(c));
-                        else
-                            what += c;
-                    }
+                    append_printable(what, s.path);
                 }
                 if (s.position.has_value())
                 {
@@ -428,6 +433,29 @@ namespace yyjson
                 {
                     // without memory for the path, the exception is thrown as it is
                 }
+            }
+
+            // The printable path from the value `v` down to the value that `e` is about, or the empty text if that
+            // value is `v` itself or not within it.
+            static std::string path_from(const bad_cast& e, const void* v, bool is_mutable)
+            {
+                if (e.state_ == nullptr || v == nullptr) return {};
+                const auto& s = *e.state_;
+                auto segments = std::vector<segment>();
+                if (s.mutable_value != is_mutable) return {};
+                const auto found = is_mutable ? find_path(static_cast<const yyjson_mut_val*>(v),
+                                                          static_cast<const yyjson_mut_val*>(s.value), segments)
+                                              : find_path(static_cast<const yyjson_val*>(v),
+                                                          static_cast<const yyjson_val*>(s.value), segments);
+                if (!found) return {};
+                auto path = std::string();
+                for (const auto& segment : segments)
+                {
+                    path += '/';
+                    append_printable(path, segment.token);
+                }
+                append_printable(path, s.path);
+                return path;
             }
 
             // A walk over the text of a document that stops at a comment or a single-quoted string.
@@ -23365,9 +23393,17 @@ namespace yyjson
             return std::format("reads no JSON {}", text);
         }
 
-        // The reason of the exception that the read of an alternative threw, which this handles, or the empty
-        // text and its keyword in `rejected` for `alternative_rejected`.  It throws the limits again.
-        CPPYYJSON_COLD inline std::string caught_alternative_reason(constraint_kind& rejected)
+        // Why an alternative of a variant does not read a JSON value, and where in that value if not at the value.
+        struct alternative_failure
+        {
+            std::string path;
+            std::string reason;
+        };
+
+        // The reason of the exception that the read of an alternative from the JSON value `at` threw, which this
+        // handles, or the empty text and its keyword in `rejected` for `alternative_rejected`.  It throws the
+        // limits again.
+        CPPYYJSON_COLD inline alternative_failure caught_alternative_reason(constraint_kind& rejected, cast_target at)
         {
             auto limit = std::exception_ptr();
             try
@@ -23384,8 +23420,8 @@ namespace yyjson
             }
             catch (const bad_cast& e)
             {
-                // without the path, which the message gives once for the variant
-                return e.std::runtime_error::what();
+                // the path from the alternative's value only, as the message gives that of the variant once
+                return {bad_cast_access::path_from(e, at.value(), at.mutable_value()), e.std::runtime_error::what()};
             }
             catch (const alternative_rejected& e)
             {
@@ -23394,27 +23430,31 @@ namespace yyjson
             }
             catch (const std::exception& e)
             {
-                return e.what();
+                return {{}, e.what()};
             }
             catch (...)
             {
-                return "throws an exception that is not a std::exception";
+                return {{}, "throws an exception that is not a std::exception"};
             }
             std::rethrow_exception(limit);
         }
 
         // Reads the alternative I of a variant again from the JSON value at `json`, and gives the reason why it
         // fails, or none if it reads the value.
-        using alternative_reason = std::optional<std::string> (*)(const void* json);
+        using alternative_reason = std::optional<alternative_failure> (*)(const void* json);
 
         // Throws at `at` that no alternative of the variant `variant` reads the value, with the reason of each.
         [[noreturn]] CPPYYJSON_COLD inline void throw_alternative_reasons(cast_target at, std::string_view variant,
                                                                           std::span<const std::string_view> names,
-                                                                          std::span<const std::string> reasons)
+                                                                          std::span<const alternative_failure> reasons)
         {
             auto what = std::format("{} is not constructible from JSON", variant);
             for (std::size_t i = 0; i < reasons.size(); ++i)
-                what += std::format("{} alternative {} ({}): {}", i == 0 ? ":" : ";", i, names[i], reasons[i]);
+            {
+                what += std::format("{} alternative {} ({})", i == 0 ? ":" : ";", i, names[i]);
+                if (!reasons[i].path.empty()) what += " at " + reasons[i].path;
+                what += ": " + reasons[i].reason;
+            }
             auto e = bad_cast(std::move(what));
             bad_cast_access::set_target(e, at.value(), at.mutable_value());
             throw e;
@@ -23431,17 +23471,17 @@ namespace yyjson
         {
             if (nested || collecting_alternative_reasons)
                 throw_bad_cast_at(at, "{} is not constructible from JSON", variant);
-            auto reasons = std::vector<std::string>(names.size());
+            auto reasons = std::vector<alternative_failure>(names.size());
             {
                 const auto collecting = alternative_reasons_scope();
                 for (std::size_t i = 0; i < reasons.size(); ++i)
                 {
                     if ((kinds[i] & kind) == 0)
-                        reasons[i] = no_kind_reason(kind);
+                        reasons[i].reason = no_kind_reason(kind);
                     else if (auto reason = reasons_of[i](json))
                         reasons[i] = std::move(*reason);
                     else
-                        reasons[i] = "reads the value when read again";
+                        reasons[i].reason = "reads the value when read again";
                 }
             }
             throw_alternative_reasons(at, variant, names, reasons);
@@ -23533,25 +23573,27 @@ namespace yyjson
 
             // `alternative_reason` for the alternative I.
             template <std::size_t I, typename Json>
-            static std::optional<std::string> failure_reason(const void* json)
+            static std::optional<alternative_failure> failure_reason(const void* json)
             {
+                const auto& value = *static_cast<const Json*>(json);
                 auto rejected = constraint_kind::none;
-                auto reason = std::string();
+                auto failure = alternative_failure();
                 try
                 {
-                    static_cast<void>(cast_alternative<I>(*static_cast<const Json*>(json)));
+                    static_cast<void>(cast_alternative<I>(value));
                     return std::nullopt;
                 }
                 catch (...)
                 {
-                    reason = caught_alternative_reason(rejected);
+                    failure = caught_alternative_reason(rejected, target_of(value));
                 }
                 if constexpr (constrained_union_alternative<V, I>)
                 {
                     if (rejected != constraint_kind::none)
-                        return "the value " + constraint_what<union_alternative_schema<V, I>>(rejected);
+                        return alternative_failure{
+                            {}, "the value " + constraint_what<union_alternative_schema<V, I>>(rejected)};
                 }
-                return reason;
+                return failure;
             }
             template <typename Json>
             static constexpr auto failure_reasons = []<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -23753,13 +23795,14 @@ namespace yyjson
                     throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", variant_name<V>());
                 const auto kind = json_kind_of(json);
                 const auto failing = failing_alternatives(json, kind);
-                auto reasons = std::array<std::string, size>{};
+                auto reasons = std::array<alternative_failure, size>{};
                 {
                     const auto collecting = alternative_reasons_scope();
-                    const auto reason = [&](std::size_t i) -> std::string {
+                    const auto reason = [&](std::size_t i) -> alternative_failure {
                         if (auto r = alternative_cast::template failure_reasons<Json>[i](&json)) return std::move(*r);
-                        return failing.test(i) ? "lacks a key that it requires or has a key that it rejects"
-                                               : "reads the value when read again";
+                        return {{},
+                                failing.test(i) ? "lacks a key that it requires or has a key that it rejects"
+                                                : "reads the value when read again"};
                     };
                     if (selected != size) reasons[selected] = reason(selected);
                     const auto scope = exact_policy_scope(counting_policies);
@@ -23767,7 +23810,7 @@ namespace yyjson
                     {
                         if (i == selected) continue;
                         if ((alternative_cast::template alternative_kinds<Json>[i] & kind) == 0)
-                            reasons[i] = no_kind_reason(kind);
+                            reasons[i].reason = no_kind_reason(kind);
                         else
                             reasons[i] = reason(i);
                     }
