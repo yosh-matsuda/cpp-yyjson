@@ -346,7 +346,7 @@ template <typename T>
 void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t, with_validation_t);
 ```
 
-`validate(t)` checks the values that `write(t)` writes. A read of that JSON with `yyjson::read<T>` checks the same constraints on them. It also checks the object of each struct: the keys, the number of keys, the conditions of the struct, and the members of the maps of `yyjson::extra_keys` and `yyjson::pattern_properties`. `validate(t, emit_defaults)` checks the values that `write(t, emit_defaults)` writes. `T` must be [writable](#yyjsonreadablet-yyjsonwritablet).
+`validate(t)` checks the values that `write(t)` writes. A read of that JSON with `yyjson::read<T>` checks the same constraints on them. It also checks the object of each struct: the keys, the number of keys, the conditions of the struct, and the members of the maps of `yyjson::extra_keys` and `yyjson::pattern_properties`. It checks the settings of the whole array of a struct with `yyjson::as_array` on the written array. It rejects a key that the write writes twice in one object, such as a key that a `std::multimap` holds twice. `validate(t, emit_defaults)` checks the values that `write(t, emit_defaults)` writes. `T` must be [writable](#yyjsonreadablet-yyjsonwritablet).
 
 A `write` with `with_validation` calls `validate` first, and then writes as the same `write` without the tag does. It gives the same text.
 
@@ -1451,7 +1451,7 @@ A parameter pack `Policies` of the functions on this page takes only these tags.
 | `reject_unknown_keys` | an object read into a struct has a key that names no field |
 | `reject_missing_keys` | an object read into a struct does not have the key of a field without a default: a field that is not a `std::optional` and has no [`yyjson::default_` or `yyjson::default_from`](#yyjsondefault_-yyjsondefault_from) |
 | `reject_null_as_missing` | a `std::optional` field gets `null` that it would read as a missing key |
-| `reject_duplicates` | an object read into a struct or a map has a key twice, or an array read into a set has an element twice |
+| `reject_duplicates` | an object read into a struct, a map or a tuple of key-value pairs has a key twice, or an array read into a set has an element twice |
 | `strict` | any of `reject_missing_keys`, `reject_null_as_missing` and `reject_duplicates` applies |
 
 `read<T>`, `read_into`, `merge_into`, `cast<T>` and the member functions `cast<T>` take the policies after the `ReadFlag`. A struct takes them as settings of [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate), and every read of the struct then uses them. With the reflection of C++26, they can also be written on the struct, as `struct [[=yyjson::strict]] Point`. The policies of a struct do not apply to the types of its fields. A policy given twice is allowed. A policy on a variant, an enumeration or a [transparent](#yyjsontransparent) struct is a compile error.
@@ -1643,7 +1643,7 @@ consteval explicit items(bool allowed);  // items<bool>, as yyjson::items(false)
 *   The field of `yyjson::extra_items` receives the elements after the fields. It is the last field that is not skipped, a range with `push_back` and `clear`. It takes [`yyjson::items(settings...)`](#constraints-of-elements) for its elements, and no other setting.
 *   `write` leaves out the empty `std::optional` fields at the end of the array. An empty `std::optional` before a written value makes every write of the struct throw [`yyjson::write_error`](#yyjsonwrite_error). The elements of the field of `yyjson::extra_items` are written values too. Use `yyjson::nullable<U>` to write `null`.
 *   `read_into` and `merge_into` replace the whole value, as for an array.
-*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). The read checks them on the elements of the JSON array: a `null` is an element, a missing element is not, and an element that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`. The same rules apply when a field of the type of the struct takes these settings. The struct and the field also take the combinators of these settings.
+*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). The read checks them on the elements of the JSON array: a `null` is an element, a missing element is not, and an element that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`. The same rules apply when a field of the type of the struct takes these settings. The struct and the field also take the combinators of these settings. [`yyjson::validate`](#yyjsonvalidate-yyjsonwith_validation) checks them on the array that the write gives.
 
 These are compile errors:
 

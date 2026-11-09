@@ -25446,6 +25446,9 @@ namespace yyjson
                         detail::throw_bad_cast_at(detail::target_of(json),
                                                   "the size of JSON object differs from the size of {}",
                                                   detail::type_name<Tuple<Ts...>>());
+                    detail::check_object_keys_unique(
+                        detail::dependent_t<writer::detail::json_value_access, Json>::get(*obj),
+                        detail::type_name<Tuple<Ts...>>());
 
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
@@ -34223,6 +34226,7 @@ namespace yyjson
                     if constexpr (tuple_from_object<T> && tuple_copies_keys<T>)
                     {
                         auto i = std::size_t{0};
+                        check_map_keys();
                         read_members([&] {
                             if (i == size) fail();
                             each(i++, [&]<typename E>(auto& e, std::type_identity<E>) {
@@ -38066,11 +38070,60 @@ namespace yyjson
             validated_struct<S> && !transparent_struct<S> && !as_array_struct<S> &&
             (has_required_fields<S> || (struct_policies<S> & missing_keys_policy) != 0);
 
+        // Whether two keys of the type K are equal if their written texts are equal.
+        template <typename K>
+        inline constexpr bool compares_as_text = enum_key<K>;
+        template <typename Traits, typename Alloc>
+        inline constexpr bool compares_as_text<std::basic_string<char, Traits, Alloc>> = true;
+        template <typename Traits>
+        inline constexpr bool compares_as_text<std::basic_string_view<char, Traits>> = true;
+
+        // Whether a value of T, which write gives as a JSON object, can give one key twice.  A set of unique keys
+        // cannot if its keys compare as their texts.
+        template <typename T>
+        consteval bool repeats_written_keys()
+        {
+            if constexpr (tuple_like<T> && !std::ranges::range<T>)
+                return std::tuple_size_v<T> > 1 &&
+                       std::same_as<writer::detail::to_json_input_ref<T>, writer::detail::object_ref>;
+            else if constexpr (!object_written_range<T>)
+                return false;
+            else if constexpr (unique_set<T>)
+                return !compares_as_text<std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>>;
+            else
+                return true;
+        }
+
+        // Whether `yyjson::validate` checks the keywords of the whole array of S, a struct annotated with
+        // `yyjson::as_array`.
+        template <typename S>
+        consteval bool checks_written_array()
+        {
+            if constexpr (validated_struct<S> && !transparent_struct<S> && as_array_struct<S>)
+                return has_array_struct_keywords<S>;
+            else
+                return false;
+        }
+
+        // Whether `yyjson::contains` in the keywords of the whole array of S checks the JSON value of an element.
+        template <typename S>
+        consteval bool written_array_counts_input()
+        {
+            if constexpr (checks_written_array<S>())
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (array_struct_elements_count_input<node_schema<array_struct_tree<S>, Is>, S>() || ...);
+                }(std::make_index_sequence<array_struct_tree<S>::tree.nodes.size()>{});
+            else
+                return false;
+        }
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
         {
-            if constexpr (!validated_struct<T>)
+            if constexpr (repeats_written_keys<T>())
+                return true;
+            else if constexpr (!validated_struct<T>)
                 return false;
             else if constexpr (!std::is_trivially_destructible_v<recursion_guard<T>>)
                 return true;
@@ -38078,7 +38131,7 @@ namespace yyjson
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return ((constrained_field<T, Ks> || may_read_back_value<T, Ks>) || ...);
                 }(std::make_index_sequence<struct_field_count<T>>{}) ||
-                       checks_written_object<T> || checks_missing_keys<T>;
+                       checks_written_object<T> || checks_missing_keys<T> || checks_written_array<T>();
         }
         // A node of the graph of `conversion_node`, marked when `yyjson::validate` checks something of its type.
         template <typename T>
@@ -38143,7 +38196,7 @@ namespace yyjson
         {
             if constexpr (!validated_struct<S> || transparent_struct<S>)
                 return false;
-            else if constexpr (checks_written_object<S>)
+            else if constexpr (checks_written_object<S> || written_array_counts_input<S>())
                 return true;
             else
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
@@ -38261,6 +38314,154 @@ namespace yyjson
                 failure = std::current_exception();
             }
             std::rethrow_exception(failure);
+        }
+
+        // The JSON string that the key `k` is written as, kept in `buf` for an enumerator.
+        template <typename K>
+        std::string_view written_key_view(const K& k, enum_key_buffer& buf)
+        {
+            if constexpr (enum_key<K>)
+                return enum_key_text(k, buf);
+            else if constexpr (std::is_pointer_v<K>)
+                return k != nullptr ? std::string_view(k) : std::string_view();
+            else
+                return std::string_view(k);
+        }
+
+        // Whether R keeps the members with equal keys next to each other, and two keys are equal if and only if
+        // their written texts are equal.
+        template <typename R, typename K>
+        consteval bool groups_written_keys()
+        {
+            if constexpr (!enum_key<K> && !std::same_as<K, std::string> && !std::same_as<K, std::string_view>)
+                return false;
+            else if constexpr (requires { typename R::key_compare; })
+                return std::same_as<typename R::key_compare, std::less<K>> ||
+                       std::same_as<typename R::key_compare, std::less<>>;
+            else if constexpr (requires { typename R::key_equal; })
+                return std::same_as<typename R::key_equal, std::equal_to<K>> ||
+                       std::same_as<typename R::key_equal, std::equal_to<>>;
+            else
+                return false;
+        }
+
+        // The index of the first member of `r`, which write gives as a JSON object, whose key an earlier member has,
+        // or `no_duplicate`.  A null pointer key equals no key.  Many keys are sorted.
+        template <typename R>
+        CPPYYJSON_NOINLINE std::size_t first_repeated_written_key(const R& r)
+        {
+            using K = std::remove_cvref_t<std::tuple_element_t<0, std::ranges::range_value_t<const R>>>;
+            if (std::ranges::distance(r) > 16)
+            {
+                if constexpr (enum_key<K>)
+                {
+                    auto keys = std::vector<std::string>();
+                    for (const auto& e : r) keys.push_back(written_key_text(std::get<0>(e)));
+                    return first_duplicate(keys);
+                }
+                else if constexpr (std::is_pointer_v<K>)
+                {
+                    auto keys = std::vector<std::pair<std::string_view, std::size_t>>();
+                    auto j = std::size_t{0};
+                    for (const auto& e : r)
+                    {
+                        if (std::get<0>(e) != nullptr) keys.emplace_back(std::get<0>(e), j);
+                        ++j;
+                    }
+                    return first_repeated_key(keys);
+                }
+                else
+                {
+                    auto buf = enum_key_buffer();
+                    auto keys = std::vector<std::string_view>();
+                    for (const auto& e : r) keys.push_back(written_key_view(std::get<0>(e), buf));
+                    return first_duplicate(keys);
+                }
+            }
+            auto a = enum_key_buffer();
+            auto b = enum_key_buffer();
+            auto j = std::size_t{0};
+            for (auto it = std::ranges::begin(r); it != std::ranges::end(r); ++it, ++j)
+            {
+                if constexpr (std::is_pointer_v<K>)
+                    if (std::get<0>(*it) == nullptr) continue;
+                const auto key = written_key_view(std::get<0>(*it), a);
+                for (auto jt = std::ranges::begin(r); jt != it; ++jt)
+                {
+                    if constexpr (std::is_pointer_v<K>)
+                        if (std::get<0>(*jt) == nullptr) continue;
+                    if (written_key_view(std::get<0>(*jt), b) == key) return j;
+                }
+            }
+            return no_duplicate;
+        }
+
+        // The same for a range whose equal keys are next to each other.
+        template <typename R>
+        CPPYYJSON_ALWAYS_INLINE inline std::size_t first_adjacent_written_key(const R& r)
+        {
+            auto j = std::size_t{1};
+            const auto end = std::ranges::end(r);
+            for (auto prev = std::ranges::begin(r), it = prev; prev != end && ++it != end; prev = it, ++j)
+                if (std::get<0>(*it) == std::get<0>(*prev)) return j;
+            return no_duplicate;
+        }
+
+        // Throws as a strict read throws for the object of T that has the key `key` twice, at the second one.
+        template <typename T>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_repeated_written_key(std::string_view key)
+        {
+            try
+            {
+                throw_repeated_key(cast_target{}, key, type_name<T>());
+            }
+            catch (bad_cast& e)
+            {
+                bad_cast_access::prepend_path(e, key);
+                throw;
+            }
+        }
+        // The same for the member at the index `j` of `r`.
+        template <typename T, typename R>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_repeated_member(const R& r, std::size_t j)
+        {
+            auto it = std::ranges::begin(r);
+            std::ranges::advance(it, static_cast<std::ranges::range_difference_t<const R>>(j));
+            throw_repeated_written_key<T>(written_key_text(std::get<0>(*it)));
+        }
+
+        // Throws for the range `r` of the type T, which write gives as a JSON object, if it gives a key twice.
+        template <typename T, typename R>
+        CPPYYJSON_ALWAYS_INLINE inline void validate_written_keys(const R& r)
+        {
+            auto j = no_duplicate;
+            if constexpr (groups_written_keys<
+                              R, std::remove_cvref_t<std::tuple_element_t<0, std::ranges::range_value_t<const R>>>>())
+                j = first_adjacent_written_key(r);
+            else
+                j = first_repeated_written_key(r);
+            if (j != no_duplicate) [[unlikely]]
+                throw_repeated_member<T>(r, j);
+        }
+
+        // The same for the tuple `t` of key-value pairs.  A null pointer key is skipped: write throws for it.
+        template <typename T>
+        void validate_written_tuple_keys(const T& t)
+        {
+            constexpr auto n = std::tuple_size_v<T>;
+            [[maybe_unused]] auto bufs = std::array<enum_key_buffer, n>();
+            const auto keys = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<std::optional<std::string_view>, n>{[&]() -> std::optional<std::string_view> {
+                    const auto& [key, value] = std::get<Is>(t);
+                    if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(key)>>)
+                        if (key == nullptr) return std::nullopt;
+                    return written_key_view(key, bufs[Is]);
+                }()...};
+            }(std::make_index_sequence<n>{});
+            for (std::size_t j = 1; j < n; ++j)
+                for (std::size_t i = 0; i < j; ++i)
+                    if (keys[j].has_value() && keys[i] == keys[j]) [[unlikely]]
+                        throw_repeated_written_key<T>(*keys[j]);
         }
 
         // The JSON text that `write(v, flag)` gives, or none if write throws for it.
@@ -38847,16 +39048,93 @@ namespace yyjson
             }
         }
 
-        // The positions of `s`, a struct annotated with `yyjson::as_array`, up to the first that is left out, and
-        // the elements of `yyjson::extra_items` if none is.
+        // Throws as read throws for `s`, a struct annotated with `yyjson::as_array` whose array has its first `count`
+        // positions, which does not satisfy the keyword `kind` of the whole array.
+        template <typename S>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_validated_array_struct(const S& s, std::size_t count,
+                                                                                         constraint_kind kind)
+        {
+            using schema = array_struct_schema<S>;
+            if constexpr (schema::constraints.template has<unique_items_t>())
+                if (kind == constraint_kind::unique_items)
+                    if (const auto j = array_struct_duplicate(s, count); j != no_duplicate)
+                        validate_at([j] { return std::to_string(j); },
+                                    [] {
+                                        throw_bad_cast_at(cast_target{}, "an element of the value of {} {}",
+                                                          type_name<S>(),
+                                                          constraint_what<schema>(constraint_kind::duplicate_item));
+                                    });
+            throw_bad_cast_at(cast_target{}, "the value of {} {}", type_name<S>(), constraint_what<schema>(kind));
+        }
+
+        // The same with the JSON array of `s`, `json`, or the array that write gives for `s` if `json` is null, for
+        // a `yyjson::contains` that checks the JSON value of an element.
+        template <typename S>
+        CPPYYJSON_NOINLINE void validate_counted_array(const S& s, std::size_t count, std::size_t size, WriteFlag flag,
+                                                       written_json json)
+        {
+            const auto check = [&](const reader::const_value_ref& value) {
+                const auto arr = value.as_array();
+                if (!arr.has_value()) return;
+                if (const auto kind = array_struct_node_violation<array_struct_schema<S>>(s, count, size, &*arr);
+                    kind != constraint_kind::none) [[unlikely]]
+                    throw_validated_array_struct(s, count, kind);
+            };
+            if (json != nullptr)
+            {
+                check(*json);
+                return;
+            }
+            const auto text = validated_text_allowing(s, flag);
+            if (!text.has_value()) return;
+            const auto doc = written_document(*text, flag);
+            check(doc);
+        }
+
+        // Checks the keywords of the whole array of `s`, a struct annotated with `yyjson::as_array`, on the array
+        // that write gives: the first `count` positions, and the elements of `yyjson::extra_items` after all of them.
+        // An infinity or a NaN that write gives as null is read back with `s`.
+        template <bool AsNull, typename S>
+        void validate_written_array(const S& s, std::size_t count, WriteFlag flag, written_json json)
+        {
+            constexpr auto n = array_position_count<S>;
+            if constexpr (AsNull && writes_floating_point<S>)
+            {
+                const auto non_finite = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    const bool positions = ((Ks < count && holds_non_finite(struct_field<Ks>(s))) || ...);
+                    if constexpr (has_extra_items<S>)
+                        return positions || holds_non_finite(struct_field<n>(s));
+                    else
+                        return positions;
+                }(std::make_index_sequence<n>{});
+                if (non_finite) [[unlikely]]
+                {
+                    read_back_root(s, flag);
+                    return;
+                }
+            }
+            auto size = count;
+            if constexpr (has_extra_items<S>)
+                if (count == n) size += static_cast<std::size_t>(std::ranges::distance(struct_field<n>(s)));
+            if constexpr (written_array_counts_input<S>())
+                validate_counted_array(s, count, size, flag, json);
+            else if (const auto kind = array_struct_node_violation<array_struct_schema<S>>(s, count, size);
+                     kind != constraint_kind::none) [[unlikely]]
+                throw_validated_array_struct(s, count, kind);
+        }
+
+        // The positions of `s`, a struct annotated with `yyjson::as_array`, up to the first that is left out, then
+        // the elements of `yyjson::extra_items` and the keywords of the whole array, unless write throws for a
+        // position that it leaves out before one that it writes.
         template <bool AsNull, typename S, typename... Written>
         void validate_array_struct(const S& s, WriteFlag flag, const Written&... written)
         {
             constexpr auto n = array_position_count<S>;
             constexpr auto with_json = sizeof...(Written) != 0;
             [[maybe_unused]] auto elements = written_elements(json_of(written...));
-            const auto complete = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                return ([&] {
+            auto count = std::size_t{0};
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (void)([&] {
                     if (position_omitted<Ks>(s)) return false;
                     using F = struct_field_type<S, Ks>;
                     constexpr auto walks = validation_walks<F, AsNull> || constrained_field<S, Ks>;
@@ -38875,44 +39153,59 @@ namespace yyjson
                     else if constexpr (walks)
                         validate_at([] { return std::to_string(Ks); },
                                     [&] { validate_written_field<AsNull, S, Ks>(struct_field<Ks>(s), flag); });
+                    ++count;
                     return true;
                 }() && ...);
             }(std::make_index_sequence<n>{});
-            if constexpr (has_extra_items<S>)
+            if constexpr (has_extra_items<S> || checks_written_array<S>())
             {
-                if (!complete) return;
-                const auto& extra = struct_field<n>(s);
-                using X = extra_items_type<S>;
-                if constexpr (validation_walks<std::ranges::range_value_t<X>, AsNull>)
+                if (count != n)
                 {
-                    auto i = n;
-                    for (const auto& e : extra)
-                    {
-                        if constexpr (with_json)
-                        {
-                            const auto element = elements.next();
-                            validate_at([i] { return std::to_string(i); },
-                                        [&] { validate_nested<AsNull>(e, flag, nullptr, element); });
-                        }
+                    const auto gap = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        const bool later = ((Ks > count && !position_omitted<Ks>(s)) || ...);
+                        if constexpr (has_extra_items<S>)
+                            return later || !std::ranges::empty(struct_field<n>(s));
                         else
-                            validate_at([i] { return std::to_string(i); }, [&] { validate_nested<AsNull>(e, flag); });
-                        ++i;
-                    }
+                            return later;
+                    }(std::make_index_sequence<n>{});
+                    if (gap) return;
                 }
-                if constexpr (AsNull && writes_floating_point<X>)
-                {
-                    if (holds_non_finite(extra)) [[unlikely]]
-                    {
-                        read_back_extra_items<S, n>(s, flag);
-                        return;
-                    }
-                }
-                if constexpr (constrained_field<S, n>)
-                    if (const auto kind = field_violation<S, n>(extra); kind != constraint_kind::none) [[unlikely]]
-                        throw_validated_extra_items<S, n>(s, kind, flag);
             }
-            else
-                (void)complete;
+            if constexpr (has_extra_items<S>)
+                [&] {
+                    const auto& extra = struct_field<n>(s);
+                    using X = extra_items_type<S>;
+                    if constexpr (validation_walks<std::ranges::range_value_t<X>, AsNull>)
+                    {
+                        auto i = n;
+                        for (const auto& e : extra)
+                        {
+                            if constexpr (with_json)
+                            {
+                                const auto element = elements.next();
+                                validate_at([i] { return std::to_string(i); },
+                                            [&] { validate_nested<AsNull>(e, flag, nullptr, element); });
+                            }
+                            else
+                                validate_at([i] { return std::to_string(i); },
+                                            [&] { validate_nested<AsNull>(e, flag); });
+                            ++i;
+                        }
+                    }
+                    if constexpr (AsNull && writes_floating_point<X>)
+                    {
+                        if (holds_non_finite(extra)) [[unlikely]]
+                        {
+                            read_back_extra_items<S, n>(s, flag);
+                            return;
+                        }
+                    }
+                    if constexpr (constrained_field<S, n>)
+                        if (const auto kind = field_violation<S, n>(extra); kind != constraint_kind::none) [[unlikely]]
+                            throw_validated_extra_items<S, n>(s, kind, flag);
+                }();
+            if constexpr (checks_written_array<S>())
+                validate_written_array<AsNull>(s, count, flag, json_of(written...));
         }
 
         // The fields of `s`, whose members are found in `members`, after the keys that read needs unless
@@ -39272,6 +39565,7 @@ namespace yyjson
                 validate_struct<AsNull>(v, flag, written...);
             else if constexpr (object_written_range<T>)
             {
+                if constexpr (repeats_written_keys<T>()) validate_written_keys<T>(v);
                 if constexpr (needs_written_json<T>)
                     if (json != nullptr) [[unlikely]]
                     {
@@ -39300,6 +39594,7 @@ namespace yyjson
             else if constexpr (tuple_like<T> &&
                                std::same_as<writer::detail::to_json_input_ref<T>, writer::detail::object_ref>)
             {
+                validate_written_tuple_keys(v);
                 auto members = written_members(json);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (

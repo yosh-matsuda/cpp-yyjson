@@ -1275,6 +1275,15 @@ TEST(ReadPolicies, Containers)
                     .ends_with(R"(has the key "a" twice at /a)"));
     // a map takes every key
     EXPECT_EQ(read_with<IntMap>(R"({"a":1})", yyjson::reject_unknown_keys), R"({"a":1})");
+    // a key twice in a tuple of key-value pairs, which takes the members in their order
+    using KeyedTuple = std::tuple<std::pair<std::string, int>, std::pair<std::string, int>>;
+    EXPECT_EQ(read_with<KeyedTuple>(R"({"a":1,"a":2})"), R"({"a":1,"a":2})");
+    EXPECT_EQ(read_with<KeyedTuple>(R"({"a":1,"b":2})", yyjson::strict), R"({"a":1,"b":2})");
+    EXPECT_TRUE(direct_read);
+    const auto tuple_text = read_with<KeyedTuple>(R"({"a":1,"a":2})", yyjson::reject_duplicates);
+    EXPECT_TRUE(tuple_text.starts_with("bad cast: the object read into std::tuple<")) << tuple_text;
+    EXPECT_TRUE(tuple_text.ends_with(R"(has the key "a" twice at /a)")) << tuple_text;
+    EXPECT_EQ(read_with<KeyedTuple>(R"({"a":1,"a":2})", yyjson::strict), tuple_text);
 
     // an element twice in a set, which would drop it
     EXPECT_EQ(read_with<std::set<int>>("[1,2,1]"), "[1,2]");

@@ -366,6 +366,100 @@ TEST(Validate, AsArray)
     expect_invalid(VdRow{1, {1, 6}}, "an element of the value of VdRow is greater than the maximum 5", "/2");
 }
 
+// the keywords of the whole array of `yyjson::as_array`, counted on the array that write gives: the positions up
+// to the first that it leaves out, then the extra items
+struct VdArrayKeys
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
+    std::vector<std::optional<int>> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdArrayKeys> =
+    yyjson::annotate(yyjson::as_array, yyjson::min_items(3), yyjson::max_items(4), yyjson::unique_items,
+                     yyjson::contains(yyjson::const_(7)), yyjson::field("rest", yyjson::extra_items));
+struct VdArrayShort
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdArrayShort> = yyjson::annotate(yyjson::as_array, yyjson::min_items(2));
+struct VdArrayAny
+{
+    int a = 0;
+    std::vector<int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdArrayAny> =
+    yyjson::annotate(yyjson::as_array, yyjson::any_of(yyjson::contains(yyjson::const_(7)), yyjson::min_items(3)),
+                     yyjson::field("rest", yyjson::extra_items));
+struct VdArrayCell
+{
+    int x = 0;
+    std::optional<int> y;
+};
+// `yyjson::max_properties` in `yyjson::contains` counts the members of the JSON object of an element
+struct VdArrayCells
+{
+    VdArrayCell a;
+    VdArrayCell b;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdArrayCells> =
+    yyjson::annotate(yyjson::as_array, yyjson::items(false), yyjson::not_(yyjson::contains(yyjson::max_properties(1))));
+struct VdArrayHolder
+{
+    VdArrayKeys row;
+    VdArrayCells cells;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdArrayHolder> = yyjson::annotate(yyjson::additional_properties(false));
+
+TEST(Validate, AsArrayWholeArray)
+{
+    static_assert(yyjson::detail::needs_validation<VdArrayShort>);
+    const auto keys = VdArrayKeys{7, 2, 3, {}};
+    expect_valid(keys);
+    expect_invalid(VdArrayKeys{7, 2, std::nullopt, {}}, "the value of VdArrayKeys has fewer items than the minimum 3",
+                   "");
+    expect_invalid(VdArrayKeys{1, 1, 7, {}}, "an element of the value of VdArrayKeys is equal to an earlier element",
+                   "/1");
+    expect_invalid(VdArrayKeys{1, 2, 3, {}},
+                   "the value of VdArrayKeys has no item that satisfies the constraints of yyjson::contains", "");
+    expect_invalid(VdArrayKeys{1, 2, 7, {8, 9}}, "the value of VdArrayKeys has more items than the maximum 4", "");
+    expect_valid(VdArrayKeys{1, 2, 3, {7}});
+    expect_invalid(VdArrayKeys{7, 2, 3, {2}}, "an element of the value of VdArrayKeys is equal to an earlier element",
+                   "/3");
+    expect_valid(VdArrayShort{1, 2});
+    expect_invalid(VdArrayShort{1, std::nullopt}, "the value of VdArrayShort has fewer items than the minimum 2", "");
+
+    // write throws for a position that it leaves out before an extra item, and the keywords are not checked
+    const auto gap = VdArrayKeys{7, 2, std::nullopt, {3}};
+    EXPECT_NO_THROW(yyjson::validate(gap));
+    EXPECT_THROW((void)yyjson::write(gap, yyjson::with_validation), yyjson::write_error);
+
+    expect_valid(VdArrayAny{7, {}});
+    expect_valid(VdArrayAny{1, {2, 3}});
+    expect_invalid(VdArrayAny{1, {2}}, "the value of VdArrayAny satisfies none of the subschemas of yyjson::any_of",
+                   "");
+
+    const auto cells = VdArrayCells{{1, 2}, {1, 2}};
+    expect_valid(cells);
+    expect_invalid(VdArrayCells{{1, 2}, {}}, "the value of VdArrayCells satisfies the settings of yyjson::not_", "");
+
+    expect_valid(VdArrayHolder{keys, cells});
+    expect_invalid(VdArrayHolder{{1, 1, 7, {}}, cells},
+                   "an element of the value of VdArrayKeys is equal to an earlier element", "/row/1");
+    expect_invalid(VdArrayHolder{keys, {}}, "the value of VdArrayCells satisfies the settings of yyjson::not_",
+                   "/cells");
+    expect_invalid(std::vector<VdArrayKeys>{keys, {7, 2, std::nullopt, {}}},
+                   "the value of VdArrayKeys has fewer items than the minimum 3", "/1");
+    expect_invalid(std::vector<VdArrayCells>{cells, {}},
+                   "the value of VdArrayCells satisfies the settings of yyjson::not_", "/1");
+}
+
 // a field that write leaves out is not checked, and a field that a read gives another value is a violation
 struct VdWeight
 {
@@ -1301,6 +1395,112 @@ TEST(Validate, MissingKeys)
     EXPECT_EQ(validate_allocations(VdUnknownOnly{1}), 0U);
     EXPECT_EQ(validate_allocations(VdRequiredOnly{1}), 0U);
     EXPECT_EQ(validate_allocations(VdRequiredOmitted{1}), 0U);
+}
+
+// a key that write gives twice in one object, which a strict read rejects and a plain read takes
+namespace
+{
+    // `Object` is the type of the object in `t` that gives `key` twice.
+    template <typename Object = void, typename T>
+    void expect_repeated_key(const T& t, std::string_view key, std::string_view path)
+    {
+        using named = std::conditional_t<std::is_void_v<Object>, T, Object>;
+        const auto message =
+            std::format(R"(the object read into {} has the key "{}" twice)", yyjson::detail::type_name<named>(), key);
+        expect_invalid(t, message, path, read_leg::skipped);
+        if constexpr (yyjson::readable<T>)
+        {
+            const auto json = std::string(yyjson::write(t));
+            EXPECT_NO_THROW((void)yyjson::read<T>(json));
+            const auto r = validation_error([&] { (void)yyjson::read<T>(json, yyjson::strict); });
+            EXPECT_TRUE(std::string_view(r.what()).starts_with(message)) << json << "\n" << r.what();
+            EXPECT_EQ(r.path(), path) << json;
+        }
+    }
+}  // namespace
+
+enum class VdSide
+{
+    left,
+    right
+};
+// a key whose `<=>` compares more than its text
+struct VdTagged
+{
+    std::string s;
+    int n = 0;
+    VdTagged() = default;
+    VdTagged(std::string_view v, int k = 0) : s(v), n(k) {}
+    operator std::string_view() const { return s; }
+    auto operator<=>(const VdTagged&) const = default;
+};
+struct VdMulti
+{
+    std::multimap<std::string, int> m;
+};
+
+TEST(Validate, RepeatedKeys)
+{
+    using pairs = std::vector<std::pair<std::string, int>>;
+    static_assert(yyjson::detail::needs_validation<std::multimap<std::string, int>>);
+    static_assert(yyjson::detail::needs_validation<VdMulti>);
+    expect_valid(std::multimap<std::string, int>{{"a", 1}, {"b", 1}});
+    expect_repeated_key(std::multimap<std::string, int>{{"a", 1}, {"a", 2}}, "a", "/a");
+    expect_repeated_key(std::unordered_multimap<std::string, int>{{"a", 1}, {"a", 2}}, "a", "/a");
+    expect_repeated_key(pairs{{"a", 1}, {"b", 1}, {"a", 2}}, "a", "/a");
+    expect_repeated_key(std::list<std::pair<std::string, int>>{{"a", 1}, {"a", 2}}, "a", "/a");
+    expect_repeated_key(std::deque<std::pair<std::string, int>>{{"a", 1}, {"a", 2}}, "a", "/a");
+    expect_repeated_key(std::vector<std::pair<VdSide, int>>{{VdSide::left, 1}, {VdSide::left, 2}}, "left", "/left");
+    using keyed = std::tuple<std::pair<std::string, int>, std::pair<std::string, int>>;
+    expect_repeated_key(keyed{{"a", 1}, {"a", 2}}, "a", "/a");
+    static_assert(!yyjson::detail::needs_validation<std::tuple<std::pair<std::string, int>>>);
+    const auto first = std::string("k"), second = std::string("k");
+    expect_repeated_key(std::map<const char*, int>{{first.c_str(), 1}, {second.c_str(), 2}}, "k", "/k");
+    // keys that compare apart in C++ but are written as one text
+    expect_repeated_key(std::map<VdTagged, int>{{VdTagged("a", 0), 1}, {VdTagged("a", 1), 2}}, "a", "/a");
+    // a null key has no JSON text, so write throws for it and the check of the keys skips it
+    using c_pairs = std::vector<std::pair<const char*, int>>;
+    EXPECT_NO_THROW(yyjson::validate(c_pairs{{nullptr, 1}, {nullptr, 2}, {"", 3}}));
+    EXPECT_NO_THROW(yyjson::validate(
+        std::tuple<std::pair<const char*, int>, std::pair<const char*, int>>{{nullptr, 1}, {nullptr, 2}}));
+
+    // more keys than the pairwise comparison takes
+    auto many = pairs();
+    for (int i = 0; i < 20; ++i) many.emplace_back(std::to_string(i), i);
+    expect_valid(many);
+    many.emplace_back("7", 0);
+    many.emplace_back("3", 0);
+    expect_repeated_key(many, "7", "/7");
+    auto nulls = c_pairs(20, {nullptr, 0});
+    EXPECT_NO_THROW(yyjson::validate(nulls));
+    nulls.emplace_back("z", 1);
+    nulls.emplace_back("z", 2);
+    EXPECT_EQ(validation_error([&] { yyjson::validate(nulls); }).path(), "/z");
+    auto sides = std::vector<std::pair<VdSide, int>>();
+    for (int i = 0; i < 20; ++i) sides.emplace_back(i % 2 == 0 ? VdSide::right : VdSide::left, i);
+    expect_repeated_key(sides, "right", "/right");
+
+    expect_repeated_key<std::multimap<std::string, int>>(VdMulti{{{"a", 1}, {"a", 2}}}, "a", "/m/a");
+    expect_repeated_key<pairs>(std::vector<pairs>{{{"a", 1}}, {{"a", 1}, {"a", 2}}}, "a", "/1/a");
+    expect_repeated_key<pairs>(std::map<std::string, pairs>{{"k", {{"a", 1}, {"a", 2}}}}, "a", "/k/a");
+
+    // the key is reported before the values, as a strict read does; a plain read reports the value
+    using rows = std::multimap<std::string, VdRow>;
+    const auto twice =
+        std::format(R"(the object read into {} has the key "a" twice)", yyjson::detail::type_name<rows>());
+    const auto bad_rows = rows{{"a", VdRow{-1, {}}}, {"a", VdRow{1, {}}}};
+    expect_invalid(bad_rows, twice, "/a", read_leg::skipped);
+    EXPECT_EQ(validation_error([&] { (void)yyjson::read<rows>(yyjson::write(bad_rows), yyjson::strict); }).path(),
+              "/a");
+
+    static_assert(!yyjson::detail::needs_validation<std::map<std::string, int>>);
+    static_assert(!yyjson::detail::needs_validation<std::unordered_map<std::string, int>>);
+    static_assert(!yyjson::detail::needs_validation<std::multimap<int, int>>);
+    expect_valid(std::multimap<int, int>{{1, 1}, {1, 2}});
+    auto map = std::map<std::string, int>();
+    for (int i = 0; i < 100; ++i) map.emplace(std::to_string(i), i);
+    EXPECT_EQ(validate_allocations(map), 0U);
+    EXPECT_EQ(validate_allocations(std::multimap<std::string, int>{{"a", 1}, {"b", 2}}), 0U);
 }
 
 // a type without keywords is checked by nothing
