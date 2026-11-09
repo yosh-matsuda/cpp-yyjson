@@ -1915,6 +1915,7 @@ They are settings of [`yyjson::field`](#yyjsonfield), and of the subschemas of t
 *   `yyjson::format` checks nothing. `yyjson::format_assertion` checks the [formats](validation.md#formats). `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher-yyjsonformat_checker).
 *   `f` of `yyjson::satisfies<f>` takes the value of the field, and returns `false` to reject it.
 *   On a `yyjson::value` and a `std::variant`, each constraint checks only the values of its JSON kind.
+*   On a field whose type has a user-defined caster, a constraint checks the JSON value that the caster reads. It checks only a value of its JSON kind. See [Values that a caster reads](validation.md#values-that-a-caster-reads).
 *   A read of a value that a constraint rejects throws `yyjson::bad_cast`. `write` does not check them.
 
 A constraint of a JSON kind that the type at its position does not write is a compile error. So are a constraint given twice, except `yyjson::pattern`, and constraints that leave no value to read at a position. A subschema of `yyjson::any_of`, `yyjson::one_of`, `yyjson::not_` and `yyjson::if_then_else` can leave no value to read. See [Constraints](validation.md#constraints).

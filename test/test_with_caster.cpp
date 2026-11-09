@@ -229,6 +229,17 @@ inline constexpr auto yyjson::annotations<WcChecked> =
                      yyjson::field("small", yyjson::satisfies<[](const int& v) { return v < 16; }>),
                      yyjson::field("opt", yyjson::satisfies<[](const int& v) { return v != 1; }>));
 
+// the keywords of a JSON kind check the string that the caster reads
+struct WcKeywords
+{
+    HexInt id;
+    std::optional<HexInt> opt;
+    bool operator==(const WcKeywords&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<WcKeywords> =
+    yyjson::annotate(yyjson::field("id", yyjson::max_length(2)), yyjson::field("opt", yyjson::min_length(2)));
+
 #if FIELD_RFL_ANNOTATIONS
 struct WcAnnotated
 {
@@ -535,6 +546,19 @@ TEST(WithCaster, Satisfies)
         std::string::npos);
     EXPECT_EQ(expect_with_caster<WcChecked>(R"({"even":"a","small":"1","opt":"2"})"),
               R"({"even":"a","small":"1","opt":"2"})");
+}
+
+TEST(WithCaster, Keywords)
+{
+    EXPECT_EQ(expect_with_caster<WcKeywords>(R"({"id":"ff","opt":"1a"})"), R"({"id":"ff","opt":"1a"})");
+    const auto long_id = R"({"id":"0ff"})";
+    EXPECT_EQ(read_or_error([&] { return yyjson::read<WcKeywords>(long_id); }),
+              read_or_error([&] { return yyjson::read(long_id).cast<WcKeywords>(); }));
+    const auto error = read_or_error([&] { return yyjson::read<WcKeywords>(long_id); });
+    EXPECT_NE(error.find("is longer than the maximum length 2"), std::string::npos) << error;
+    EXPECT_NE(error.find("/id"), std::string::npos) << error;
+    EXPECT_NE(read_or_error([] { return yyjson::read<WcKeywords>(R"({"id":"1","opt":"a"})"); }).find("/opt"),
+              std::string::npos);
 }
 
 #if FIELD_RFL_ANNOTATIONS

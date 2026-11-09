@@ -1475,7 +1475,7 @@ The rules:
 *   To make the key optional, put the wrapper inside: `std::optional<yyjson::with_caster<T, X>>`, or `yyjson::nullable<...>` for `null`. In `yyjson::with_caster<std::optional<T>, X>`, `X` converts the whole `std::optional`, and the field has no default: its key is required, as for any other type.
 *   A map whose keys are wrappers is written as an array of `[key, value]` pairs, as maps whose keys have a user-defined caster are.
 *   An exception that `X` throws reaches the caller as it is. A `yyjson::bad_cast` gets the path of the field, such as `/id`, as in any caster.
-*   Of the [constraints](validation.md#constraints), the field takes `yyjson::satisfies<f>`, with a function of the wrapper type or of `T`. A keyword of a JSON kind, such as `yyjson::maximum`, is a compile error, as on any type with a user-defined caster.
+*   The field takes the [constraints](validation.md#constraints). `yyjson::satisfies<f>` takes a function of the wrapper type or of `T`. A keyword of a JSON kind, such as `yyjson::max_length`, checks the JSON value that `X` reads, as in [Values that a caster reads](validation.md#values-that-a-caster-reads).
 
 ## Recursive types
 

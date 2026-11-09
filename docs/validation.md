@@ -154,6 +154,7 @@ yyjson::read<Patch>("{}");
 
 *   The settings are a part of the type, as `yyjson::additional_properties(false)` is. `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>` apply them, with or without the read policies.
 *   They count the members of the JSON object, as the [count keywords](#how-constraints-are-checked) of a map do. An unknown key, the key of a [tag](conversions.md#tagged-variants), a member with `null` and each occurrence of a repeated key are members.
+*   A struct with a [user-defined caster](#values-that-a-caster-reads) also takes the settings. They count the members of the JSON object that the caster reads.
 *   `merge_into` counts the members of the [merged object](#how-constraints-are-checked). Thus it counts the fields that the patch does not name and that the struct writes, and it does not count a member with `null`.
 *   The error has the path of the object. When the struct also rejects a key, because it is closed or because of a read policy, the error of the key comes first.
 *   A minimum greater than the maximum is a compile error. A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes neither setting.
@@ -490,6 +491,53 @@ yyjson::read<Sized>(R"({"tag":[]})");
 *   A number that a document keeps as text, with `ReadFlag::NumberAsRaw` or `ReadFlag::BignumAsRaw`, is a number for the keywords. The bounds, `yyjson::multiple_of`, `yyjson::const_`, `yyjson::enum_` and `yyjson::unique_items` read the text as the read reads a number without the flag. An integer that fits in 64 bits compares exactly. Another number compares as a `double`, and a number that is too large for a `double` is an infinity. Thus `yyjson::const_(1)` accepts a raw `1` and a raw `1.0`, also in an object or an array of a JSON text, and `yyjson::unique_items` rejects a raw `[1,1.0]`. The `operator==` of the DOM compares a raw number by its text. Thus the keywords and `operator==` can give different results for a raw number.
 *   A constraint that no alternative of a variant takes, such as `yyjson::minimum` on a `std::variant<bool, std::string>`, is a compile error.
 
+### Values that a caster reads
+
+A field whose type has a [user-defined caster](conversions.md#user-defined-casters) with `from_json` takes the constraints of every JSON kind, as a `yyjson::value` does. They check the JSON value that the caster reads. Each one checks only a value of its kind:
+
+```cpp
+struct Tags
+{
+    std::vector<std::string> names;
+};
+template <>
+struct yyjson::caster<Tags>
+{
+    // a string is one tag
+    static Tags from_json(yyjson::json_view json)
+    {
+        auto tags = Tags();
+        if (const auto s = json.as_string()) tags.names.emplace_back(*s);
+        else if (const auto a = json.as_array())
+            for (const auto e : *a) tags.names.emplace_back(*e.as_string());
+        return tags;
+    }
+    static std::vector<std::string> to_json(const Tags& t) { return t.names; }
+};
+
+struct Post
+{
+    Tags tags;
+};
+template <>
+inline constexpr auto yyjson::annotations<Post> =
+    yyjson::annotate(yyjson::field("tags", yyjson::max_items(2), yyjson::max_length(4)));
+
+yyjson::read<Post>(R"({"tags":["a","b","c"]})");
+// throws: the value of the key "tags" of Post has more items than the maximum 2 at /tags (line 1, column 9, pos 8)
+yyjson::read<Post>(R"({"tags":"cpp20"})");
+// throws: the value of the key "tags" of Post is longer than the maximum length 4 at /tags (line 1, column 9, pos 8)
+yyjson::read<Post>(R"({"tags":["cpp20"]})");  // -> accepted: the value is an array
+```
+
+*   The constraints check the JSON value, and not the value that the caster returns. This is also true for a constraint of the kind that the type writes. They check all of the JSON value, also a part that the caster does not read.
+*   `yyjson::unique_items`, `yyjson::const_` and `yyjson::enum_` compare JSON values, as on a `yyjson::value`. Give an object or an array to `yyjson::const_` and `yyjson::enum_` as a `yyjson::json_text`.
+*   Use `yyjson::satisfies<f>` to check the value that the caster returns. It checks that value as on any other field.
+*   A `std::optional` or a `yyjson::nullable` of such a type applies the constraints to the value that it holds. A `null` that the field reads as a missing key is not checked. A caster that reads `null` gets a `null` that the constraints check, as in [`null` in a `std::optional`](#null-in-a-stdoptional). Then `yyjson::const_` and `yyjson::enum_` take `null` as `nullptr` or as `yyjson::json_text("null")`.
+*   `yyjson::min_properties` and `yyjson::max_properties` of a [struct](#the-number-of-members-of-a-struct) that a caster reads count the members of the JSON object.
+*   The type takes no constraints of the elements and the members, such as `yyjson::items`, `yyjson::property` and `yyjson::required("key", ...)`, because the caster reads them. In a subschema of a combinator or of the elements, the type takes no constraint of a JSON kind. These are [compile errors](#how-constraints-are-checked). `yyjson::additional_properties(false)` and `yyjson::property_names` check the keys of the JSON object. The type names no key, so `yyjson::additional_properties(false)` accepts only an empty object.
+*   `merge_into` replaces the value of such a field, and the constraints check the member of the patch. See [How constraints are checked](#how-constraints-are-checked).
+
 ### Combining constraints
 
 Five settings combine constraints, as the keywords `not`, `if`, `then`, `else`, `allOf`, `anyOf` and `oneOf` of JSON Schema do. Each operand is a subschema: a braced list of settings, or one setting without braces. A subschema takes the constraints of a value, the constraints of elements and the combinators again.
@@ -723,7 +771,7 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
 *   The object has a key as in the [conditions between fields](#conditions-between-fields). `read_into` checks the keys that it reads. `merge_into` checks the [merged object](#how-constraints-are-checked) of the struct, with the values after the merge.
 *   The error has the path of the struct. The message gives the keyword that fails, and not the key.
 *   A struct without such settings at its position is read as before. With them, a read keeps the JSON object of the struct until it checks the settings.
-*   `yyjson::additional_properties(false)` on a field that holds no struct is a compile error. A map takes `yyjson::additional_properties(s...)` with the settings of its values.
+*   `yyjson::additional_properties(false)` on a field that holds no struct is a compile error. A type that a [caster reads](#values-that-a-caster-reads) is an exception. A map takes `yyjson::additional_properties(s...)` with the settings of its values.
 
 ### How constraints are checked
 
@@ -739,6 +787,7 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
     *   A field that `yyjson::write` leaves out, such as a field with `yyjson::default_` that has its default value.
 *   The merged object of an absent value is the object of the patch, from which `merge_into` removes each member whose value is `null`. It does so in each object in it too. A `null` in an array stays. `merge_into` reads that object as `read<T>` reads it, with all its checks. Thus `yyjson::required` and `yyjson::min_properties` count only the members of the patch.
 *   A switch of the alternative of a [tagged variant](conversions.md#tagged-variants) replaces the value. `merge_into` reads the new alternative from the patch, as it reads an absent value. The members of the old alternative do not carry over, also when the new alternative has a member of the same name. This is an exception to the merged object.
+*   `merge_into` replaces the value of a field whose type has a [user-defined caster](#values-that-a-caster-reads). The constraints of the field check the member of the patch that the caster reads. A caster that reads into the field in place, such as `from_json(T&, yyjson::json_view)`, gets the field with its value in `T()`. Thus the constraints of a JSON object count only the members of the patch. This is a second exception to the merged object.
 *   A constraint of a `std::optional`, a smart pointer or a `std::variant` of `std::monostate` and one type applies to the value that it holds. An empty value satisfies it, except `yyjson::const_` and `yyjson::enum_` without `nullptr`.
 *   The count keywords count the JSON value that the read reads. `yyjson::min_items`, `yyjson::max_items`, `yyjson::min_contains` and `yyjson::max_contains` count the elements of the JSON array. `yyjson::min_properties` and `yyjson::max_properties` count the members of the JSON object, on a map and on a [struct](#the-number-of-members-of-a-struct). In `merge_into`, they count the members of the map after the merge. A keyword on the values of that map counts the JSON value of a member of the patch. For a member that the map keeps, it counts the value in the map. On a struct in the map, they count the members of its merged object. On a struct, they count the members of the merged object. Thus a `std::set<int>` reads `[1,1]` as one element, but `yyjson::min_items(2)` accepts the array. An object with a repeated key has a member for each occurrence of the key.
 *   The other constraints check the value after the conversion to the type of the field. `yyjson::contains` checks each element of the JSON array as a value of the type of the element. `yyjson::unique_items`, `yyjson::const_` and `yyjson::enum_` compare the converted values.
@@ -752,8 +801,8 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
 *   An untagged `std::variant` tries its alternatives in turn. A later alternative can read a value that an earlier one rejects by a constraint. Without `yyjson::reject_missing_keys`, a struct that ignores unknown keys accepts almost any object. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names.
 *   These are compile errors, most of them with a `static_assert` that tells the reason:
     *   A constraint that the type of a field cannot take for another reason than its JSON kind, such as `yyjson::unique_items` on a set or `yyjson::min_length` on an enumeration written by name.
-    *   A keyword of a JSON kind that the type at its position does not write. The bounds and `yyjson::multiple_of` constrain a number. The lengths and `yyjson::pattern` constrain a string. `yyjson::min_items` and the other keywords of an array constrain an array, and the keywords of an object an object. A struct writes an object. An [`as_array`](conversions.md#a-struct-as-a-json-array) struct, a range and a tuple write an array. A `std::variant` writes the kinds of its alternatives, and a `yyjson::value` writes every kind. The rule applies at every position. A position is the type, a field, or a subschema of a combinator, of `yyjson::items` or of the other keywords of the elements. Thus `yyjson::min_items` on a `std::variant<int, std::string>` is an error, and on a `std::variant<int, std::vector<int>>` it is not.
-    *   `nullptr` in `yyjson::const_` or `yyjson::enum_` on a field that cannot be `null`, such as a `std::optional<int>`. Only `yyjson::nullable`, an owning pointer and a value of the DOM take it.
+    *   A keyword of a JSON kind that the type at its position does not write. The bounds and `yyjson::multiple_of` constrain a number. The lengths and `yyjson::pattern` constrain a string. `yyjson::min_items` and the other keywords of an array constrain an array, and the keywords of an object an object. A struct writes an object. An [`as_array`](conversions.md#a-struct-as-a-json-array) struct, a range and a tuple write an array. A `std::variant` writes the kinds of its alternatives, and a `yyjson::value` writes every kind. A type with a user-defined caster takes every kind at a field, if the caster has `from_json`. At another position, or without `from_json`, it takes only the [number of members](#the-number-of-members-of-a-struct) of a struct. See [Values that a caster reads](#values-that-a-caster-reads). The rule applies at every position. A position is the type, a field, or a subschema of a combinator, of `yyjson::items` or of the other keywords of the elements. Thus `yyjson::min_items` on a `std::variant<int, std::string>` is an error, and on a `std::variant<int, std::vector<int>>` it is not.
+    *   `nullptr` in `yyjson::const_` or `yyjson::enum_` on a field that cannot be `null`, such as a `std::optional<int>`. Only `yyjson::nullable`, an owning pointer, a value of the DOM and a type whose user-defined caster reads `null` take it. A caster that takes a `yyjson::json_view` reads `null`.
     *   A constraint on a [skipped field](conversions.md#skipped-fields), or on a field that [`yyjson::adjacent_tag`](conversions.md#tagged-variants) tags. A struct that is not an [`as_array`](conversions.md#a-struct-as-a-json-array) struct takes the [keywords of an object](#keywords-of-an-object-at-a-field) and the combinators of them only.
     *   A constraint other than `yyjson::pattern` and the combinators, given twice in one subschema.
     *   `yyjson::multiple_of` of 0 or less.
@@ -785,6 +834,7 @@ A field without constraints reads as it does without this feature. A constraint 
 
 *   `yyjson::unique_items` compares each pair of elements, so its time grows with the square of the number of elements. A range of more than 16 numbers, enumerations or strings, or pairs of them, is sorted first. When other ranges come from JSON that you do not trust, bound their size with `yyjson::max_items`.
 *   `yyjson::matches<T>` of a type other than a kind of JSON value reads the value into a `T`.
+*   A constraint on a field whose type has a [user-defined caster](#values-that-a-caster-reads) checks the JSON value after the caster reads it. The lengths and `yyjson::pattern` can read the string again. `yyjson::unique_items` compares the elements as JSON values. In `yyjson::read<T>`, `yyjson::min_items` and `yyjson::max_items` walk an array that the caster did not walk. A check in the caster itself does not have this cost.
 *   When a read with `yyjson::read<T>` fails, it reads the text again to find the path of the error.
 
 ### Pattern matcher

@@ -1,5 +1,10 @@
+#include <algorithm>
+#include <condition_variable>
+#include <functional>
 #include <memory_resource>
+#include <mutex>
 #include <regex>
+#include <thread>
 #include <version>
 #ifdef __cpp_lib_flat_map
 #include <flat_map>
@@ -1315,6 +1320,514 @@ namespace constraint_tree_rules
     static_assert(yyjson::detail::constrained_field<Bounded, 0> && !yyjson::detail::constrained_field<Described, 0>);
 }  // namespace constraint_tree_rules
 
+// Casters of the user whose JSON value the keywords of a field check: translators of a scalar, a range and a
+// struct, a caster that takes a value of the DOM, and casters that take a `json_view`.  A class with private
+// members is not reflected, so that the keywords of an object check its JSON value too.
+class CasterName
+{
+    std::string s_;
+
+public:
+    CasterName() = default;
+    explicit CasterName(std::string s) : s_(std::move(s)) {}
+    const std::string& str() const { return s_; }
+    bool operator==(const CasterName&) const = default;
+};
+template <>
+struct yyjson::caster<CasterName>
+{
+    static CasterName from_json(std::string s) { return CasterName(std::move(s)); }
+    static std::string to_json(const CasterName& n) { return n.str(); }
+};
+// the in-place form of a translator
+class CasterLabel
+{
+    std::string s_;
+
+public:
+    const std::string& str() const { return s_; }
+    void set(std::string s) { s_ = std::move(s); }
+    bool operator==(const CasterLabel&) const = default;
+};
+template <>
+struct yyjson::caster<CasterLabel>
+{
+    static void from_json(CasterLabel& l, std::string s) { l.set(std::move(s)); }
+    static std::string to_json(const CasterLabel& l) { return l.str(); }
+};
+template <typename T>
+class CasterScalar
+{
+    T v_{};
+
+public:
+    CasterScalar() = default;
+    explicit CasterScalar(T v) : v_(v) {}
+    T get() const { return v_; }
+    bool operator==(const CasterScalar& o) const { return !(v_ < o.v_) && !(o.v_ < v_); }
+};
+template <typename T>
+struct yyjson::caster<CasterScalar<T>>
+{
+    static CasterScalar<T> from_json(T v) { return CasterScalar<T>(v); }
+    static T to_json(const CasterScalar<T>& s) { return s.get(); }
+};
+class CasterList
+{
+    std::vector<int> v_;
+
+public:
+    CasterList() = default;
+    explicit CasterList(std::vector<int> v) : v_(std::move(v)) {}
+    const std::vector<int>& get() const { return v_; }
+    bool operator==(const CasterList&) const = default;
+};
+template <>
+struct yyjson::caster<CasterList>
+{
+    static CasterList from_json(std::vector<int> v) { return CasterList(std::move(v)); }
+    static std::vector<int> to_json(const CasterList& l) { return l.get(); }
+};
+struct CasterPoint
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const CasterPoint&) const = default;
+};
+class CasterPos
+{
+    CasterPoint p_;
+
+public:
+    CasterPos() = default;
+    explicit CasterPos(CasterPoint p) : p_(p) {}
+    CasterPoint get() const { return p_; }
+    bool operator==(const CasterPos&) const = default;
+};
+template <>
+struct yyjson::caster<CasterPos>
+{
+    static CasterPos from_json(CasterPoint p) { return CasterPos(p); }
+    static CasterPoint to_json(const CasterPos& p) { return p.get(); }
+};
+// a caster that takes a value of either DOM API
+class CasterDom
+{
+    std::vector<int> v_;
+
+public:
+    CasterDom() = default;
+    explicit CasterDom(std::vector<int> v) : v_(std::move(v)) {}
+    const std::vector<int>& get() const { return v_; }
+    bool operator==(const CasterDom&) const = default;
+};
+template <>
+struct yyjson::caster<CasterDom>
+{
+    template <typename Json>
+    static CasterDom from_json(const Json& json)
+    {
+        return CasterDom(json.template cast<std::vector<int>>());
+    }
+    static std::vector<int> to_json(const CasterDom& d) { return d.get(); }
+};
+// type-level counts of a struct that a translator from a map reads
+struct CasterPair
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const CasterPair&) const = default;
+};
+template <>
+struct yyjson::caster<CasterPair>
+{
+    static CasterPair from_json(const std::map<std::string, int>& m) { return {m.at("x"), m.at("y")}; }
+    static std::map<std::string, int> to_json(const CasterPair& p) { return {{"x", p.x}, {"y", p.y}}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterPair> =
+    yyjson::annotate(yyjson::min_properties(2), yyjson::max_properties(2));
+
+struct CasterFields
+{
+    CasterName color;
+    CasterName name;
+    CasterLabel label;
+    CasterScalar<double> real;
+    CasterScalar<int> small;
+    CasterScalar<bool> flag;
+    CasterList list;
+    CasterPos pos;
+    CasterDom dom;
+    std::optional<CasterName> opt;
+    yyjson::nullable<CasterName> nul;
+    bool operator==(const CasterFields&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterFields> =
+    yyjson::annotate(yyjson::field("color", yyjson::enum_("red", "blue")),
+                     yyjson::field("name", yyjson::max_length(3), yyjson::pattern("^[a-z]")),
+                     yyjson::field("label", yyjson::min_length(2)),
+                     yyjson::field("real", yyjson::minimum(0), yyjson::exclusive_maximum(1.5)),
+                     yyjson::field("small", yyjson::maximum(10)), yyjson::field("flag", yyjson::const_(true)),
+                     yyjson::field("list", yyjson::max_items(2), yyjson::unique_items),
+                     yyjson::field("pos", yyjson::const_(yyjson::json_text(R"({"x":1,"y":2})"))),
+                     yyjson::field("dom", yyjson::min_items(1)), yyjson::field("opt", yyjson::max_length(2)),
+                     yyjson::property("nul", yyjson::max_length(2)));
+
+struct CasterPairs
+{
+    CasterPair pair;
+    std::vector<CasterPair> pairs;
+    bool operator==(const CasterPairs&) const = default;
+};
+
+// a caster that sorts the strings that it reads, so that the value that it returns differs from the JSON value
+class CasterSorted
+{
+    std::vector<std::string> v_;
+
+public:
+    CasterSorted() = default;
+    explicit CasterSorted(std::vector<std::string> v) : v_(std::move(v)) {}
+    const std::vector<std::string>& get() const { return v_; }
+    bool operator==(const CasterSorted&) const = default;
+};
+template <>
+struct yyjson::caster<CasterSorted>
+{
+    static CasterSorted from_json(std::vector<std::string> v)
+    {
+        std::ranges::sort(v);
+        return CasterSorted(std::move(v));
+    }
+    static std::vector<std::string> to_json(const CasterSorted& s) { return s.get(); }
+};
+struct CasterSortedField
+{
+    CasterSorted h;
+    bool operator==(const CasterSortedField&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterSortedField> =
+    yyjson::annotate(yyjson::field("h", yyjson::enum_(yyjson::json_text(R"(["a","b"])"))));
+struct CasterSortedProperty
+{
+    CasterSorted h;
+    bool operator==(const CasterSortedProperty&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterSortedProperty> =
+    yyjson::annotate(yyjson::property("h", yyjson::enum_(yyjson::json_text(R"(["a","b"])"))));
+struct CasterSortedText
+{
+    CasterSorted plain;
+    CasterSorted quoted;
+    bool operator==(const CasterSortedText&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterSortedText> =
+    yyjson::annotate(yyjson::field("plain", yyjson::enum_(yyjson::json_text(R"(["a","bc"])"))),
+                     yyjson::field("quoted", yyjson::const_(yyjson::json_text(R"(["a\"b","\u00e9\n"])"))));
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+// strings read through a view, from an array of strings or from one string
+class CasterTags
+{
+    std::vector<std::string> v_;
+
+public:
+    CasterTags() = default;
+    explicit CasterTags(std::vector<std::string> v) : v_(std::move(v)) {}
+    const std::vector<std::string>& get() const { return v_; }
+    bool operator==(const CasterTags&) const = default;
+};
+template <>
+struct yyjson::caster<CasterTags>
+{
+    static CasterTags from_json(yyjson::json_view json)
+    {
+        auto v = std::vector<std::string>();
+        if (const auto s = json.as_string())
+            v.emplace_back(*s);
+        else if (!json.is_null())
+        {
+            const auto a = *json.as_array();
+            for (const auto e : a) v.emplace_back(*e.as_string());
+        }
+        return CasterTags(std::move(v));
+    }
+    static std::vector<std::string> to_json(const CasterTags& t) { return t.get(); }
+};
+// reads the first element of an array only
+class CasterFirst
+{
+    int v_ = 0;
+
+public:
+    CasterFirst() = default;
+    explicit CasterFirst(int v) : v_(v) {}
+    int get() const { return v_; }
+    bool operator==(const CasterFirst&) const = default;
+};
+template <>
+struct yyjson::caster<CasterFirst>
+{
+    static CasterFirst from_json(yyjson::json_view json)
+    {
+        const auto a = *json.as_array();
+        return CasterFirst(a[0].cast<int>());
+    }
+    static std::vector<int> to_json(const CasterFirst& f) { return {f.get()}; }
+};
+// an object, which the in-place form merges into the members that the field holds
+class CasterBag
+{
+    std::map<std::string, int> m_;
+
+public:
+    const std::map<std::string, int>& get() const { return m_; }
+    void set(std::string_view k, int v) { m_[std::string(k)] = v; }
+    bool operator==(const CasterBag&) const = default;
+};
+template <>
+struct yyjson::caster<CasterBag>
+{
+    static void from_json(CasterBag& b, yyjson::json_view json)
+    {
+        const auto o = *json.as_object();
+        for (const auto& [k, v] : o) b.set(k, v.cast<int>());
+    }
+    static std::map<std::string, int> to_json(const CasterBag& b) { return b.get(); }
+};
+// a caster that reads the keys of an object from its members, and not through a view
+class CasterKeySet
+{
+    std::map<std::string, int> m_;
+
+public:
+    CasterKeySet() = default;
+    explicit CasterKeySet(std::map<std::string, int> m) : m_(std::move(m)) {}
+    const std::map<std::string, int>& get() const { return m_; }
+    bool operator==(const CasterKeySet&) const = default;
+};
+template <>
+struct yyjson::caster<CasterKeySet>
+{
+    static CasterKeySet from_json(std::map<std::string, int> m) { return CasterKeySet(std::move(m)); }
+    static std::map<std::string, int> to_json(const CasterKeySet& s) { return s.get(); }
+};
+// the keywords of the keys check the object that the caster reads
+struct CasterKeysField
+{
+    CasterBag bag;
+    CasterKeySet set;
+    bool operator==(const CasterKeysField&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterKeysField> =
+    yyjson::annotate(yyjson::field("bag", yyjson::additional_properties(false)),
+                     yyjson::field("set", yyjson::property_names(yyjson::max_length(1))));
+struct CasterKeysProperty
+{
+    CasterBag bag;
+    CasterKeySet set;
+    bool operator==(const CasterKeysProperty&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterKeysProperty> =
+    yyjson::annotate(yyjson::property("bag", yyjson::property_names(yyjson::max_length(1))),
+                     yyjson::property("set", yyjson::additional_properties(false)));
+// a caster that reads the JSON value of any kind, whose keywords report as on a value of the DOM
+class CasterAnyJson
+{
+};
+template <>
+struct yyjson::caster<CasterAnyJson>
+{
+    static CasterAnyJson from_json(yyjson::json_view) { return {}; }
+    static int to_json(const CasterAnyJson&) { return 0; }
+};
+inline constexpr auto caster_message_keywords = yyjson::annotate(
+    yyjson::field("a", yyjson::property_names(yyjson::max_length(1)), yyjson::min_properties(1),
+                  yyjson::max_properties(2)),
+    yyjson::field("u", yyjson::unique_items, yyjson::min_items(1), yyjson::max_items(3)),
+    yyjson::field("c", yyjson::enum_(yyjson::json_text("[1]"), yyjson::json_text("{}"))),
+    yyjson::field("k", yyjson::const_(yyjson::json_text(R"({"x":1})"))),
+    yyjson::field("s", yyjson::max_length(2), yyjson::minimum(1)), yyjson::field("o", yyjson::unique_items));
+struct CasterMessagesOfCaster
+{
+    CasterAnyJson a, u, c, k, s;
+    std::optional<CasterAnyJson> o;
+};
+struct CasterMessagesOfValue
+{
+    yyjson::value a, u, c, k, s;
+    std::optional<yyjson::value> o;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterMessagesOfCaster> = caster_message_keywords;
+template <>
+inline constexpr auto yyjson::annotations<CasterMessagesOfValue> = caster_message_keywords;
+// type-level counts of a reflectable struct that a caster reads through a view
+struct CasterXY
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const CasterXY&) const = default;
+};
+template <>
+struct yyjson::caster<CasterXY>
+{
+    static CasterXY from_json(yyjson::json_view json)
+    {
+        const auto o = *json.as_object();
+        return {o["x"].cast<int>(), o["y"].cast<int>()};
+    }
+    static std::map<std::string, int> to_json(const CasterXY& p) { return {{"x", p.x}, {"y", p.y}}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterXY> = yyjson::annotate(yyjson::max_properties(2));
+
+struct CasterViews
+{
+    CasterTags tags;
+    CasterTags mixed;
+    CasterFirst first;
+    CasterBag bag;
+    std::optional<CasterTags> opt;
+    CasterXY xy;
+    std::vector<CasterXY> xys;
+    bool operator==(const CasterViews&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterViews> = yyjson::annotate(
+    yyjson::field("tags", yyjson::min_items(1), yyjson::max_items(3), yyjson::unique_items),
+    yyjson::field("mixed", yyjson::max_items(1), yyjson::max_length(2)), yyjson::field("first", yyjson::max_items(2)),
+    yyjson::field("bag", yyjson::max_properties(1)),
+    yyjson::field("opt", yyjson::max_items(2),
+                  yyjson::enum_(yyjson::json_text(R"(["a"])"), yyjson::json_text(R"(["a","b","c"])"))));
+
+// a null that the caster reads, in yyjson::const_ and yyjson::enum_
+struct CasterNulls
+{
+    std::optional<CasterTags> opt;
+    std::optional<CasterTags> text;
+    CasterTags one;
+    bool operator==(const CasterNulls&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterNulls> = yyjson::annotate(
+    yyjson::field("opt", yyjson::enum_(yyjson::json_text(R"(["a"])"), yyjson::json_text("null"))),
+    yyjson::field("text", yyjson::const_(yyjson::json_text("null"))), yyjson::field("one", yyjson::const_(nullptr)));
+
+// one thread that runs each task, as a thread pool does
+class CasterWorker
+{
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::function<void()> job_;
+    bool quit_ = false;
+    std::thread t_;
+
+public:
+    CasterWorker()
+        : t_([this] {
+              auto lock = std::unique_lock(m_);
+              while (true)
+              {
+                  cv_.wait(lock, [&] { return job_ || quit_; });
+                  if (quit_) return;
+                  job_();
+                  job_ = nullptr;
+                  cv_.notify_all();
+              }
+          })
+    {
+    }
+    CasterWorker(const CasterWorker&) = delete;
+    CasterWorker& operator=(const CasterWorker&) = delete;
+    void run(std::function<void()> f)
+    {
+        auto lock = std::unique_lock(m_);
+        job_ = std::move(f);
+        cv_.notify_all();
+        cv_.wait(lock, [&] { return !job_; });
+    }
+    ~CasterWorker()
+    {
+        {
+            const auto lock = std::lock_guard(m_);
+            quit_ = true;
+        }
+        cv_.notify_all();
+        t_.join();
+    }
+};
+// counts the elements of an array on the worker, if there is one
+class CasterRemote
+{
+public:
+    static inline CasterWorker* worker = nullptr;
+    std::size_t n = 0;
+    bool operator==(const CasterRemote&) const = default;
+};
+template <>
+struct yyjson::caster<CasterRemote>
+{
+    static CasterRemote from_json(yyjson::json_view json)
+    {
+        auto r = CasterRemote();
+        if (CasterRemote::worker != nullptr)
+            CasterRemote::worker->run([&] {
+                const auto a = *json.as_array();
+                for (const auto e : a) static_cast<void>(e), ++r.n;
+            });
+        return r;
+    }
+    static std::size_t to_json(const CasterRemote& r) { return r.n; }
+};
+struct CasterRemoteItems
+{
+    CasterRemote items;
+    bool operator==(const CasterRemoteItems&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterRemoteItems> =
+    yyjson::annotate(yyjson::field("items", yyjson::max_items(3)));
+
+// a struct with yyjson::transparent reads the JSON value of its field
+struct CasterWrapped
+{
+    CasterTags tags;
+    bool operator==(const CasterWrapped&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterWrapped> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("tags", yyjson::max_items(1)));
+#endif
+
+// the keywords of a field check the JSON value that a caster reads, but not its elements and members, and a
+// subschema of a combinator is a position of the type
+struct CasterItems
+{
+    CasterList v;
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterItems> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::maximum(1))));
+namespace caster_json_rules
+{
+    using yyjson::detail::caster_json_keywords_fit, yyjson::detail::checks_caster_json, yyjson::detail::field_schema;
+    static_assert(checks_caster_json<field_schema<CasterFields, 0>, CasterName>() &&
+                  checks_caster_json<field_schema<CasterFields, 6>, CasterList>() &&
+                  checks_caster_json<field_schema<CasterFields, 9>, std::optional<CasterName>>());
+    static_assert(caster_json_keywords_fit<field_schema<CasterFields, 6>>() &&
+                  !caster_json_keywords_fit<field_schema<CasterItems, 0>>());
+    static_assert(yyjson::detail::misplaced_keywords(yyjson::detail::constraint_bit<yyjson::min_items>,
+                                                     yyjson::detail::json_kinds_of<CasterList>()) != 0);
+}  // namespace caster_json_rules
+
 // a bound is compared as a double, so a long double that it would round does not compile; Clang 17 and older
 // take no floating-point template argument
 #if !defined(__clang__) || __clang_major__ >= 18
@@ -2379,6 +2892,14 @@ struct KeywordsAnnotated
     [[ = yyjson::multiple_of(0.5), = yyjson::exclusive_maximum(2) ]] std::optional<double> step{};
     [[= yyjson::enum_(yyjson::json_text("[1,2]"), yyjson::json_text("[]"))]] std::vector<int> list{};
     bool operator==(const KeywordsAnnotated&) const = default;
+};
+
+// the keywords of a field that a caster reads check the JSON value
+struct CasterAnnotated
+{
+    [[ = yyjson::max_items(2), = yyjson::unique_items ]] CasterList list{};
+    [[= yyjson::max_length(3)]] CasterName name{};
+    bool operator==(const CasterAnnotated&) const = default;
 };
 
 struct ElementsAnnotated
@@ -6037,6 +6558,285 @@ TEST(Constraints, UnionStringViewSettings)
 }
 #endif
 
+TEST(Constraints, CasterJson)
+{
+    using P = CasterPoint;
+    auto label = CasterLabel();
+    label.set("xy");
+    expect_accepted<CasterFields>(
+        R"({"color":"red","name":"ab","label":"xy","real":1.25,"small":10,"flag":true,"list":[1,2],"pos":{"y":2,"x":1},"dom":[3],"opt":"o","nul":null})",
+        {CasterName("red"),
+         CasterName("ab"),
+         label,
+         CasterScalar(1.25),
+         CasterScalar(10),
+         CasterScalar(true),
+         CasterList({1, 2}),
+         CasterPos(P{1, 2}),
+         CasterDom({3}),
+         CasterName("o"),
+         {}},
+        true);
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of CasterFields )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of CasterFields )", key);
+    };
+    expect_rejected<CasterFields>(R"({"color":"green"})", value("color") + R"(is not one of "red", "blue")", "/color");
+    expect_rejected<CasterFields>(R"({"name":"abcd"})", value("name") + "is longer than the maximum length 3", "/name");
+    expect_rejected<CasterFields>(R"({"name":"Ab"})", value("name") + R"(does not match the pattern "^[a-z]")",
+                                  "/name");
+    expect_rejected<CasterFields>(R"({"label":"x"})", value("label") + "is shorter than the minimum length 2",
+                                  "/label");
+    expect_rejected<CasterFields>(R"({"real":-1})", value("real") + "is less than the minimum 0", "/real");
+    expect_rejected<CasterFields>(R"({"real":1.5})", value("real") + "is not less than the exclusive maximum 1.5",
+                                  "/real");
+    expect_rejected<CasterFields>(R"({"small":11})", value("small") + "is greater than the maximum 10", "/small");
+    expect_rejected<CasterFields>(R"({"flag":false})", value("flag") + "is not equal to the constant true", "/flag");
+    expect_rejected<CasterFields>(R"({"list":[1,2,3]})", value("list") + "has more items than the maximum 2", "/list");
+    expect_rejected<CasterFields>(R"({"list":[1,1]})", element("list") + "is equal to an earlier element", "/list/1");
+    expect_rejected<CasterFields>(R"({"pos":{"x":2,"y":2}})",
+                                  value("pos") + R"(is not equal to the constant {"x":1,"y":2})", "/pos");
+    expect_rejected<CasterFields>(R"({"dom":[]})", value("dom") + "has fewer items than the minimum 1", "/dom");
+    expect_rejected<CasterFields>(R"({"opt":"abc"})", value("opt") + "is longer than the maximum length 2", "/opt");
+    expect_rejected<CasterFields>(R"({"nul":"abc"})", value("nul") + "is longer than the maximum length 2", "/nul");
+    // a value that the keywords accept can still fail to convert
+    EXPECT_THROW((void)yyjson::read<CasterFields>(R"({"small":1.5})"), yyjson::bad_cast);
+
+    expect_accepted<CasterPairs>(R"({"pair":{"x":1,"y":2},"pairs":[{"y":3,"x":4}]})", {{1, 2}, {{4, 3}}});
+    expect_rejected<CasterPairs>(R"({"pair":{"x":1,"y":2,"z":3}})", "CasterPair has more properties than the maximum 2",
+                                 "/pair");
+    expect_rejected<CasterPairs>(R"({"pairs":[{"x":1}]})", "CasterPair has fewer properties than the minimum 2",
+                                 "/pairs/0");
+}
+
+TEST(Constraints, CasterJsonSameKind)
+{
+    // a keyword of the kind that the type writes checks the JSON value too, and not the sorted value
+    const auto check = []<typename T>(std::type_identity<T>) {
+        const auto value = std::format(R"(the value of the key "h" of {} )", yyjson::detail::type_name<T>());
+        expect_accepted<T>(R"({"h":["a","b"]})", {CasterSorted({"a", "b"})});
+        expect_rejected<T>(R"({"h":["b","a"]})", value + R"(is not one of ["a","b"])", "/h");
+        expect_rejected<T>(R"({"h":["c"]})", value + R"(is not one of ["a","b"])", "/h");
+        EXPECT_TRUE(expect_merge_rule(T(), R"({"h":["b","a"]})").starts_with("bad cast"));
+        EXPECT_FALSE(expect_merge_rule(T(), R"({"h":["a","b"]})").starts_with("bad cast"));
+    };
+    check(std::type_identity<CasterSortedField>());
+    check(std::type_identity<CasterSortedProperty>());
+}
+
+TEST(Constraints, CasterJsonText)
+{
+    // the strings of the JSON value compare after the escapes are read
+    using T = CasterSortedText;
+    const auto good = T{CasterSorted({"a", "bc"}), CasterSorted({"a\"b", "\u00e9\n"})};
+    expect_accepted<T>(R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9\n"]})", {good});
+    expect_accepted<T>(R"({"plain":["\u0061","b\u0063"],"quoted":["\u0061\"b","\u00e9\u000a"]})", {good});
+    const auto plain = R"(the value of the key "plain" of CasterSortedText is not one of ["a","bc"])";
+    const auto quoted =
+        R"(the value of the key "quoted" of CasterSortedText is not equal to the constant ["a\"b","\u00e9\n"])";
+    expect_rejected<T>(R"({"plain":["a","b"],"quoted":["a\"b","\u00e9\n"]})", plain, "/plain");
+    expect_rejected<T>(R"({"plain":["a","bcd"],"quoted":["a\"b","\u00e9\n"]})", plain, "/plain");
+    expect_rejected<T>(R"({"plain":["a","bc","d"],"quoted":["a\"b","\u00e9\n"]})", plain, "/plain");
+    expect_rejected<T>(R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9"]})", quoted, "/quoted");
+    expect_rejected<T>(R"({"plain":["a","bc"],"quoted":["a\\b","\u00e9\n"]})", quoted, "/quoted");
+}
+
+TEST(Constraints, CasterJsonMerged)
+{
+    // a caster replaces the value of its field, so the keywords check the member of the patch
+    auto t = CasterFields();
+    t.list = CasterList({1});
+    t.opt = CasterName("o");
+    EXPECT_EQ(
+        expect_merge_rule(t, R"({"list":[2,3]})"),
+        R"({"color":"","name":"","label":"","real":0.0,"small":0,"flag":false,"list":[2,3],"pos":{"x":0,"y":0},"dom":[],"opt":"o","nul":null})");
+    EXPECT_TRUE(expect_merge_rule(t, R"({"list":[2,3,4]})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_rule(t, R"({"list":[2,2]})").starts_with("bad cast"));
+    // the fields that the patch leaves out, and a null that gives a field its default, are not checked
+    EXPECT_FALSE(expect_merge_rule(t, R"({"small":1})").starts_with("bad cast"));
+    EXPECT_FALSE(expect_merge_rule(t, R"({"opt":null})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_rule(t, R"({"opt":"abc"})").starts_with("bad cast"));
+    EXPECT_FALSE(expect_merge_rule(CasterPairs{{1, 2}, {}}, R"({"pair":{"x":3,"y":4}})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_rule(CasterPairs{{1, 2}, {}}, R"({"pair":{"x":3}})").starts_with("bad cast"));
+}
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+TEST(Constraints, CasterJsonViews)
+{
+    using T = CasterTags;
+    auto bag = CasterBag();
+    bag.set("k", 1);
+    expect_accepted<CasterViews>(R"({"tags":["a","b"],"mixed":"ab","first":[7,8],"bag":{"k":1}})",
+                                 {T({"a", "b"}), T({"ab"}), CasterFirst(7), bag, {}, {}, {}});
+    expect_accepted<CasterViews>(R"({"mixed":["abc"],"opt":["a"],"xy":{"x":1,"y":2},"xys":[{"x":3,"y":4}]})",
+                                 {{}, T({"abc"}), {}, {}, T({"a"}), {1, 2}, {{3, 4}}});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of CasterViews )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of CasterViews )", key);
+    };
+    expect_rejected<CasterViews>(R"({"tags":[]})", value("tags") + "has fewer items than the minimum 1", "/tags");
+    expect_rejected<CasterViews>(R"({"tags":["a","b","c","d"]})", value("tags") + "has more items than the maximum 3",
+                                 "/tags");
+    expect_rejected<CasterViews>(R"({"tags":["a","a"]})", element("tags") + "is equal to an earlier element",
+                                 "/tags/1");
+    expect_rejected<CasterViews>(R"({"mixed":["a","b"]})", value("mixed") + "has more items than the maximum 1",
+                                 "/mixed");
+    expect_rejected<CasterViews>(R"({"mixed":"abc"})", value("mixed") + "is longer than the maximum length 2",
+                                 "/mixed");
+    // the caster reads the first element only, and the keywords count them all
+    expect_rejected<CasterViews>(R"({"first":[1,2,3]})", value("first") + "has more items than the maximum 2",
+                                 "/first");
+    expect_rejected<CasterViews>(R"({"bag":{"a":1,"b":2}})", value("bag") + "has more properties than the maximum 1",
+                                 "/bag");
+    expect_rejected<CasterViews>(R"({"opt":["a","b","c"]})", value("opt") + "has more items than the maximum 2",
+                                 "/opt");
+    // the caster reads null, so the keywords check it
+    expect_rejected<CasterViews>(R"({"opt":null})", value("opt") + R"(is not one of ["a"], ["a","b","c"])", "/opt");
+    expect_rejected<CasterViews>(R"({"opt":["b"]})", value("opt") + R"(is not one of ["a"], ["a","b","c"])", "/opt");
+    expect_rejected<CasterViews>(R"({"xy":{"x":1,"y":2,"z":3}})", "CasterXY has more properties than the maximum 2",
+                                 "/xy");
+    expect_rejected<CasterViews>(R"({"xys":[{"x":1,"y":2,"z":3}]})", "CasterXY has more properties than the maximum 2",
+                                 "/xys/0");
+    expect_rejected<CasterXY>(R"({"x":1,"y":2,"z":3})", "CasterXY has more properties than the maximum 2", "");
+
+    expect_accepted<CasterWrapped>(R"(["a"])", {T({"a"})});
+    expect_rejected<CasterWrapped>(R"(["a","b"])", "the value of CasterWrapped has more items than the maximum 1", "");
+
+    // the in-place form fills a field that the merge resets, so the keywords count the members of the patch
+    const auto t = yyjson::read<CasterViews>(R"({"bag":{"a":1}})");
+    const auto merged = expect_merge_into(t, R"({"bag":{"b":2}})");
+    EXPECT_NE(merged.find(R"("bag":{"b":2})"), std::string::npos) << merged;
+    EXPECT_TRUE(expect_merge_into(t, R"({"bag":{"b":2,"c":3}})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_into(t, R"({"tags":["x","x"]})").starts_with("bad cast"));
+    EXPECT_FALSE(expect_merge_into(t, R"({"tags":["x","y"]})").starts_with("bad cast"));
+}
+
+TEST(Constraints, CasterJsonThreads)
+{
+    // a view that the caster iterates on another thread leaves no count of its elements to a later reader there
+    auto worker = CasterWorker();
+    auto text = std::string();
+    text.reserve(64);
+    text = R"({"items":[1,2,3]})";
+    CasterRemote::worker = &worker;
+    EXPECT_EQ(yyjson::read<CasterRemoteItems>(text).items.n, 3);
+    CasterRemote::worker = nullptr;
+    text = R"({"items":[1,2,3,4,5]})";
+    auto direct = std::string();
+    worker.run([&] { direct = read_or_error([&] { return yyjson::read<CasterRemoteItems>(text); }); });
+    EXPECT_EQ(
+        direct,
+        R"(bad cast: the value of the key "items" of CasterRemoteItems has more items than the maximum 3 at /items)");
+}
+
+TEST(Constraints, CasterJsonNull)
+{
+    using T = CasterTags;
+    // an absent member leaves the std::optional empty, and a null gives it what the caster reads from null
+    for (const auto json : {R"({})", R"({"opt":null,"text":null,"one":null})", R"({"opt":["a"]})"})
+    {
+        EXPECT_NO_THROW((void)yyjson::read<CasterNulls>(json)) << json;
+        EXPECT_TRUE(expect_direct_read<CasterNulls>(json)) << json;
+    }
+    EXPECT_FALSE(yyjson::read<CasterNulls>(R"({})").opt.has_value());
+    EXPECT_EQ(yyjson::read<CasterNulls>(R"({"opt":null})").opt, std::optional(T()));
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of CasterNulls )", key);
+    };
+    expect_rejected<CasterNulls>(R"({"opt":["b"]})", value("opt") + R"(is not one of ["a"], null)", "/opt", false);
+    expect_rejected<CasterNulls>(R"({"text":[]})", value("text") + "is not equal to the constant null", "/text", false);
+    expect_rejected<CasterNulls>(R"({"one":[]})", value("one") + "is not equal to the constant null", "/one", false);
+    // a null member of the patch gives the field its default, which the keywords do not check
+    const auto t = yyjson::read<CasterNulls>(R"({"opt":["a"],"one":null})");
+    EXPECT_FALSE(expect_merge_into(t, R"({"opt":null})").starts_with("bad cast"));
+    EXPECT_FALSE(expect_merge_into(t, R"({"one":null})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_into(t, R"({"opt":["b"]})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_into(t, R"({"text":[]})").starts_with("bad cast"));
+}
+
+TEST(Constraints, CasterJsonMessages)
+{
+    // each read reports a keyword on the JSON value of a caster as on a field of yyjson::value
+    const auto failure = []<typename T>(std::type_identity<T>, std::string_view json) {
+        const auto of = [](const yyjson::bad_cast& e) {
+            auto m = message_of(e);
+            const auto name = yyjson::detail::type_name<T>();
+            if (const auto i = m.find(name); i != std::string::npos) m.replace(i, name.size(), "T");
+            return std::pair(m, std::string(e.path()));
+        };
+        return std::array{
+            of(bad_cast_of([&] { (void)yyjson::read<T>(json); })),
+            of(bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(); })),
+            of(bad_cast_of([&] {
+                auto t = T();
+                yyjson::read_into(json, t);
+            })),
+            of(bad_cast_of([&] {
+                auto t = T();
+                yyjson::merge_into(json, t);
+            })),
+        };
+    };
+    for (const auto json : {R"({"a":{"b":1,"aa":1}})", R"({"a":{}})", R"({"a":{"b":1,"c":1,"d":1}})",
+                            R"({"u":[1,2,1]})", R"({"u":[]})", R"({"u":[1,2,3,4]})", R"({"c":[2]})", R"({"k":{"x":2}})",
+                            R"({"s":"abc"})", R"({"s":0})", R"({"o":[1,[2],[2]]})"})
+    {
+        const auto caster = failure(std::type_identity<CasterMessagesOfCaster>(), json);
+        EXPECT_EQ(caster, failure(std::type_identity<CasterMessagesOfValue>(), json)) << json;
+        EXPECT_TRUE(caster[0].first.starts_with("the value of the key") ||
+                    caster[0].first.starts_with("an element of the value") ||
+                    caster[0].first.starts_with("a key of the value"))
+            << caster[0].first;
+    }
+}
+
+TEST(Constraints, CasterJsonKeys)
+{
+    const auto closed = "has a key that yyjson::additional_properties(false) rejects";
+    const auto names = "is longer than the maximum length 1";
+    {
+        using T = CasterKeysField;
+        const auto value = [](std::string_view key) {
+            return std::format(R"(the value of the key "{}" of CasterKeysField )", key);
+        };
+        const auto key = [](std::string_view name) {
+            return std::format(R"(a key of the value of the key "{}" of CasterKeysField )", name);
+        };
+        auto bag = CasterBag();
+        expect_accepted<T>(R"({"bag":{},"set":{"k":1}})", {T{bag, CasterKeySet({{"k", 1}})}});
+        expect_rejected<T>(R"({"bag":{"k":1},"set":{}})", value("bag") + closed, "/bag");
+        expect_rejected<T>(R"({"bag":{},"set":{"k":1,"kk":2}})", key("set") + names, "/set/kk");
+        bag.set("k", 1);
+        EXPECT_TRUE(expect_merge_rule(T{bag, {}}, R"({"bag":{"x":1}})").starts_with("bad cast"));
+        EXPECT_FALSE(expect_merge_rule(T{bag, {}}, R"({"bag":{}})").starts_with("bad cast"));
+        EXPECT_TRUE(expect_merge_rule(T{}, R"({"set":{"xx":1}})").starts_with("bad cast"));
+        EXPECT_FALSE(expect_merge_rule(T{}, R"({"set":{"x":1}})").starts_with("bad cast"));
+    }
+    {
+        using T = CasterKeysProperty;
+        const auto value = [](std::string_view key) {
+            return std::format(R"(the value of the key "{}" of CasterKeysProperty )", key);
+        };
+        const auto key = [](std::string_view name) {
+            return std::format(R"(a key of the value of the key "{}" of CasterKeysProperty )", name);
+        };
+        auto bag = CasterBag();
+        bag.set("k", 1);
+        expect_accepted<T>(R"({"bag":{"k":1},"set":{}})", {T{bag, {}}});
+        expect_rejected<T>(R"({"bag":{"kk":1},"set":{}})", key("bag") + names, "/bag/kk");
+        expect_rejected<T>(R"({"bag":{},"set":{"k":1}})", value("set") + closed, "/set");
+        EXPECT_TRUE(expect_merge_rule(T{}, R"({"bag":{"xx":1}})").starts_with("bad cast"));
+        EXPECT_FALSE(expect_merge_rule(T{}, R"({"bag":{"x":1}})").starts_with("bad cast"));
+        EXPECT_TRUE(expect_merge_rule(T{}, R"({"set":{"x":1}})").starts_with("bad cast"));
+        EXPECT_FALSE(expect_merge_rule(T{}, R"({"set":{}})").starts_with("bad cast"));
+    }
+}
+#endif
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {
@@ -6138,6 +6938,16 @@ TEST(Constraints, PatternAnnotations)
     expect_rejected<PatternAnnotated>(
         R"({"x1":-1})", R"(the value of the key "x1" of PatternAnnotated is less than the minimum 0)", "/x1");
     EXPECT_EQ(std::string(yyjson::write(PatternAnnotated{1, {{"x1", 2}}})), R"({"a":1,"x1":2})");
+}
+
+TEST(Constraints, CasterAnnotations)
+{
+    expect_accepted<CasterAnnotated>(R"({"list":[1,2],"name":"abc"})", {CasterList({1, 2}), CasterName("abc")});
+    expect_rejected<CasterAnnotated>(R"({"list":[1,1]})",
+                                     R"(the value of the key "list" of CasterAnnotated has duplicate items)", "/list");
+    expect_rejected<CasterAnnotated>(
+        R"({"name":"abcd"})", R"(the value of the key "name" of CasterAnnotated is longer than the maximum length 3)",
+        "/name");
 }
 #endif
 

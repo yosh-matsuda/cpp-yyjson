@@ -5881,8 +5881,11 @@ namespace yyjson
         concept caster_from_json_or_copy =
             caster_from_json<T, Json> || caster_from_json<T, typename json_value_of_copy<Json>::other>;
         template <typename T, typename Json>
+        void check_caster_members(const Json& json);
+        template <typename T, typename Json>
         void caster_assign_from_json(T& t, const Json& json)
         {
+            check_caster_members<T>(json);
             if constexpr (requires { caster<T>::from_json(t, json); })
                 caster<T>::from_json(t, json);
             else
@@ -9648,9 +9651,9 @@ namespace yyjson
         // Whether the keywords at the position `root` of `tree`, with those of its `yyjson::all_of`, leave no value
         // of any JSON kind that V is written as.
         template <typename V, typename Tree>
-        consteval bool position_reads_nothing(const Tree& tree, std::size_t root)
+        consteval bool position_reads_nothing(const Tree& tree, std::size_t root, unsigned kinds = json_kinds_of<V>())
         {
-            return (json_kinds_of<V>() & ~position_empty_kinds(tree, root)) == 0;
+            return (kinds & ~position_empty_kinds(tree, root)) == 0;
         }
 
         // A value of the DOM that holds any JSON kind, to which each keyword applies only if the value is of its
@@ -9685,32 +9688,110 @@ namespace yyjson
         inline constexpr bool struct_object_node = Schema::node.closed || Schema::node.members != 0 ||
                                                    (Schema::constraints.bits & struct_object_constraints) != 0;
 
+        // A type that a caster of the user reads from the JSON value of any kind.
+        template <typename V>
+        concept caster_reads_json = caster_names_from_json<V> && (!std::derived_from<caster<V>, builtin_caster>) &&
+                                    (!dom_json_value<V>) && (!variant_value<V>);
+        template <typename Schema>
+        inline constexpr bool field_root = false;
+        template <typename S, std::size_t R>
+        inline constexpr bool field_root<node_schema<field_tree<S, R>, 0>> = true;
+
+        // Whether the keywords of `Schema`, the schema of a field of the type F, check the JSON value that a caster
+        // of the user reads, of any kind.  Every keyword but `yyjson::satisfies` does, also one that fits the kind
+        // that the type writes.
+        template <typename Schema, typename F>
+        consteval bool checks_caster_json()
+        {
+            if constexpr (!field_root<Schema> || !caster_reads_json<constrained_value_t<F>>)
+                return false;
+            else
+                return (Schema::constraints.bits & checked_constraints & ~constraint_bit<satisfies_t>) != 0 ||
+                       !Schema::values.empty();
+        }
+        // The JSON value that a caster of the user reads, whose element or key that a keyword rejects is found as in a
+        // value of the DOM.
+        struct caster_json_value
+        {
+        };
+        // The keywords that the JSON value of a caster of the user takes, which leave its elements and members to
+        // the caster.
+        inline constexpr std::uint32_t caster_json_constraints =
+            numeric_constraints | string_kind_constraints | constraint_bit<min_items> | constraint_bit<max_items> |
+            constraint_bit<unique_items_t> | constraint_bit<min_properties> | constraint_bit<max_properties> |
+            constraint_bit<property_names<>> | listed_constraints | combinator_constraints;
+        // Whether the keywords of `Schema` leave the elements and the members of the JSON value to the caster.
+        template <typename Schema>
+        consteval bool caster_json_keywords_fit()
+        {
+            constexpr std::uint32_t rest = Schema::constraints.bits & ~caster_json_constraints;
+            if constexpr (rest == 0)
+                return true;
+            else
+            {
+                // `yyjson::additional_properties(false)` marks the members too, which `yyjson::property`,
+                // `required("key", ...)` and `dependent_required` hold
+                const auto& n = Schema::node;
+                if (rest != constraint_bit<member_schema<0>> || !n.closed || n.members != 0) return false;
+                for (auto c = n.combinators; c != 0; c = Schema::tree.nodes[c].next)
+                    if (Schema::tree.nodes[c].combinator == combinator_kind::dependent_required) return false;
+                return true;
+            }
+        }
         // Rejects at compile time the keywords of `Schema` that a field of the type F cannot take.
         template <typename Schema, typename F>
         consteval void assert_constraints_apply()
         {
             using V = constrained_value_t<F>;
             constexpr const field_constraints& c = Schema::constraints;
-            if constexpr (enum_integer_only<V>)
+            // a keyword of a JSON kind checks the JSON that a caster of the user reads, and so only at a field
+            constexpr bool user_converted =
+                caster_reads_json<V> || (caster_names_to_json<V> && !std::derived_from<caster<V>, builtin_caster>);
+            constexpr std::uint32_t member_counts =
+                object_struct_value<V>() ? constraint_bit<min_properties> | constraint_bit<max_properties> : 0U;
+            constexpr bool converted_value =
+                user_converted && !checks_caster_json<Schema, F>() &&
+                ((misplaced_keywords(c.bits, other_kind) & ~member_counts) != 0 ||
+                 std::ranges::any_of(Schema::values, [](const json_scalar& s) {
+                     return s.kind != json_scalar::kind_t::null && s.kind != json_scalar::kind_t::json;
+                 }));
+            if constexpr (converted_value)
+                static_assert(false_v<V>,
+                              "a type that a caster of the user converts takes the keywords of a JSON kind, "
+                              "yyjson::const_ and yyjson::enum_ only at a field, and only if the caster has "
+                              "from_json: they check the JSON that from_json reads; a struct also takes "
+                              "yyjson::min_properties and max_properties, and yyjson::satisfies checks the value of "
+                              "the type");
+            else if constexpr (enum_integer_only<V> && !checks_caster_json<Schema, F>())
                 assert_constraints_apply<Schema, std::underlying_type_t<V>>();
             else
             {
-                // a value of the DOM or a variant takes the keywords of every kind
+                // a value of the DOM or a variant takes the keywords of every kind, and so does the JSON value that a
+                // caster of the user reads
+                constexpr bool caster_json = checks_caster_json<Schema, F>();
                 constexpr bool dom_any = dom_json_value<V>;
-                constexpr bool any_kind = dom_any || variant_value<V>;
-                if constexpr (enum_by_name<V> && (c.bits & string_kind_constraints) != 0)
+                constexpr bool any_kind = dom_any || variant_value<V> || caster_json;
+                constexpr unsigned kinds = caster_json ? every_kind : json_kinds_of<V>();
+                if constexpr (caster_json)
+                    static_assert(caster_json_keywords_fit<Schema>(),
+                                  "a field whose type a caster of the user reads takes no yyjson::items, prefix_items, "
+                                  "contains, additional_properties with keywords, property, required(\"key\", ...) or "
+                                  "dependent_required: the caster reads the elements and the members of its JSON "
+                                  "value");
+                if constexpr (enum_by_name<V> && !caster_json && (c.bits & string_kind_constraints) != 0)
                     static_assert(false_v<V>,
                                   "an enumeration written by name takes no yyjson::min_length, max_length, pattern or "
                                   "format_assertion: yyjson::const_ and yyjson::enum_ with the names of its "
                                   "enumerators constrain it");
                 else
-                    static_assert(keyword_kinds_fit<c.bits, json_kinds_of<V>(), as_array_struct<V>>());
+                    static_assert(keyword_kinds_fit<c.bits, kinds, as_array_struct<V>>());
                 if constexpr (Schema::node.position)
                 {
-                    if constexpr (position_out_of_type<V>(Schema::tree, Schema::index))
+                    if constexpr (!caster_json && position_out_of_type<V>(Schema::tree, Schema::index))
                         static_assert(false_v<V>, "the bounds of a value leave no value of its integer type to read");
                     else
-                        static_assert(reads_something_fit<!position_reads_nothing<V>(Schema::tree, Schema::index)>());
+                        static_assert(
+                            reads_something_fit<!position_reads_nothing<V>(Schema::tree, Schema::index, kinds)>());
                 }
                 constexpr bool of_kind = std::ranges::all_of(Schema::values, [](const json_scalar& s) {
                     return any_kind || s.kind == json_scalar::kind_t::null || s.kind == json_scalar::kind_t::json ||
@@ -9722,20 +9803,22 @@ namespace yyjson
                               "enumerators; yyjson::json_text constrains a field of any type that yyjson reads");
                 constexpr bool lists_null = std::ranges::any_of(
                     Schema::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; });
-                static_assert(!lists_null || null_holder<F> || null_testable<V>,
-                              "yyjson::const_(nullptr) and yyjson::enum_ with nullptr constrain a field that can be "
-                              "null: yyjson::nullable, an owning pointer or a value of the DOM");
+                static_assert(
+                    !lists_null || null_holder<F> || null_testable<V> || (caster_reads_json<V> && may_read_null<V>()),
+                    "yyjson::const_(nullptr) and yyjson::enum_ with nullptr constrain a field that can be "
+                    "null: yyjson::nullable, an owning pointer, a value of the DOM or a type whose caster "
+                    "reads null");
                 static_assert(!c.template has<matches_t<void>>() || dom_kind_of<V> != dom_kind::other || dom_any,
                               "yyjson::matches constrains a value of the DOM: yyjson::value, yyjson::array or "
                               "yyjson::object");
-                static_assert(!c.template has<member_schema<0>>() || dom_any || dom_kind_of<V> == dom_kind::object ||
-                                  holds_object_struct<V>(),
+                static_assert(!c.template has<member_schema<0>>() || dom_any || caster_json ||
+                                  dom_kind_of<V> == dom_kind::object || holds_object_struct<V>(),
                               "yyjson::property, required(\"key\", ...) and dependent_required name a key of a "
                               "struct, or of a yyjson::value or yyjson::object, not of the value of another type");
-                static_assert(!Schema::node.closed || holds_object_struct<V>(),
+                static_assert(!Schema::node.closed || caster_json || holds_object_struct<V>(),
                               "yyjson::additional_properties(false) in a subschema closes a struct; a map takes "
                               "yyjson::additional_properties with the keywords of its values");
-                if constexpr (enum_by_name<V> && of_kind)
+                if constexpr (enum_by_name<V> && of_kind && !caster_json)
                     static_assert(listed_enumerators<Schema, V>.has_value(),
                                   "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the JSON name "
                                   "of an enumerator of it");
@@ -9809,11 +9892,16 @@ namespace yyjson
                     const auto s = static_cast<std::string_view>(v);
                     if constexpr (c.template has<min_length>() || c.template has<max_length>())
                     {
-                        const auto n = code_points(s);
-                        if constexpr (c.template has<min_length>())
-                            if (n < c.min_length) return constraint_kind::min_length;
-                        if constexpr (c.template has<max_length>())
-                            if (n > c.max_length) return constraint_kind::max_length;
+                        // a code point takes 1 to 4 bytes, so most strings need no count
+                        if ((c.template has<min_length>() && s.size() / 4 < c.min_length) ||
+                            (c.template has<max_length>() && s.size() > c.max_length))
+                        {
+                            const auto n = code_points(s);
+                            if constexpr (c.template has<min_length>())
+                                if (n < c.min_length) return constraint_kind::min_length;
+                            if constexpr (c.template has<max_length>())
+                                if (n > c.max_length) return constraint_kind::max_length;
+                        }
                     }
                     if constexpr (c.template has<pattern<>>())
                     {
@@ -9957,11 +10045,23 @@ namespace yyjson
         template <typename V>
         inline constexpr bool document_record<input_record<V>*> = document_record<const input_record<V>*>;
 
+        // Whether `Input` is the JSON value of the DOM that a field is read from.
+        template <typename Input>
+        concept json_input =
+            std::is_pointer_v<Input> && dom_json_value<std::remove_cvref_t<std::remove_pointer_t<Input>>>;
+
         template <typename Schema, typename F, typename Input>
         CPPYYJSON_ALWAYS_INLINE inline auto input_for(Input input)
         {
             if constexpr (std::same_as<Input, no_input>)
                 return no_input{};
+            else if constexpr (checks_caster_json<Schema, F>())
+            {
+                if constexpr (json_input<Input>)
+                    return input;
+                else
+                    return no_input{};
+            }
             else if constexpr (merge_input<Input>)
             {
                 if constexpr (merge_checks_patch<Schema, F>())
@@ -10015,9 +10115,16 @@ namespace yyjson
             if constexpr (is_std_optional<F>::value && !Element)
                 if (!field.has_value()) return constraint_kind::none;
             const V* value = held_value(field);
+            constexpr bool caster_json = checks_caster_json<Schema, F>();
             if (value == nullptr)
             {
                 if (const auto kind = null_violation<Schema>(); kind != constraint_kind::none) return kind;
+            }
+            else if constexpr (caster_json)
+            {
+                // without the JSON value, as a write gives none, the keywords of a kind check nothing
+                if constexpr (json_input<Input>)
+                    if (const auto kind = dom_violation<Schema>(*input); kind != constraint_kind::none) return kind;
             }
             else if constexpr (dom_checked<V>)
             {
@@ -10030,13 +10137,13 @@ namespace yyjson
             }
             else if (const auto kind = value_violation<Schema>(*value); kind != constraint_kind::none)
                 return kind;
-            if constexpr (struct_object_node<Schema> && !dom_checked<V> && !variant_value<V>)
+            if constexpr (struct_object_node<Schema> && !dom_checked<V> && !variant_value<V> && !caster_json)
                 if constexpr (object_struct_value<V>())
                     if (value != nullptr)
                         if (const auto kind = struct_object_violation<Schema>(*value, input);
                             kind != constraint_kind::none)
                             return kind;
-            if constexpr ((c.bits & structure_constraints) != 0 && !dom_checked<V> && !variant_value<V>)
+            if constexpr ((c.bits & structure_constraints) != 0 && !dom_checked<V> && !variant_value<V> && !caster_json)
                 if (value != nullptr)
                     if (const auto kind = structure_violation<Schema>(*value, input); kind != constraint_kind::none)
                         return kind;
@@ -10217,8 +10324,9 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_field_violation(const Json& json, constraint_kind kind)
         {
             using schema = field_schema<S, struct_declared_index<S, K>>;
+            using V = std::conditional_t<checks_caster_json<schema, F>(), caster_json_value, constrained_value_t<F>>;
             if constexpr ((schema::constraints.bits & structure_constraints) != 0)
-                throw_located_violation<S, K, schema, constrained_value_t<F>>(json, kind);
+                throw_located_violation<S, K, schema, V>(json, kind);
             throw_constraint_violation<S, K, schema>(json, kind, constraint_subject::value);
         }
 
@@ -11816,6 +11924,18 @@ namespace yyjson
             if (const auto kind = struct_count_violation<T>(members); kind != constraint_kind::none) [[unlikely]]
                 throw_bad_cast_at(target_of(obj), "{} {}", type_name<T>(),
                                   constraint_what<struct_count_schema<T>>(kind));
+        }
+
+        // Throws when the JSON object `json` that a caster of the user reads into the struct T has a number of
+        // members outside the bounds of T.
+        template <typename T, typename Json>
+        void check_caster_members(const Json& json)
+        {
+            if constexpr (struct_property_counts<T> && !std::derived_from<caster<T>, builtin_caster>)
+            {
+                const auto* const v = dependent_t<writer::detail::json_value_access, Json>::get(json);
+                if (unsafe_yyjson_is_obj(const_cast<std::remove_cvref_t<decltype(*v)>*>(v))) check_struct_members<T>(v);
+            }
         }
 
         // Whether `yyjson::satisfies` in `yyjson::property_names` of the struct S takes a key as a `std::string`,
@@ -17299,6 +17419,15 @@ namespace yyjson
             from_json_return_translator<T>, from_json_return_param<T>, from_json_in_place_param<T>>::type>;
         template <typename T>
         using from_json_in_place_source = std::remove_cvref_t<typename from_json_in_place_param<T>::type>;
+        // The source that the direct reader reads for the translator of T: the in-place form when T has one.
+        template <typename T, bool = from_json_translator<T>::in_place>
+        struct translator_source : std::type_identity<from_json_source<T>>
+        {
+        };
+        template <typename T>
+        struct translator_source<T, true> : std::type_identity<from_json_in_place_source<T>>
+        {
+        };
 
         // A source of a translator that can hold more than one string borrowed from the JSON read.
         template <typename S>
@@ -17844,6 +17973,7 @@ namespace yyjson
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
+            check_caster_members<T>(json);
             if constexpr (views_copy<from_json_in_place_source<T>, Json>)
                 json_view_of_copy<Json>::apply(json, [&](auto view) { assign(t, view); });
             else
@@ -17857,6 +17987,7 @@ namespace yyjson
             // `yyjson::as_array`, wherever they are read
             [[maybe_unused]] const auto guard =
                 recursion_guard<std::conditional_t<transparent_struct<T> || as_array_struct<T>, void, T>>();
+            check_caster_members<T>(json);
             if constexpr (!from_json_translator<T>::castable)
             {
                 if constexpr (requires { caster<T>::from_json(json); })
@@ -18350,6 +18481,7 @@ namespace yyjson
         {
             using V = constrained_value_t<F>;
             constexpr const schema_node& n = Schema::node;
+            if constexpr (checks_caster_json<Schema, F>()) return false;
             if constexpr (n.combinators != 0)
                 if (combinators_count_input<Schema, n.combinators, F>()) return true;
             if constexpr (dom_checked<V>)
@@ -18936,7 +19068,7 @@ namespace yyjson
             constexpr auto kind = Schema::values[I].kind;
             if constexpr (kind == json_scalar::kind_t::json)
             {
-                if constexpr (std::same_as<V, writer::value>)
+                if constexpr (std::same_as<V, writer::value> || reader::detail::base_of_value_ref<V>)
                     return equals_json_text<Schema, I>(v);
                 else
                     return equals_json_text<Schema, I>(writer::value(v));
@@ -18987,6 +19119,12 @@ namespace yyjson
         template <typename Schema, typename O>
         constraint_kind dom_object_violation(const O& o)
         {
+            // only the JSON value that a caster reads takes `yyjson::additional_properties(false)` without a key
+            if constexpr (Schema::node.closed)
+            {
+                static_assert(Schema::node.members == 0);
+                if (o.size() != 0) return constraint_kind::closed_key;
+            }
             if constexpr ((Schema::constraints.bits & object_constraints) != 0)
                 if (const auto kind = object_violation<Schema>(o); kind != constraint_kind::none) return kind;
             if constexpr (Schema::node.members != 0)
@@ -19012,7 +19150,7 @@ namespace yyjson
             constexpr const schema_node& n = Schema::node;
             constexpr const field_constraints& c = n.constraints;
             constexpr bool array_keywords = (c.bits & array_constraints) != 0;
-            constexpr bool object_keywords = (c.bits & object_constraints) != 0 || n.members != 0;
+            constexpr bool object_keywords = (c.bits & object_constraints) != 0 || n.members != 0 || n.closed;
             auto kind = constraint_kind::none;
             if constexpr (dom_json_value<V>)
             {
@@ -19460,7 +19598,7 @@ namespace yyjson
                         }
                 }
             }
-            else if constexpr (dom_checked<V>)
+            else if constexpr (dom_checked<V> || std::same_as<V, caster_json_value>)
             {
                 using E = writer::value;
                 if (const auto a = json.as_array(); a.has_value())
@@ -25480,6 +25618,10 @@ namespace yyjson
             }
             static yyjson_val* obj_next(yyjson_obj_iter& it) noexcept { return yyjson_obj_iter_next(&it); }
             static yyjson_val* obj_value(yyjson_val* key) noexcept { return yyjson_obj_iter_get_val(key); }
+            static yyjson_val* obj_find(yyjson_obj_iter& it, std::string_view key) noexcept
+            {
+                return yyjson_obj_iter_getn(&it, yyjson::detail::c_chars(key), key.size());
+            }
         };
         template <>
         struct node<yyjson_mut_val>
@@ -25499,6 +25641,10 @@ namespace yyjson
             }
             static yyjson_mut_val* obj_next(yyjson_mut_obj_iter& it) noexcept { return yyjson_mut_obj_iter_next(&it); }
             static yyjson_mut_val* obj_value(yyjson_mut_val* key) noexcept { return yyjson_mut_obj_iter_get_val(key); }
+            static yyjson_mut_val* obj_find(yyjson_mut_obj_iter& it, std::string_view key) noexcept
+            {
+                return yyjson_mut_obj_iter_getn(&it, yyjson::detail::c_chars(key), key.size());
+            }
         };
 
         // whether an integer and a real number are the same number, exactly
@@ -29231,10 +29377,9 @@ namespace yyjson
         // The text of `yyjson::json_text` is read under `yyjson::strict` alone, so that a text that V cannot hold as
         // it is is not taken for another value, once, when it is first compared.  A text that a `std::variant` cannot
         // read equals none of its values, which can be of other kinds.
-        template <typename Schema, std::size_t I, typename V>
-        bool equals_json_text(const V& v)
+        template <typename Schema, std::size_t I, typename T>
+        const std::optional<T>& json_text_constant()
         {
-            using T = std::conditional_t<constraint_string<V>, std::string, std::remove_cv_t<V>>;
             constexpr std::string_view text = Schema::values[I].string();
             static const auto constant = [&]() -> std::optional<T> {
                 const auto scope = exact_policy_scope(policies_of<strict_t>);
@@ -29256,9 +29401,21 @@ namespace yyjson
                                         text, type_name<T>(), e.what()));
                 }
             }();
+            return constant;
+        }
+        template <typename Schema, std::size_t I, typename V>
+        bool equals_json_text(const V& v)
+        {
+            // an immutable value is compared with the text read as a mutable one, which it is not copied into
+            using T = std::conditional_t<
+                constraint_string<V>, std::string,
+                std::conditional_t<reader::detail::base_of_value_ref<V>, writer::value, std::remove_cv_t<V>>>;
+            const auto& constant = json_text_constant<Schema, I, T>();
             if (!constant.has_value()) return false;
             if constexpr (constraint_string<V>)
                 return static_cast<std::string_view>(v) == *constant;
+            else if constexpr (reader::detail::base_of_value_ref<V>)
+                return json_compare::keyword_equal(v, *constant);
             else
                 return json_equal(v, *constant);
         }
@@ -29969,6 +30126,23 @@ namespace yyjson
             // Whether lookups read the members that they pass into documents: each costs more than a skip, and
             // pays only when the caster looks the member up later, so the reads go on while they are looked up.
             int view_reads_ = 8;
+            // The numbers of the elements of the arrays that views read to their ends, by where the arrays start,
+            // until the outermost caster that takes a view returns.  These and the check below are kept out of the
+            // reader, so that a reader never builds them for the types without such casters.
+            static inline thread_local std::array<std::pair<const char*, std::size_t>, 8> view_counts_{};
+            static inline thread_local unsigned view_counts_next_ = 0;
+            // The reader whose outermost caster that takes a view runs on this thread, which alone keeps counts.
+            static inline thread_local const direct_reader* view_owner_ = nullptr;
+            // The keywords of a field that a caster of the user reads from the value at `at`, which the reader
+            // of the caster checks on that value, by `view` for a `json_view` and by `json` for a value of the DOM.
+            struct caster_check
+            {
+                const char* at;
+                bool (*view)(direct_reader&, const char*);
+                bool (*json)(const const_value_ref&);
+                bool done;
+            };
+            static inline thread_local caster_check* caster_check_ = nullptr;
 
         public:
             enum class root_kind
@@ -31748,40 +31922,97 @@ namespace yyjson
             }
 
             // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
-            // The documents come from an allocator that keeps the memory of the previous one.
-            template <typename F>
+            // The documents come from an allocator that keeps the memory of the previous one.  T is the type that
+            // the caster reads, whose keywords are checked on the document.
+            template <typename T = void, typename F>
             decltype(auto) with_document(F&& f)
             {
+                [[maybe_unused]] caster_check* check = nullptr;
+                if constexpr (caster_checked<T>) check = take_caster_check();
                 const auto doc = std::unique_ptr<yyjson_doc, free_doc>(read_local_document());
-                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc.get())));
+                const auto root = const_value_ref(yyjson_doc_get_root(doc.get()));
+                if constexpr (caster_checked<T>)
+                    if (check != nullptr && check->json(root)) [[unlikely]]
+                        fail();
+                if constexpr (caster_counted<T>)
+                    if (const auto o = root.as_object();
+                        o.has_value() && yyjson::detail::struct_count_violation<T>(o->size()) !=
+                                             yyjson::detail::constraint_kind::none) [[unlikely]]
+                        fail();
+                return std::forward<F>(f)(root);
             }
 
             template <typename T>
             T read_by_document()
             {
-                return with_document([](const const_value_ref& v) { return v.template cast<T>(); });
+                return with_document<T>([](const const_value_ref& v) { return v.template cast<T>(); });
             }
 
-            // Calls `f` with the source of a translator read from the value at `cur_`.  A source that can hold
-            // more than one borrowed string is read from a document, which keeps them all while `f` runs, because
-            // this reader unescapes every string into the same buffer.
-            template <typename S, typename F>
+            // Whether a field whose type a caster of the user reads checks its keywords on the value at `cur_`, and
+            // the check that it gives the reader of that caster, which no other read then takes.
+            template <typename T>
+            static constexpr bool caster_checked = [] {
+                if constexpr (std::is_void_v<T>)
+                    return false;
+                else
+                    return yyjson::detail::caster_reads_json<T>;
+            }();
+            // Whether T is a struct that a caster of the user reads, whose bounds on the number of the members of
+            // an object are checked on the JSON value.
+            template <typename T>
+            static constexpr bool caster_counted = [] {
+                if constexpr (caster_checked<T>)
+                    return yyjson::detail::struct_property_counts<T>;
+                else
+                    return false;
+            }();
+            bool caster_check_at() const noexcept { return caster_check_ != nullptr && caster_check_->at == cur_; }
+            caster_check* take_caster_check() const noexcept
+            {
+                if (!caster_check_at()) [[likely]]
+                    return nullptr;
+                auto* const check = std::exchange(caster_check_, nullptr);
+                check->done = true;
+                return check;
+            }
+
+            // Calls `f` with the source of a translator read from the value at `cur_` into T.  A source that can
+            // hold more than one borrowed string is read from a document, which keeps them all while `f` runs,
+            // because this reader unescapes every string into the same buffer.
+            template <typename S, typename T, typename F>
             decltype(auto) with_source(F&& f)
             {
+                constexpr bool counted = caster_counted<T>;
                 if constexpr (std::same_as<S, yyjson::json_view>)
                 {
                     // the text of the value is checked as far as the caster reads it, and after it returns
                     struct depth_guard
                     {
                         direct_reader& r;
+                        const direct_reader* owner;
                         ~depth_guard()
                         {
-                            if (--r.view_depth_ == 0) r.view_release();
+                            if (--r.view_depth_ != 0) return;
+                            r.view_release();
+                            view_owner_ = owner;
                         }
                     };
+                    [[maybe_unused]] caster_check* check = nullptr;
+                    if constexpr (caster_checked<T>) check = take_caster_check();
                     ++view_depth_;
-                    const auto guard = depth_guard{*this};
+                    const auto guard = depth_guard{*this, std::exchange(view_owner_, this)};
                     const char* const start = cur_;
+                    // the keywords are checked on the view that the caster read, before it is closed
+                    const auto close = [&] {
+                        if constexpr (caster_checked<T>)
+                            if (check != nullptr && check->view(*this, start)) [[unlikely]]
+                                fail();
+                        if constexpr (counted)
+                            if (*start == '{' && yyjson::detail::struct_count_violation<T>(view_object_size(start)) !=
+                                                     yyjson::detail::constraint_kind::none) [[unlikely]]
+                                fail();
+                        view_close(start);
+                    };
                     using R = decltype(f(std::declval<S>()));
                     // the path of a `bad_cast` from the caster starts at the value of the view
                     try
@@ -31789,12 +32020,12 @@ namespace yyjson
                         if constexpr (std::is_void_v<R>)
                         {
                             f(S(*this, start));
-                            view_close(start);
+                            close();
                         }
                         else
                         {
                             R result = f(S(*this, start));
-                            view_close(start);
+                            close();
                             return result;
                         }
                     }
@@ -31805,10 +32036,411 @@ namespace yyjson
                     }
                 }
                 else if constexpr (yyjson::detail::borrows_strings<S>)
-                    return with_document(
+                    return with_document<T>(
                         [&](const const_value_ref& v) -> decltype(auto) { return f(v.template cast<S>()); });
+                else if constexpr (caster_checked<T> && caster_scalar_source<S>)
+                {
+                    auto* const check = take_caster_check();
+                    if constexpr (std::is_floating_point_v<S>)
+                    {
+                        // a real is checked as the text gives it, before it is rounded to S
+                        if (check != nullptr && *cur_ != 'n') [[unlikely]]
+                        {
+                            auto val = view_number(cur_);
+                            if (check->json(const_value_ref(&val))) fail();
+                        }
+                        return f(read_value<S>());
+                    }
+                    else
+                    {
+                        if (check == nullptr) [[likely]]
+                            return f(read_value<S>());
+                        auto source = read_value<S>();
+                        if (source_rejected(source, *check)) [[unlikely]]
+                            fail();
+                        return f(std::move(source));
+                    }
+                }
+                else if constexpr (caster_checked<T> || counted)
+                {
+                    // the document checks the keywords, and the number of the members of an object
+                    if (caster_check_at() || (counted && *cur_ == '{')) [[unlikely]]
+                        return with_document<T>(
+                            [&](const const_value_ref& v) -> decltype(auto) { return f(v.template cast<S>()); });
+                    return f(read_value<S>());
+                }
                 else
                     return f(read_value<S>());
+            }
+
+            // A source of a translator that is a JSON number, string or bool, which `read_checked_source` checks.
+            template <typename S>
+            static constexpr bool caster_scalar_source =
+                std::is_arithmetic_v<S> || std::same_as<S, std::string> || std::same_as<S, std::string_view>;
+
+            // Whether `check` rejects `source` as a JSON value.
+            template <typename S>
+            static bool source_rejected(const S& source, const caster_check& check)
+            {
+                auto val = yyjson_val{};
+                if constexpr (std::same_as<S, bool>)
+                    unsafe_yyjson_set_bool(&val, source);
+                else if constexpr (std::is_signed_v<S>)
+                    unsafe_yyjson_set_sint(&val, source);
+                else if constexpr (std::is_integral_v<S>)
+                    unsafe_yyjson_set_uint(&val, source);
+                else
+                    unsafe_yyjson_set_strn(&val, source.data(), source.size());
+                return check.json(const_value_ref(&val));
+            }
+
+            // Whether the value at `cur_` is the JSON value `b`, as `yyjson::const_` and `yyjson::enum_` compare a
+            // value of the DOM with it, which moves `cur_` past it if it is.  `Plain` if no string of `b` holds a
+            // character that a JSON string escapes.
+            template <bool Plain>
+            bool text_equals(yyjson_mut_val* b)
+            {
+                namespace jc = yyjson::detail::json_compare;
+                using node = jc::node<yyjson_mut_val>;
+                const auto type = jc::type_of(b);
+                switch (*cur_)
+                {
+                    case '[':
+                    {
+                        if (type != YYJSON_TYPE_ARR) return false;
+                        auto n = jc::size_of(b);
+                        auto it = node::arr_iter(b);
+                        ++cur_;
+                        skip_ws();
+                        if (*cur_ == ']') return ++cur_, n == 0;
+                        while (true)
+                        {
+                            if (n-- == 0 || !text_equals<Plain>(node::arr_next(it))) return false;
+                            skip_ws();
+                            if (*cur_ == ']') return ++cur_, n == 0;
+                            if (*cur_ != ',') return false;
+                            ++cur_;
+                            skip_ws();
+                        }
+                    }
+                    case '{':
+                    {
+                        if (type != YYJSON_TYPE_OBJ) return false;
+                        auto n = jc::size_of(b);
+                        auto it = node::obj_iter(b);
+                        auto key = std::string();
+                        ++cur_;
+                        skip_ws();
+                        if (*cur_ == '}') return ++cur_, n == 0;
+                        while (true)
+                        {
+                            if (n-- == 0 || *cur_ != '"') return false;
+                            const auto k = scan_string();
+                            if (k.escaped) unescape(k.begin, k.end, key = std::string());
+                            skip_ws();
+                            if (*cur_ != ':') return false;
+                            ++cur_;
+                            skip_ws();
+                            auto* const v = node::obj_find(
+                                it, k.escaped ? std::string_view(key)
+                                              : std::string_view(k.begin, static_cast<std::size_t>(k.end - k.begin)));
+                            if (v == nullptr || !text_equals<Plain>(v)) return false;
+                            skip_ws();
+                            if (*cur_ == '}') return ++cur_, n == 0;
+                            if (*cur_ != ',') return false;
+                            ++cur_;
+                            skip_ws();
+                        }
+                    }
+                    case '"':
+                    {
+                        if (type != YYJSON_TYPE_STR) return false;
+                        // the same bytes, with none that a JSON string escapes, are the same string
+                        if constexpr (Plain)
+                        {
+                            const auto want = jc::text_of(b);
+                            const char* const q = cur_ + 1;
+                            if (static_cast<std::size_t>(last_ - q) > want.size() && q[want.size()] == '"' &&
+                                std::memcmp(q, want.data(), want.size()) == 0)
+                            {
+                                cur_ = q + want.size() + 1;
+                                return true;
+                            }
+                        }
+                        const auto s = scan_string();
+                        if (!s.escaped)
+                            return jc::text_of(b) ==
+                                   std::string_view(s.begin, static_cast<std::size_t>(s.end - s.begin));
+                        auto text = std::string();
+                        unescape(s.begin, s.end, text);
+                        return jc::text_of(b) == text;
+                    }
+                    case 't':
+                        if (type != YYJSON_TYPE_BOOL) return false;
+                        read_literal("true");
+                        return jc::bool_of(b);
+                    case 'f':
+                        if (type != YYJSON_TYPE_BOOL) return false;
+                        read_literal("false");
+                        return !jc::bool_of(b);
+                    case 'n':
+                        if (type != YYJSON_TYPE_NULL) return false;
+                        read_literal("null");
+                        return true;
+                    default:
+                    {
+                        if (type != YYJSON_TYPE_NUM) return false;
+                        auto number = scan_number();
+                        return jc::numbers_equal(&number, b);
+                    }
+                }
+            }
+            // Whether no string of `v` holds a character that a JSON string escapes.
+            static bool plain_strings(yyjson_mut_val* v)
+            {
+                namespace jc = yyjson::detail::json_compare;
+                using node = jc::node<yyjson_mut_val>;
+                const auto plain = [](std::string_view s) {
+                    return std::ranges::none_of(
+                        s, [](char c) { return c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20; });
+                };
+                switch (jc::type_of(v))
+                {
+                    case YYJSON_TYPE_STR:
+                        return plain(jc::text_of(v));
+                    case YYJSON_TYPE_ARR:
+                    {
+                        auto it = node::arr_iter(v);
+                        for (auto n = jc::size_of(v); n > 0; --n)
+                            if (!plain_strings(node::arr_next(it))) return false;
+                        return true;
+                    }
+                    case YYJSON_TYPE_OBJ:
+                    {
+                        auto it = node::obj_iter(v);
+                        for (auto n = jc::size_of(v); n > 0; --n)
+                            if (!plain_strings(node::obj_value(node::obj_next(it)))) return false;
+                        return true;
+                    }
+                    default:
+                        return true;
+                }
+            }
+            // Whether `yyjson::const_` and `yyjson::enum_` of `Schema` are compared with the text of an array or an
+            // object, which holds no other keyword that needs a document.
+            template <typename Schema>
+            static constexpr bool text_listed =
+                Schema::node.combinators == 0 && std::ranges::none_of(Schema::values, [](const auto& v) {
+                    return v.kind == yyjson::detail::json_scalar::kind_t::null;
+                });
+            // Whether the array or the object at `p` is one of the values of `yyjson::const_` and `yyjson::enum_` of
+            // `Schema`, of which only those of `yyjson::json_text` can be one.
+            template <typename Schema>
+            bool text_in_listed(const char* p)
+            {
+                namespace d = yyjson::detail;
+                using access = writer::detail::json_value_access;
+                const auto guard = cursor_guard{*this, cur_};
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    const auto equals = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                        if constexpr (Schema::values[I].kind != d::json_scalar::kind_t::json)
+                            return false;
+                        else
+                        {
+                            const auto& constant = d::json_text_constant<Schema, I, writer::value>();
+                            if (!constant.has_value()) return false;
+                            auto* const b = const_cast<yyjson_mut_val*>(access::get(*constant));
+                            static const bool plain = plain_strings(b);
+                            cur_ = p;
+                            return plain ? text_equals<true>(b) : text_equals<false>(b);
+                        }
+                    };
+                    return (equals(std::integral_constant<std::size_t, Is>()) || ...);
+                }(std::make_index_sequence<Schema::values.size()>());
+            }
+
+            // Whether the keywords of `Schema` reject the value at `p`, which a caster read through a view: an
+            // array and an object by their counts, and by a document only for `yyjson::const_`, `yyjson::enum_`,
+            // `yyjson::unique_items` and the keywords of the keys.
+            template <typename Schema>
+            static bool caster_view_violated(direct_reader& r, const char* p)
+            {
+                namespace d = yyjson::detail;
+                constexpr const d::field_constraints& c = Schema::constraints;
+                constexpr bool listed = !Schema::values.empty();
+                const auto rejects = [](yyjson_val val) {
+                    return d::dom_violation<Schema>(const_value_ref(&val)) != d::constraint_kind::none;
+                };
+                switch (*p)
+                {
+                    case '{':
+                        if constexpr ((listed && !text_listed<Schema>) || Schema::node.closed ||
+                                      c.has<yyjson::property_names<>>())
+                            return d::dom_violation<Schema>(const_value_ref(r.view_document(p))) !=
+                                   d::constraint_kind::none;
+                        else
+                        {
+                            if constexpr (c.has<yyjson::min_properties>() || c.has<yyjson::max_properties>())
+                            {
+                                const auto n = r.view_object_size(p);
+                                if constexpr (c.has<yyjson::min_properties>())
+                                    if (n < c.min_properties) return true;
+                                if constexpr (c.has<yyjson::max_properties>())
+                                    if (n > c.max_properties) return true;
+                            }
+                            if constexpr (listed) return !r.text_in_listed<Schema>(p);
+                            return false;
+                        }
+                    case '[':
+                        if constexpr ((listed && !text_listed<Schema>) || c.has<yyjson::unique_items_t>())
+                            return d::dom_violation<Schema>(const_value_ref(r.view_document(p))) !=
+                                   d::constraint_kind::none;
+                        else
+                        {
+                            if constexpr (c.has<yyjson::min_items>() || c.has<yyjson::max_items>())
+                            {
+                                const auto n = r.view_array_size(p);
+                                if constexpr (c.has<yyjson::min_items>())
+                                    if (n < c.min_items) return true;
+                                if constexpr (c.has<yyjson::max_items>())
+                                    if (n > c.max_items) return true;
+                            }
+                            if constexpr (listed) return !r.text_in_listed<Schema>(p);
+                            return false;
+                        }
+                    case '"':
+                        if constexpr (listed || (c.bits & d::string_kind_constraints) != 0)
+                        {
+                            const auto s = r.view_string(p);
+                            auto val = yyjson_val{};
+                            unsafe_yyjson_set_strn(&val, s.data(), s.size());
+                            return rejects(val);
+                        }
+                        else
+                            return false;
+                    case 't':
+                    case 'f':
+                    case 'n':
+                        if constexpr (listed)
+                        {
+                            auto val = yyjson_val{};
+                            if (*p == 'n')
+                                unsafe_yyjson_set_null(&val);
+                            else
+                                unsafe_yyjson_set_bool(&val, *p == 't');
+                            return rejects(val);
+                        }
+                        else
+                            return false;
+                    default:
+                        if constexpr (listed || (c.bits & d::numeric_constraints) != 0)
+                            return rejects(r.view_number(p));
+                        else
+                            return false;
+                }
+            }
+            // Whether the keywords of `Schema` reject the value `v` that a caster reads.
+            template <typename Schema>
+            static bool caster_json_violated(const const_value_ref& v)
+            {
+                return yyjson::detail::dom_violation<Schema>(v) != yyjson::detail::constraint_kind::none;
+            }
+
+            // The source that a field of the type F gives its translator.
+            template <typename F>
+            using translator_source_t = typename yyjson::detail::translator_source<F>::type;
+            // Whether the keywords of `Schema` on a field of the type F are checked on the source of its translator
+            // without `caster_check_`: F reads the source by default from a JSON number, string or bool, and the
+            // keywords only bound a number, a string or a count, which a scalar passes.
+            template <typename Schema, typename F>
+            static constexpr bool source_checked = [] {
+                namespace d = yyjson::detail;
+                using T = d::from_json_translator<F>;
+                if constexpr (!d::checks_caster_json<Schema, F>())
+                    return false;
+                else if constexpr (!(T::in_place || T::castable) || std::is_array_v<F> || transparent_readable<F> ||
+                                   builtin_variant<F> || d::caster_assigns_from_json<F, const_value_ref> ||
+                                   d::reflected_assignable_in_place<F, const_value_ref>)
+                    return false;
+                else
+                {
+                    using U = translator_source_t<F>;
+                    constexpr std::uint32_t bounds =
+                        d::numeric_constraints | d::string_constraints | d::constraint_bit<yyjson::format_assertion<>> |
+                        d::constraint_bit<yyjson::min_items> | d::constraint_bit<yyjson::max_items> |
+                        d::constraint_bit<yyjson::unique_items_t> | d::constraint_bit<yyjson::min_properties> |
+                        d::constraint_bit<yyjson::max_properties> | d::constraint_bit<yyjson::satisfies_t>;
+                    return (std::is_arithmetic_v<U> || std::same_as<U, std::string>) && Schema::values.empty() &&
+                           (Schema::constraints.bits & ~bounds) == 0;
+                }
+            }();
+            // Reads the value at `cur_`, not null, into `field` through the source of its translator, which fails if
+            // the keywords of `Schema` reject the source.  A real is checked as the text gives it.
+            template <typename Schema, typename F>
+            CPPYYJSON_ALWAYS_INLINE void read_checked_source(F& field)
+            {
+                namespace d = yyjson::detail;
+                using T = d::from_json_translator<F>;
+                using U = translator_source_t<F>;
+                [[maybe_unused]] const auto guard = d::recursion_guard<F>();
+                if constexpr (std::is_floating_point_v<U>)
+                {
+                    if constexpr ((Schema::constraints.bits & d::numeric_constraints) != 0)
+                    {
+                        const auto number = view_number(cur_);
+                        const auto kind = yyjson_is_real(&number)   ? d::value_violation<Schema, false>(number.uni.f64)
+                                          : yyjson_is_uint(&number) ? d::value_violation<Schema, false>(number.uni.u64)
+                                                                    : d::value_violation<Schema, false>(number.uni.i64);
+                        if (kind != d::constraint_kind::none) [[unlikely]]
+                            fail();
+                    }
+                }
+                auto source = read_value<U>();
+                if constexpr (!std::is_floating_point_v<U>)
+                    if (d::value_violation<Schema, false>(source) != d::constraint_kind::none) [[unlikely]]
+                        fail();
+                if constexpr (T::in_place)
+                    T::assign(field, std::move(source));
+                else
+                    field = T::convert(std::move(source));
+            }
+
+            // Calls `read` with `field`, the field K of S, which fails for the JSON value that a caster of the user
+            // reads into it if the keywords of the field reject it.  A read that leaves them unchecked fails too.
+            // `ByField` tells that `read` is `read_field`, which a translator from a scalar does without `read`.
+            template <typename S, std::size_t K, bool ByField = false, typename F, typename Read>
+            CPPYYJSON_ALWAYS_INLINE void read_caster_field(F& field, Read&& read)
+            {
+                namespace d = yyjson::detail;
+                if constexpr (d::constrained_field<S, K>)
+                {
+                    using schema = d::field_schema<S, d::struct_declared_index<S, K>>;
+                    if constexpr (ByField && source_checked<schema, F>)
+                    {
+                        // no keyword here rejects null, and the source of a translator is checked as a field of it
+                        if (*cur_ == 'n') [[unlikely]]
+                            std::forward<Read>(read)(field);
+                        else
+                            read_checked_source<schema>(field);
+                        return;
+                    }
+                    else if constexpr (d::checks_caster_json<schema, F>())
+                    {
+                        struct restore
+                        {
+                            caster_check* outer;
+                            ~restore() { caster_check_ = outer; }
+                        };
+                        auto check =
+                            caster_check{cur_, &caster_view_violated<schema>, &caster_json_violated<schema>, false};
+                        const auto guard = restore{std::exchange(caster_check_, &check)};
+                        std::forward<Read>(read)(field);
+                        if (!check.done && d::held_value(std::as_const(field)) != nullptr) [[unlikely]]
+                            fail();
+                        return;
+                    }
+                }
+                std::forward<Read>(read)(field);
             }
 
             // Views -------------------------------------------------------------------------------------------
@@ -31880,6 +32512,7 @@ namespace yyjson
                 view_copies_.clear();
                 local_kept_ = nullptr;
                 view_strings_.clear();
+                view_counts_.fill({});
             }
 
             const char* view_known_end(const char* p) const noexcept
@@ -31986,6 +32619,13 @@ namespace yyjson
             {
                 const auto guard = cursor_guard{*this, cur_};
                 cur_ = p;
+                const auto val = scan_number();
+                view_add_number(p, val);
+                return val;
+            }
+            // The number at `cur_` as a value of a document, which moves `cur_` past it.
+            yyjson_val scan_number()
+            {
                 auto val = yyjson_val{};
                 read_number([&](auto v) {
                     if constexpr (std::same_as<decltype(v), std::uint64_t>)
@@ -32004,7 +32644,6 @@ namespace yyjson
                         val.uni.f64 = v;
                     }
                 });
-                view_add_number(p, val);
                 return val;
             }
             // Records the end of the number at `p`, at `cur_`, and keeps its value for the next call at `p`.
@@ -32230,6 +32869,21 @@ namespace yyjson
                 auto& e = view_index_of(open);
                 while (view_index_step(e, false)) {}
                 return e.members.size();
+            }
+            // A view that a caster iterates on another thread keeps no count there, which no release would clear.
+            void view_add_count(const char* open, std::size_t n) noexcept
+            {
+                if (view_owner_ == this) view_counts_[view_counts_next_++ % view_counts_.size()] = {open, n};
+            }
+            std::size_t view_array_size(const char* open)
+            {
+                if (view_owner_ == this)
+                    for (const auto& [begin, n] : view_counts_)
+                        if (begin == open) return n;
+                auto n = std::size_t{0};
+                for (const auto* p = view_first(open); p != nullptr; p = view_next(open, p)) ++n;
+                view_add_count(open, n);
+                return n;
             }
 
             // The kinds of JSON values that the value at `cur_` may be, from its first character.
@@ -32500,8 +33154,8 @@ namespace yyjson
             };
 
             // Reads the field I of `t` from the value at `cur_`, which is a field tagged by `adjacent_tag` or the
-            // field of a tag, as `read(field)` reads any other field.
-            template <typename T, std::size_t I, bool Merge = false, typename Keys, typename Read>
+            // field of a tag, as `read(field)` reads any other field.  `ByField` tells that `read` is `read_field`.
+            template <typename T, std::size_t I, bool Merge = false, bool ByField = false, typename Keys, typename Read>
             CPPYYJSON_ALWAYS_INLINE void read_struct_field(T& t, adjacent_fields_of<T>& adjacent, Keys& keys,
                                                            Read&& read)
             {
@@ -32537,10 +33191,13 @@ namespace yyjson
                         }();
                         rec = std::remove_cvref_t<decltype(rec)>();
                         const bool null = *cur_ == 'n';
-                        if (null)
-                            std::forward<Read>(read)(struct_field<I>(t));
-                        else
-                            struct_field<I>(t) = read_recorded<field_type>(rec);
+                        read_caster_field<T, I>(struct_field<I>(t),
+                                                [&](field_type& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                                    if (null)
+                                                        std::forward<Read>(read)(field);
+                                                    else
+                                                        field = read_recorded<field_type>(rec);
+                                                });
                         if constexpr (yyjson::detail::constrained_field<T, I>)
                         {
                             if (null &&
@@ -32556,7 +33213,7 @@ namespace yyjson
                     {
                         // the document throws for a value that the keywords of the field reject
                         const bool null = *cur_ == 'n';
-                        std::forward<Read>(read)(struct_field<I>(t));
+                        read_caster_field<T, I, ByField>(struct_field<I>(t), std::forward<Read>(read));
                         if (null &&
                             (yyjson::detail::null_takes_default<T, yyjson::detail::struct_declared_index<T, I>> ||
                              yyjson::detail::null_reads_as_missing<field_type>))
@@ -33759,15 +34416,18 @@ namespace yyjson
                         fail();
                 }
                 ++size;
-                if constexpr (Recording && !std::is_empty_v<d::record_t<F>>)
-                {
-                    if (*cur_ == 'n')
-                        read_field(field, d::array_field_replaceable<K>(result));
-                    else
-                        field = read_recorded<F>(std::get<K>(rec->positions));
-                }
-                else
-                    read_field(field, d::array_field_replaceable<K>(result));
+                read_caster_field<T, K, !(Recording && !std::is_empty_v<d::record_t<F>>)>(
+                    field, [&](F& f) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        if constexpr (Recording && !std::is_empty_v<d::record_t<F>>)
+                        {
+                            if (*cur_ == 'n')
+                                read_field(f, d::array_field_replaceable<K>(result));
+                            else
+                                f = read_recorded<F>(std::get<K>(rec->positions));
+                        }
+                        else
+                            read_field(f, d::array_field_replaceable<K>(result));
+                    });
                 if constexpr (d::constrained_field<T, K> && Recording)
                 {
                     if (d::field_violation<T, K>(field, &std::get<K>(rec->positions)) != d::constraint_kind::none)
@@ -33926,7 +34586,7 @@ namespace yyjson
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
                 {
                     [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                    return with_source<yyjson::detail::from_json_source<T>>([](auto&& source) {
+                    return with_source<yyjson::detail::from_json_source<T>, T>([](auto&& source) {
                         return yyjson::detail::from_json_translator<T>::convert(std::move(source));
                     });
                 }
@@ -34923,7 +35583,8 @@ namespace yyjson
                         return;
                     }
                 }
-                read_field(field, false);
+                read_caster_field<T, I, true>(
+                    field, [&](field_type& f) CPPYYJSON_LAMBDA_ALWAYS_INLINE { read_field(f, false); });
                 check_field_keywords<T, I>(field);
             }
 
@@ -34958,10 +35619,13 @@ namespace yyjson
                     }
                 }
                 if constexpr (yyjson::detail::recorded_field<T, I>)
-                    read_recorded_field<T, I>(field, input);
+                    read_caster_field<T, I>(field, [&](field_type& f) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        read_recorded_field<T, I>(f, input);
+                    });
                 else
                 {
-                    read_field(field, false);
+                    read_caster_field<T, I, true>(
+                        field, [&](field_type& f) CPPYYJSON_LAMBDA_ALWAYS_INLINE { read_field(f, false); });
                     check_field_keywords<T, I>(field);
                 }
             }
@@ -35606,14 +36270,14 @@ namespace yyjson
                     else
                     {
                         [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
-                        with_document(
+                        with_document<field_type>(
                             [&](const const_value_ref& v) { yyjson::detail::caster_assign_from_json(field, v); });
                     }
                 }
                 else if constexpr (yyjson::detail::from_json_translator<field_type>::in_place)
                 {
                     [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
-                    with_source<yyjson::detail::from_json_in_place_source<field_type>>([&](auto&& source) {
+                    with_source<yyjson::detail::from_json_in_place_source<field_type>, field_type>([&](auto&& source) {
                         yyjson::detail::from_json_translator<field_type>::assign(field, std::move(source));
                     });
                 }
@@ -35705,11 +36369,16 @@ namespace yyjson
                 else
                     replaceable = replaceable && yyjson::detail::reflected_field_replaceable<
                                                      yyjson::detail::reflected_field_index<T, 0>>(t);
+                using field_type = std::remove_cvref_t<decltype(struct_field<0>(t))>;
                 if constexpr (yyjson::detail::array_field_counts_input<T, 0>())
-                    read_recorded_field<T, 0>(struct_field<0>(t), static_cast<std::nullptr_t*>(nullptr));
+                    read_caster_field<T, 0>(struct_field<0>(t), [this](field_type& f) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        read_recorded_field<T, 0>(f, static_cast<std::nullptr_t*>(nullptr));
+                    });
                 else
                 {
-                    read_field(struct_field<0>(t), replaceable);
+                    read_caster_field<T, 0, true>(struct_field<0>(t),
+                                                  [&](field_type& f)
+                                                      CPPYYJSON_LAMBDA_ALWAYS_INLINE { read_field(f, replaceable); });
                     check_field_keywords<T, 0>(struct_field<0>(t));
                 }
             }
@@ -36473,7 +37142,7 @@ namespace yyjson
                         };
                         adjacent.template mark<K>(cur_);
                         if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<K>(cur_);
-                        read_struct_field<T, K>(t, adjacent, adjacent, read);
+                        read_struct_field<T, K, false, true>(t, adjacent, adjacent, read);
                     };
                 if constexpr (yyjson::detail::has_key_maps<T>)
                 {
@@ -36511,7 +37180,7 @@ namespace yyjson
                         };
                         adjacent.template mark<I>(cur_);
                         if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<I>(cur_);
-                        read_struct_field<T, I>(t, adjacent, adjacent, read);
+                        read_struct_field<T, I, false, true>(t, adjacent, adjacent, read);
                     };
                 if constexpr (yyjson::detail::struct_conditions_object<T>)
                     read_struct_fields<visit_struct<T>::key_matcher, T>(
@@ -36546,7 +37215,7 @@ namespace yyjson
                             };
                             adjacent.template mark<I>(cur_);
                             if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<I>(cur_);
-                            read_struct_field<T, I>(t, adjacent, adjacent, read);
+                            read_struct_field<T, I, false, true>(t, adjacent, adjacent, read);
                         };
                     using watching = yyjson::detail::key_watching_read<Ranking, decltype(read_one)>;
                     if constexpr (yyjson::detail::struct_conditions_object<T>)
@@ -36566,7 +37235,7 @@ namespace yyjson
                             };
                             adjacent.template mark<K>(cur_);
                             if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<K>(cur_);
-                            read_struct_field<T, K>(t, adjacent, adjacent, read);
+                            read_struct_field<T, K, false, true>(t, adjacent, adjacent, read);
                         };
                     using watching = yyjson::detail::key_watching_read<Ranking, decltype(read_one)>;
                     if constexpr (yyjson::detail::struct_conditions_object<T>)
@@ -36888,6 +37557,7 @@ namespace yyjson
             std::size_t rest_ = 0;
             const char* open_ = nullptr;
             const char* pos_ = nullptr;
+            std::size_t count_ = 0;
 
         public:
             using difference_type = std::ptrdiff_t;
@@ -36897,7 +37567,12 @@ namespace yyjson
             iterator& operator++()
             {
                 if (rd_ != nullptr)
+                {
                     pos_ = rd_->view_next(open_, pos_);
+                    ++count_;
+                    // the reader keeps the number of the elements, which a keyword of the caster may check
+                    if (pos_ == nullptr) rd_->view_add_count(open_, count_);
+                }
                 else if (--rest_ != 0)
                     val_ = unsafe_yyjson_get_next(val_);
                 return *this;
@@ -36917,6 +37592,7 @@ namespace yyjson
                 it.rd_ = rd_;
                 it.open_ = pos_;
                 it.pos_ = rd_->view_first(pos_);
+                if (it.pos_ == nullptr) rd_->view_add_count(pos_, 0);
             }
             else
             {
@@ -36928,10 +37604,7 @@ namespace yyjson
         [[nodiscard]] std::default_sentinel_t end() const noexcept { return {}; }
         [[nodiscard]] std::size_t size() const
         {
-            if (rd_ == nullptr) return unsafe_yyjson_get_len(val_);
-            auto n = std::size_t{0};
-            for (auto it = begin(); it != end(); ++it) ++n;
-            return n;
+            return rd_ != nullptr ? rd_->view_array_size(pos_) : unsafe_yyjson_get_len(val_);
         }
         [[nodiscard]] bool empty() const { return begin() == end(); }
         // The element at `index`, which in the text is found by reading the elements before it.
