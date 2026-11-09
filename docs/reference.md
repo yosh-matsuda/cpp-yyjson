@@ -16,6 +16,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::read<T>`](#yyjsonreadt)
     *   [`yyjson::read_into`, `yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into)
     *   [`yyjson::write`](#yyjsonwrite)
+    *   [`yyjson::validate`, `yyjson::with_validation`](#yyjsonvalidate-yyjsonwith_validation)
     *   [`yyjson::read`](#yyjsonread)
     *   [`yyjson::cast`](#yyjsoncast)
 *   [DOM classes](#dom-classes)
@@ -109,6 +110,7 @@ The member functions of the DOM classes often return *reference classes*, such a
 | [`yyjson::read_into`](#yyjsonread_into-yyjsonmerge_into) | data binding | Reads a JSON string into an existing C++ object, reusing its memory |
 | [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) | data binding | Applies a JSON string to an existing C++ object as a JSON Merge Patch |
 | [`yyjson::write`](#yyjsonwrite) | data binding | Writes a C++ object to a JSON string |
+| [`yyjson::validate`](#yyjsonvalidate-yyjsonwith_validation) | data binding | Checks a C++ object against the constraints before it is written |
 | [`yyjson::read`](#yyjsonread) | DOM | Reads a JSON string into an immutable document |
 | [`yyjson::cast<T>`](#yyjsoncast) | DOM | Converts a JSON value to a C++ object of type `T` |
 
@@ -312,6 +314,65 @@ for (const auto& points : batches)
 *   the value that a user-defined `to_json` returns, and the output of a `to_json` that takes an [emitter](conversions.md#writing-members-with-an-emitter).
 
 A user-defined `to_json` that [fills](conversions.md#writing-into-a-json-value-in-a-caster) a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document. The objects that such casters convert are built in one temporary document, and the objects around them are still written directly. The writer frees that document and starts a new one once it holds a megabyte, so the memory of a large write does not grow with the number of such objects. See [Write casters that convert C++ values](performance.md#write-casters-that-convert-c-values) for the cost.
+
+### `yyjson::validate`, `yyjson::with_validation`
+
+Checks a C++ object against the [constraints](#constraints) of its type before it is written.
+
+```cpp
+template <typename T>
+void validate(const T& t);
+template <typename T>
+void validate(const T& t, emit_defaults_t);
+
+inline constexpr with_validation_t with_validation{};
+
+template <typename T>
+json_string write(const T& t, with_validation_t);
+template <typename T>
+json_string write(const T& t, WriteFlag flag, with_validation_t);
+template <typename T>
+void write(const T& t, std::string& out, with_validation_t);
+template <typename T>
+void write(const T& t, std::string& out, WriteFlag flag, with_validation_t);
+
+template <typename T>
+json_string write(const T& t, emit_defaults_t, with_validation_t);
+template <typename T>
+json_string write(const T& t, WriteFlag flag, emit_defaults_t, with_validation_t);
+template <typename T>
+void write(const T& t, std::string& out, emit_defaults_t, with_validation_t);
+template <typename T>
+void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t, with_validation_t);
+```
+
+`validate(t)` checks the values that `write(t)` writes. A read of that JSON with `yyjson::read<T>` checks the same constraints on them. `validate(t, emit_defaults)` checks the values that `write(t, emit_defaults)` writes. `T` must be [writable](#yyjsonreadablet-yyjsonwritablet).
+
+A `write` with `with_validation` calls `validate` first, and then writes as the same `write` without the tag does. It gives the same text.
+
+*   `validate` throws [`yyjson::bad_cast`](#yyjsonbad_cast) for the first value that a constraint rejects. `path()` gives the JSON Pointer to that value in the written JSON. `position()` gives no position. `what()` is the message that `read<T>` gives for that value, without the position.
+*   When the write rejects the same object, a `write` with `with_validation` throws the exception of the write instead of the `bad_cast`. Examples are `yyjson::write_error` for a NaN without `WriteFlag::AllowInfAndNan`, and `std::invalid_argument` for a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative.
+*   When `validate` throws, the forms with `out` leave `out` unchanged. This holds also when they throw the exception of the write in its place. When `validate` passes, `out` is as `yyjson::write` leaves it.
+
+The checks follow the [rules of the check before a write](validation.md#checking-a-value-before-writing).
+
+```cpp
+struct Item
+{
+    std::string name;
+    int count = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<Item> = yyjson::annotate(yyjson::field("count", yyjson::minimum(0)));
+
+auto items = std::vector<Item>{{"a", 1}, {"b", -1}};
+yyjson::validate(items);
+// throws yyjson::bad_cast: the value of the key "count" of Item is less than the minimum 0 at /1/count
+
+auto out = std::string("previous");
+yyjson::write(items, out, yyjson::with_validation);
+// throws the same yyjson::bad_cast, and out stays "previous"
+```
 
 ### `yyjson::read`
 
@@ -2300,6 +2361,7 @@ yyjson_write_code code() const noexcept;
 Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API. It is also thrown in these cases:
 
 *   `yyjson::write`, `yyjson::value(t)` or `yyjson::object(t)` gets an enumeration value that has no name and is not written as an integer. Then `path()` is empty and `position()` gives no position.
+*   [`yyjson::validate`](#yyjsonvalidate-yyjsonwith_validation) finds a value that a constraint rejects. Then `position()` gives no position.
 *   The constructor of an array class or an object class gets a JSON value of another kind. Then `what()` is `Could not cast to JSON array` or `Could not cast to JSON object`, and it names no C++ type.
 
 ```cpp

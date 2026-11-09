@@ -7,6 +7,7 @@ This document describes:
 *   what a read checks, and what it does with unknown, missing and repeated keys and with `null` in a `std::optional` field;
 *   the [read policies](#read-policies) that make a read reject such JSON;
 *   the [constraints](#constraints) that restrict the values of a field, the [combinators](#combining-constraints) and the [conditions between fields](#conditions-between-fields), and the [JSON Schema keywords](#json-schema-keywords) that they correspond to;
+*   the [check of a C++ object](#checking-a-value-before-writing) against the constraints before a write;
 *   the [errors](#errors) that the library reports at run time, with the path and the position of a value that does not convert;
 *   the [compile errors](#compile-errors) of types that cannot be converted.
 
@@ -797,7 +798,7 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
 *   `yyjson::const_` and `yyjson::enum_` compare the value as a value of the type of the field. An enumeration written by name compares the JSON names of its enumerators, after `yyjson::rename`. A string that names no enumerator is a compile error. For an object, an array or a value of any other type, give the value as JSON text with [`yyjson::json_text`](reference.md#constraints). The compiler checks the text. The read reads the text into the type of the field once, under `yyjson::strict`. A text that the type cannot read throws `std::invalid_argument` on the first check.
 *   A field can have `yyjson::pattern` more than once, and the value must match all the patterns. It can have each combinator more than once. It takes each other constraint once.
 *   `f` of `yyjson::satisfies<f>` is a function or a lambda without captures. Its parameter is the type of the field, or the type of the value that the field holds. The library can call it more than once for one value: when `yyjson::read<T>` rejects a value, it reads the text again to find the error. An exception that `f` throws goes out of the read.
-*   `yyjson::write` does not check the constraints. It writes a value that they reject.
+*   `yyjson::write` does not check the constraints. It writes a value that they reject. To check the value first, see [Checking a value before writing](#checking-a-value-before-writing).
 *   An untagged `std::variant` tries its alternatives in turn. A later alternative can read a value that an earlier one rejects by a constraint. Without `yyjson::reject_missing_keys`, a struct that ignores unknown keys accepts almost any object. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names.
 *   These are compile errors, most of them with a `static_assert` that tells the reason:
     *   A constraint that the type of a field cannot take for another reason than its JSON kind, such as `yyjson::unique_items` on a set or `yyjson::min_length` on an enumeration written by name.
@@ -813,6 +814,53 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
     *   `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains` in the same subschema.
     *   `yyjson::prefix_items` with more positions than a tuple has elements, or on a set or a map.
     *   A subschema larger than the limits below.
+
+### Checking a value before writing
+
+`yyjson::validate(t)` checks a C++ object against the constraints before you write it. `yyjson::write(t, yyjson::with_validation)` checks the object and writes it in one call. See [`yyjson::validate`](reference.md#yyjsonvalidate-yyjsonwith_validation) for the overloads and the exceptions.
+
+```cpp
+struct Order
+{
+    std::string id;
+    std::vector<int> quantities;
+};
+template <>
+inline constexpr auto yyjson::annotations<Order> =
+    yyjson::annotate(yyjson::field("quantities", yyjson::items(yyjson::minimum(1))));
+
+auto orders = std::map<std::string, Order>{{"a/b", {"x", {1, 0}}}};
+try
+{
+    auto json = yyjson::write(orders, yyjson::with_validation);
+}
+catch (const yyjson::bad_cast& e)
+{
+    std::cout << e.path() << std::endl;  // /a~1b/quantities/1
+}
+```
+
+The check follows these rules:
+
+*   It checks the values that `yyjson::write(t)` writes. On each value, it checks the constraints that a read of that JSON with `yyjson::read<T>` checks, and it throws the same message.
+*   It checks the constraints of the fields and of the elements of ranges, maps and tuples. It checks the value that a `std::optional`, a pointer or a `yyjson::indirect` holds too. It checks the fields of the structs in them at any depth.
+*   A field that the write leaves out is not checked, such as a field with `yyjson::default_` that has its default value. With `yyjson::emit_defaults` on the field or in the call, the write writes the field, and the check checks it.
+*   A field that the write writes as `null` is checked as `null`, as a read checks it. Thus `yyjson::not_(yyjson::minimum(0))` rejects an empty `std::shared_ptr<int>`.
+*   The write leaves out an empty `std::optional` field. When the default of the field holds a value, a read gives the field that value. The check rejects such a field, and also a field of a transparent struct over such a `std::optional`, at any depth. The default is the value of the field in `T()`, or the value of `yyjson::default_from<f>`. To get the defaults, the check constructs `T()` one time for each type and keeps it. Thus the constructor of `T` must have no side effects.
+*   `path()` of the error is the JSON Pointer to the value in the written JSON. A key with `/` or `~` is escaped as RFC 6901 tells. A map whose keys are not strings is written as an array of pairs. Thus the path of a value in it is like `/by_id/0/1`.
+*   A NaN or an infinity in a `float` or a `double` is checked by the `WriteFlag` of the write. `validate(t)` uses no flag.
+    *   With `WriteFlag::AllowInfAndNan`, the check checks the number as a read with `ReadFlag::AllowInfAndNan` checks it. Thus a NaN does not satisfy `yyjson::minimum(0)`.
+    *   Without a flag, the check checks the number as with `WriteFlag::AllowInfAndNan`. A `write` with `yyjson::with_validation` throws `yyjson::write_error`, as `yyjson::write` does.
+    *   With `WriteFlag::InfAndNanAsNull`, the check checks each `null` that the write gives for such a number. It checks the `null` as `yyjson::read<T>` with [`yyjson::reject_null_as_missing`](#null-in-a-stdoptional) checks it at that position. A `double` cannot read `null`, so the check throws `yyjson::bad_cast`. A `std::optional<double>` field rejects `null` too. A `std::optional<double>` element of an array and a `yyjson::nullable<double>` accept `null`.
+*   A string that is not valid UTF-8 is checked as a read with `ReadFlag::AllowInvalidUnicode` checks it. A `write` with `yyjson::with_validation` throws `yyjson::write_error`, as `yyjson::write` does, unless the call gives `WriteFlag::AllowInvalidUnicode`.
+*   The check does not check the constraints of a value that the write rejects for another reason, such as an enumeration value without a name. A `write` with `yyjson::with_validation` throws the exception of the write.
+*   The check counts the depth of recursive types as a read does. It throws `yyjson::bad_cast` beyond `CPPYYJSON_RECURSION_DEPTH_LIMIT`.
+*   The compiler removes the check of each value whose type has nothing to check. A type has something to check in these cases:
+    *   It or a type in it has a constraint.
+    *   It or a type in it is a recursive type, whose depth the check counts.
+    *   It or a type in it is a struct with a `std::optional` field that the rule of the empty `std::optional` above checks. This is a field of a struct that has a default constructor, or a field with `yyjson::default_from<f>`.
+
+    `validate` does no work for other types, except for the search of a NaN or an infinity with `WriteFlag::InfAndNanAsNull`.
 
 ### Limits
 
