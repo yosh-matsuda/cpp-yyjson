@@ -844,6 +844,15 @@ The check follows these rules:
 
 *   It checks the values that `yyjson::write(t)` writes. On each value, it checks the constraints that a read of that JSON with `yyjson::read<T>` checks, and it throws the same message.
 *   It checks the constraints of the fields and of the elements of ranges, maps and tuples. It checks the value that a `std::optional`, a pointer or a `yyjson::indirect` holds too. It checks the fields of the structs in them at any depth.
+*   It checks the object of each struct as a read checks it. The object holds the keys that the write writes. These are the keys of the fields, the keys of the maps of `yyjson::extra_keys` and `yyjson::pattern_properties`, and the key of an internal tag.
+    *   On these keys, the check checks `yyjson::additional_properties(false)`, `yyjson::property_names`, `yyjson::min_properties` and `yyjson::max_properties` of the struct.
+    *   It checks `yyjson::required("key", ...)`, `yyjson::dependent_required`, `yyjson::property` and the combinators of the struct.
+    *   It checks these constraints on a field of a struct type and in a subschema of a struct too.
+    *   It checks that the write writes each key that `yyjson::required` on a field or `yyjson::reject_missing_keys` needs. This check needs no memory.
+    *   For `yyjson::additional_properties(false)`, `yyjson::property_names`, `yyjson::min_properties`, `yyjson::max_properties`, the conditions of a struct and the maps of keys, the check needs the written object. It writes the outermost such struct one time, and reads the JSON into a document. The structs in it use the same document. Thus the check allocates memory for these structs.
+*   A key that the write leaves out is a missing key for these constraints. An example is a field with `yyjson::default_` that has its default value. If a `yyjson::dependent_required` of the struct names the key, the check rejects the struct, as a read of the written JSON does. To write the key, give `yyjson::emit_defaults` on the field or in the call.
+*   It checks each value of a map of `yyjson::extra_keys` against the constraints in `yyjson::additional_properties` of the field. It checks each value of a map of `yyjson::pattern_properties` against the constraints of each pattern that matches its key.
+*   A read puts a key into the map of the first pattern that matches it. It puts the other keys into the map of `yyjson::extra_keys`. If a read puts a key into a field other than the map that writes the key, the check rejects the key. Its message is like `the key "abc" of the field "a" of S is read into the field "ab"`. If no field takes the key, the message ends in `is read into no field`.
 *   A field that the write leaves out is not checked, such as a field with `yyjson::default_` that has its default value. With `yyjson::emit_defaults` on the field or in the call, the write writes the field, and the check checks it.
 *   A field that the write writes as `null` is checked as `null`, as a read checks it. Thus `yyjson::not_(yyjson::minimum(0))` rejects an empty `std::shared_ptr<int>`.
 *   The write leaves out an empty `std::optional` field. When the default of the field holds a value, a read gives the field that value. The check rejects such a field, and also a field of a transparent struct over such a `std::optional`, at any depth. The default is the value of the field in `T()`, or the value of `yyjson::default_from<f>`. To get the defaults, the check constructs `T()` one time for each type and keeps it. Thus the constructor of `T` must have no side effects.
@@ -858,6 +867,8 @@ The check follows these rules:
 *   The compiler removes the check of each value whose type has nothing to check. A type has something to check in these cases:
     *   It or a type in it has a constraint.
     *   It or a type in it is a recursive type, whose depth the check counts.
+    *   It or a type in it is a struct with a field of `yyjson::extra_keys` or `yyjson::pattern_properties`.
+    *   It or a type in it is a struct with `yyjson::reject_missing_keys` or with a field with `yyjson::required`.
     *   It or a type in it is a struct with a `std::optional` field that the rule of the empty `std::optional` above checks. This is a field of a struct that has a default constructor, or a field with `yyjson::default_from<f>`.
 
     `validate` does no work for other types, except for the search of a NaN or an infinity with `WriteFlag::InfAndNanAsNull`.

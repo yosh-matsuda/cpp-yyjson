@@ -346,12 +346,12 @@ template <typename T>
 void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t, with_validation_t);
 ```
 
-`validate(t)` checks the values that `write(t)` writes. A read of that JSON with `yyjson::read<T>` checks the same constraints on them. `validate(t, emit_defaults)` checks the values that `write(t, emit_defaults)` writes. `T` must be [writable](#yyjsonreadablet-yyjsonwritablet).
+`validate(t)` checks the values that `write(t)` writes. A read of that JSON with `yyjson::read<T>` checks the same constraints on them. It also checks the object of each struct: the keys, the number of keys, the conditions of the struct, and the members of the maps of `yyjson::extra_keys` and `yyjson::pattern_properties`. `validate(t, emit_defaults)` checks the values that `write(t, emit_defaults)` writes. `T` must be [writable](#yyjsonreadablet-yyjsonwritablet).
 
 A `write` with `with_validation` calls `validate` first, and then writes as the same `write` without the tag does. It gives the same text.
 
-*   `validate` throws [`yyjson::bad_cast`](#yyjsonbad_cast) for the first value that a constraint rejects. `path()` gives the JSON Pointer to that value in the written JSON. `position()` gives no position. `what()` is the message that `read<T>` gives for that value, without the position.
-*   When the write rejects the same object, a `write` with `with_validation` throws the exception of the write instead of the `bad_cast`. Examples are `yyjson::write_error` for a NaN without `WriteFlag::AllowInfAndNan`, and `std::invalid_argument` for a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative.
+*   `validate` throws [`yyjson::bad_cast`](#yyjsonbad_cast) for the first value that a constraint rejects. `path()` gives the JSON Pointer to that value in the written JSON. `position()` gives no position. `what()` is the message that `read<T>` gives for that value, without the position. A key that a read puts into another field than the map that writes it has its own message.
+*   When the write rejects the same object, a `write` with `with_validation` throws the exception of the write instead of the `bad_cast`. Examples are `yyjson::write_error` for a NaN without `WriteFlag::AllowInfAndNan`, and `std::invalid_argument` for a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative. A field with the key of an internal tag that holds another name also gives `std::invalid_argument`.
 *   When `validate` throws, the forms with `out` leave `out` unchanged. This holds also when they throw the exception of the write in its place. When `validate` passes, `out` is as `yyjson::write` leaves it.
 
 The checks follow the [rules of the check before a write](validation.md#checking-a-value-before-writing).

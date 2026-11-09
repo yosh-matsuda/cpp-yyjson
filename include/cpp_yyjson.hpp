@@ -38051,6 +38051,21 @@ namespace yyjson
                 return presence_of<S, r>.from.has_value() || std::is_default_constructible_v<S>;
         }();
 
+        // Whether the object of the struct S is checked as a whole: its keys, their number, the rules on the keys
+        // that it has, its conditions, or the members of its maps of `yyjson::extra_keys` and
+        // `yyjson::pattern_properties`.
+        template <typename S>
+        inline constexpr bool checks_written_object =
+            validated_struct<S> && !transparent_struct<S> && !as_array_struct<S> &&
+            (struct_closed<S> || struct_property_names<S> || struct_property_counts<S> || has_struct_conditions<S> ||
+             has_key_maps<S>);
+        // Whether a key of S that write leaves out can be missing for a read: of a field with `yyjson::required`,
+        // or under `yyjson::reject_missing_keys` on S.
+        template <typename S>
+        inline constexpr bool checks_missing_keys =
+            validated_struct<S> && !transparent_struct<S> && !as_array_struct<S> &&
+            (has_required_fields<S> || (struct_policies<S> & missing_keys_policy) != 0);
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
@@ -38062,7 +38077,8 @@ namespace yyjson
             else
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return ((constrained_field<T, Ks> || may_read_back_value<T, Ks>) || ...);
-                }(std::make_index_sequence<struct_field_count<T>>{});
+                }(std::make_index_sequence<struct_field_count<T>>{}) ||
+                       checks_written_object<T> || checks_missing_keys<T>;
         }
         // A node of the graph of `conversion_node`, marked when `yyjson::validate` checks something of its type.
         template <typename T>
@@ -38085,15 +38101,77 @@ namespace yyjson
         template <typename... Ts>
         auto floating_point_nodes(type_list<conversion_node<write_conversion, Ts>...>)
             -> type_list<floating_point_node<Ts>...>;
+        template <typename... As, typename... Bs>
+        auto joined_nodes(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
+        // The nodes of the values of the maps of `yyjson::extra_keys` and `yyjson::pattern_properties` of T, which
+        // write gives as members of the object of T.
+        template <template <typename> class Node, typename T>
+        consteval auto key_map_value_nodes()
+        {
+            if constexpr (!validated_struct<T>)
+                return type_list<>{};
+            else if constexpr (!has_key_maps<T>)
+                return type_list<>{};
+            else
+                return []<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                    using patterns = type_list<Node<
+                        std::remove_cvref_t<typename key_map_type<T, pattern_field_indices<T>[Ps]>::mapped_type>>...>;
+                    if constexpr (has_extra_keys<T>)
+                        return decltype(joined_nodes(
+                            patterns{},
+                            type_list<Node<
+                                std::remove_cvref_t<typename key_map_type<T, extra_keys_index<T>>::mapped_type>>>{})){};
+                    else
+                        return patterns{};
+                }(std::make_index_sequence<pattern_count<T>>{});
+        }
         template <typename T>
         struct floating_point_node
         {
-            using edges = decltype(floating_point_nodes(typename conversion_node<write_conversion, T>::edges{}));
+            using edges =
+                decltype(joined_nodes(floating_point_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                                      key_map_value_nodes<floating_point_node, T>()));
             static constexpr bool marked = std::floating_point<T>;
         };
         template <typename T>
         inline constexpr bool writes_floating_point =
             graph_search(&graph_node<floating_point_node<std::remove_cvref_t<T>>>);
+
+        // Whether the keywords of the struct S count a part of the JSON that write gives for it.
+        template <typename S>
+        consteval bool counts_written_json()
+        {
+            if constexpr (!validated_struct<S> || transparent_struct<S>)
+                return false;
+            else if constexpr (checks_written_object<S>)
+                return true;
+            else
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return ([] {
+                        if constexpr (constrained_field<S, Ks>)
+                            return field_counts_input<S, Ks, struct_field_type<S, Ks>>;
+                        else
+                            return false;
+                    }() || ...);
+                }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+        // A node of the same graph, marked for a struct whose check needs the JSON that write gives for it.
+        template <typename T>
+        struct written_json_node;
+        template <typename... Ts>
+        auto written_json_nodes(type_list<conversion_node<write_conversion, Ts>...>)
+            -> type_list<written_json_node<Ts>...>;
+        template <typename T>
+        struct written_json_node
+        {
+            using edges =
+                decltype(joined_nodes(written_json_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                                      key_map_value_nodes<written_json_node, T>()));
+            static constexpr bool marked = counts_written_json<T>();
+        };
+        // Whether the check of a value of T needs the JSON that write gives for it.
+        template <typename T>
+        inline constexpr bool needs_written_json = graph_search(&graph_node<written_json_node<std::remove_cvref_t<T>>>);
 
         // Calls `f` with the alternative that the variant `v` holds, if it holds one.
         template <typename V, typename F>
@@ -38219,17 +38297,21 @@ namespace yyjson
             return validated_text(v, flag);
         }
 
-        // Reads `text` as the flag of the write that gave it allows, and calls `f` with the document, with the path
-        // of a `bad_cast` that leaves it taken from its root, as the document does not outlive the call.
-        template <typename F>
-        void throw_in_written_json(const std::string& text, WriteFlag flag, F&& f)
+        // Reads `text` as the flag of the write that gave it allows.
+        inline auto written_document(std::string_view text, WriteFlag flag)
         {
             auto read_flag = ReadFlag::NoFlag;
             if ((to_underlying(flag) & YYJSON_WRITE_ALLOW_INF_AND_NAN) != 0)
                 read_flag = read_flag | ReadFlag::AllowInfAndNan;
             if ((to_underlying(flag) & YYJSON_WRITE_ALLOW_INVALID_UNICODE) != 0)
                 read_flag = read_flag | ReadFlag::AllowInvalidUnicode;
-            const auto doc = reader::read(text, read_flag);
+            return reader::read(text, read_flag);
+        }
+        // Calls `f` with the document `doc`, with the path of a `bad_cast` that leaves it taken from its root, as
+        // the document does not outlive the call.
+        template <typename Doc, typename F>
+        void throw_in_document(const Doc& doc, F&& f)
+        {
             try
             {
                 std::forward<F>(f)(doc);
@@ -38241,6 +38323,12 @@ namespace yyjson
                 throw;
             }
         }
+        template <typename F>
+        void throw_in_written_json(std::string_view text, WriteFlag flag, F&& f)
+        {
+            const auto doc = written_document(text, flag);
+            throw_in_document(doc, std::forward<F>(f));
+        }
 
         // Throws as read throws for the field K of S, whose value `field` violates the keyword `kind`, from the JSON
         // that write gives for it.  It returns if write cannot write the value even with any number and string.
@@ -38251,6 +38339,27 @@ namespace yyjson
             const auto text = validated_text_allowing(writable_field(field), flag);
             if (!text.has_value()) return;
             throw_in_written_json(*text, flag, [&](const auto& json) { throw_field_violation<S, K, F>(json, kind); });
+        }
+
+        // Checks the keywords of the field K of S, `field`, that count a part of the JSON value, such as the keys
+        // of a struct, on `json`, the JSON that write gives for it, or if none, on the JSON of a write of `field`.
+        template <typename S, std::size_t K, typename F>
+        CPPYYJSON_NOINLINE void validate_counted_field(const F& field, WriteFlag flag,
+                                                       const reader::const_value_ref* json)
+        {
+            const auto check = [&](const auto& doc) {
+                const reader::const_value_ref value = doc;
+                if (const auto kind = field_violation<S, K>(field, &value); kind != constraint_kind::none)
+                    throw_field_violation<S, K, F>(value, kind);
+            };
+            if (json != nullptr)
+            {
+                throw_in_document(*json, check);
+                return;
+            }
+            const auto text = validated_text_allowing(writable_field(field), flag);
+            if (!text.has_value()) return;
+            throw_in_written_json(*text, flag, check);
         }
 
         // The same for the elements of `yyjson::extra_items`, the field K of `s`, which are found in the JSON array
@@ -38335,6 +38444,115 @@ namespace yyjson
             }
         }
 
+        // A node of the graph of `conversion_node`, marked for a struct that is not transparent.
+        template <typename T>
+        struct struct_node;
+        template <typename... Ts>
+        auto struct_nodes(type_list<conversion_node<write_conversion, Ts>...>) -> type_list<struct_node<Ts>...>;
+        template <typename T>
+        struct struct_node
+        {
+            using edges = decltype(struct_nodes(typename conversion_node<write_conversion, T>::edges{}));
+            static constexpr bool marked = validated_struct<T> && !transparent_struct<T>;
+        };
+        // Whether a value of T can hold a struct whose fields are positions of their own.
+        template <typename T>
+        inline constexpr bool reaches_struct = graph_search(&graph_node<struct_node<std::remove_cvref_t<T>>>);
+
+        // Whether write gives null for `v` itself with `WriteFlag::InfAndNanAsNull`: `v` is an infinity or a NaN, or
+        // holds one in a `std::optional`, a pointer, a variant or a transparent struct.
+        template <typename T>
+        bool written_null_for_non_finite(const T& v)
+        {
+            if constexpr (!writes_floating_point<T>)
+                return false;
+            else if constexpr (std::floating_point<T>)
+                return !std::isfinite(v);
+            else if constexpr (is_std_optional<T>::value || nullable_value<T>)
+                return v.has_value() && written_null_for_non_finite(*v);
+            else if constexpr (owning_pointer<T>)
+                return v != nullptr && written_null_for_non_finite(*v);
+            else if constexpr (indirect_value<T>)
+                return !v.valueless_after_move() && written_null_for_non_finite(*v);
+            else if constexpr (requires { std::variant_size<T>::value; })
+            {
+                auto found = false;
+                visit_alternative(v, [&](const auto& a) { found = written_null_for_non_finite(a); });
+                return found;
+            }
+            else if constexpr (validated_struct<T> && transparent_struct<T>)
+                return written_null_for_non_finite(struct_field<0>(v));
+            else
+                return false;
+        }
+
+        // Reads null back into a value of T, as read with `yyjson::reject_null_as_missing` reads it.
+        template <typename T>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void read_back_null(WriteFlag flag)
+        {
+            if constexpr (readable<T>)
+                throw_in_written_json("null", flag, [](const auto& json) {
+                    const exact_policy_scope scope(null_as_missing_policy);
+                    (void)cast_nested<T>(json);
+                });
+        }
+
+        // Reads back each position in `v` that write gives null for an infinity or a NaN, alone, so that the
+        // structs in `v`, which are checked by their own keywords, are not read back.
+        template <typename T>
+        void read_back_positions(const T& v, WriteFlag flag)
+        {
+            if constexpr (writes_floating_point<T>)
+            {
+                if (written_null_for_non_finite(v))
+                    read_back_null<T>(flag);
+                else if constexpr (is_std_optional<T>::value || nullable_value<T>)
+                {
+                    if (v.has_value()) read_back_positions(*v, flag);
+                }
+                else if constexpr (owning_pointer<T>)
+                {
+                    if (v != nullptr) read_back_positions(*v, flag);
+                }
+                else if constexpr (indirect_value<T>)
+                {
+                    if (!v.valueless_after_move()) read_back_positions(*v, flag);
+                }
+                else if constexpr (requires { std::variant_size<T>::value; })
+                    visit_alternative(v, [&](const auto& a) { read_back_positions(a, flag); });
+                else if constexpr (validated_struct<T>)
+                {
+                    if constexpr (transparent_struct<T>) read_back_positions(struct_field<0>(v), flag);
+                }
+                else if constexpr (std::is_array_v<T>)
+                {
+                    for (std::size_t i = 0; i < std::extent_v<T>; ++i)
+                        validate_at([i] { return std::to_string(i); }, [&] { read_back_positions(v[i], flag); });
+                }
+                else if constexpr (object_written_range<T>)
+                {
+                    for (const auto& e : v)
+                        validate_at([&] { return written_key_text(std::get<0>(e)); },
+                                    [&] { read_back_positions(std::get<1>(e), flag); });
+                }
+                else if constexpr (std::ranges::range<T>)
+                {
+                    auto i = std::size_t{0};
+                    for (const auto& e : v)
+                    {
+                        validate_at([i] { return std::to_string(i); }, [&] { read_back_positions(e, flag); });
+                        ++i;
+                    }
+                }
+                else if constexpr (tuple_like<T>)
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (validate_at([] { return std::to_string(Is); },
+                                     [&] { read_back_positions(std::get<Is>(v), flag); }),
+                         ...);
+                    }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            }
+        }
+
         // Throws for the field K of S, an empty `std::optional` that write leaves out, while a read of the JSON
         // gives it the value of its default.
         template <typename S, std::size_t K>
@@ -38394,36 +38612,187 @@ namespace yyjson
         template <typename T, bool AsNull>
         inline constexpr bool validation_walks = needs_validation<T> || (AsNull && writes_floating_point<T>);
 
-        template <bool AsNull, typename T>
-        void validate_value(const T& v, WriteFlag flag);
-        template <bool AsNull, typename T>
-        CPPYYJSON_ALWAYS_INLINE inline void validate_nested(const T& v, WriteFlag flag)
+        // The tag of an internally tagged variant that holds the struct that is checked, whose object has the key
+        // of the tag, and the tag of the variant that holds that variant, if any.
+        struct validated_tag
         {
-            if constexpr (validation_walks<T, AsNull>) validate_value<AsNull>(v, flag);
+            std::string_view key;
+            std::string_view id;
+            const validated_tag* outer;
+        };
+
+        // The JSON value that write gives at the position that the walk visits, from the write of a struct around
+        // it, or null if no such write took place.
+        using written_json = const reader::const_value_ref*;
+
+        // The members of the JSON object `json` of a struct, if it is one, found by key from the one after the last
+        // found, as the walk visits them in the order of write.  The iterators refer to the object in it.
+        class written_members
+        {
+        public:
+            explicit written_members(written_json json)
+            {
+                if (json == nullptr) return;
+                if (const auto obj = json->as_object(); obj.has_value())
+                {
+                    obj_.emplace(*obj);
+                    at_ = obj_->begin();
+                }
+            }
+            written_members(const written_members&) = delete;
+            written_members& operator=(const written_members&) = delete;
+            [[nodiscard]] bool open() const noexcept { return obj_.has_value(); }
+            CPPYYJSON_NOINLINE written_json find(std::string_view key)
+            {
+                if (!obj_.has_value()) return nullptr;
+                for (auto n = obj_->size(); n != 0; --n)
+                {
+                    if (at_ == obj_->end()) at_ = obj_->begin();
+                    const auto [k, v] = *at_;
+                    ++at_;
+                    if (k == key) return &found_.emplace(v);
+                }
+                return nullptr;
+            }
+
+        private:
+            std::optional<reader::const_object_ref> obj_;
+            reader::const_object_iter at_{};
+            std::optional<reader::const_value_ref> found_;
+        };
+
+        // The elements of the JSON array `json`, if it is one, one for each call, while it has one.  The iterators
+        // refer to the array in it.
+        class written_elements
+        {
+        public:
+            explicit written_elements(written_json json)
+            {
+                if (json == nullptr) return;
+                if (const auto arr = json->as_array(); arr.has_value())
+                {
+                    arr_.emplace(*arr);
+                    at_ = arr_->begin();
+                }
+            }
+            written_elements(const written_elements&) = delete;
+            written_elements& operator=(const written_elements&) = delete;
+            written_json next()
+            {
+                if (!arr_.has_value() || at_ == arr_->end()) return nullptr;
+                const auto& value = found_.emplace(*at_);
+                ++at_;
+                return &value;
+            }
+
+        private:
+            std::optional<reader::const_array_ref> arr_;
+            reader::const_array_iter at_{};
+            std::optional<reader::const_value_ref> found_;
+        };
+
+        // A walk passes the tag and the JSON of a value as `written` only to a type that needs them, so that a walk
+        // without them takes no argument that it does not use.  These give each of them, or null if none.
+        CPPYYJSON_ALWAYS_INLINE inline const validated_tag* tag_of() { return nullptr; }
+        CPPYYJSON_ALWAYS_INLINE inline const validated_tag* tag_of(const validated_tag* tag, written_json) { return tag; }
+        CPPYYJSON_ALWAYS_INLINE inline written_json json_of() { return nullptr; }
+        CPPYYJSON_ALWAYS_INLINE inline written_json json_of(const validated_tag*, written_json json) { return json; }
+
+        template <bool AsNull, typename T, typename... Written>
+        void validate_value(const T& v, WriteFlag flag, const Written&... written);
+        template <bool AsNull, typename T>
+        CPPYYJSON_ALWAYS_INLINE inline void validate_nested(const T& v, WriteFlag flag,
+                                                            const validated_tag* tag = nullptr,
+                                                            written_json json = nullptr)
+        {
+            if constexpr (validation_walks<T, AsNull>)
+            {
+                if constexpr (needs_written_json<T>)
+                    validate_value<AsNull>(v, flag, tag, json);
+                else
+                    validate_value<AsNull>(v, flag);
+            }
         }
 
-        // Checks the field K of S that is written, `field`: the values in it first, then its keywords, as read does.
-        // A field that write gives null for an infinity or a NaN is read back instead, by the position that holds
-        // it, which for a transparent struct is the position of the struct.
-        template <bool AsNull, typename S, std::size_t K, typename F>
-        void validate_written_field(const F& field, WriteFlag flag)
+        // Checks the elements of `range` with the elements of the JSON array `json`, at the same index.
+        template <bool AsNull, typename R>
+        CPPYYJSON_NOINLINE void validate_written_elements(const R& range, WriteFlag flag, written_json json)
         {
-            validate_nested<AsNull>(field, flag);
+            auto elements = written_elements(json);
+            auto i = std::size_t{0};
+            for (const auto& e : range)
+            {
+                const auto element = elements.next();
+                validate_at([i] { return std::to_string(i); },
+                            [&] { validate_nested<AsNull>(e, flag, nullptr, element); });
+                ++i;
+            }
+        }
+        // Checks the values of `range`, which write gives as members, with the members of the JSON object `json`
+        // that have their keys.
+        template <bool AsNull, typename R>
+        CPPYYJSON_NOINLINE void validate_written_members(const R& range, WriteFlag flag, written_json json)
+        {
+            auto members = written_members(json);
+            for (const auto& e : range)
+            {
+                const auto member = members.open() ? members.find(written_key_text(std::get<0>(e))) : nullptr;
+                validate_at([&] { return written_key_text(std::get<0>(e)); },
+                            [&] { validate_nested<AsNull>(std::get<1>(e), flag, nullptr, member); });
+            }
+        }
+
+        // Checks the field K of S that is written, `field`, with its tag and JSON `written`: the values in it first,
+        // then its keywords, as read does.  A field that write gives null for an infinity or a NaN is read back:
+        // its positions, then the whole field.  For a transparent S, S does it.
+        template <bool AsNull, typename S, std::size_t K, typename F, typename... Written>
+        void validate_written_field(const F& field, WriteFlag flag, const Written&... written)
+        {
+            validate_nested<AsNull>(field, flag, written...);
             if constexpr (AsNull && writes_floating_point<F>)
             {
                 if (holds_non_finite(field)) [[unlikely]]
                 {
-                    if constexpr (!transparent_struct<S>) read_back_field<S, K>(field, flag);
+                    if constexpr (transparent_struct<S>)
+                        return;
+                    else if constexpr (!reaches_struct<F>)
+                        read_back_field<S, K>(field, flag);
+                    else
+                    {
+                        read_back_positions(field, flag);
+                        if constexpr (constrained_field<S, K>) read_back_field<S, K>(field, flag);
+                    }
                     return;
                 }
             }
             if constexpr (constrained_field<S, K>)
-                if (const auto kind = field_violation<S, K>(field); kind != constraint_kind::none) [[unlikely]]
+            {
+                if constexpr (field_counts_input<S, K, F>)
+                    validate_counted_field<S, K>(field, flag, json_of(written...));
+                else if (const auto kind = field_violation<S, K>(field); kind != constraint_kind::none) [[unlikely]]
                     throw_validated_field<S, K>(field, kind, flag);
+            }
         }
 
-        template <bool AsNull, typename S, std::size_t K>
-        CPPYYJSON_ALWAYS_INLINE inline void validate_object_field(const S& s, WriteFlag flag)
+        // Whether the walk of the field K of S needs the JSON that write gives for it.
+        template <typename S, std::size_t K, bool AsNull>
+        consteval bool uses_written_json()
+        {
+            using F = struct_field_type<S, K>;
+            if constexpr (constrained_field<S, K>)
+                return needs_written_json<F> || field_counts_input<S, K, F>;
+            else
+                return needs_written_json<F>;
+        }
+        template <typename S, std::size_t K, bool AsNull>
+        inline constexpr bool field_uses_json = uses_written_json<S, K, AsNull>();
+        template <typename S, bool AsNull>
+        inline constexpr bool fields_use_json = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return (field_uses_json<S, Ks, AsNull> || ...);
+        }(std::make_index_sequence<struct_field_count<S>>{});
+
+        template <bool AsNull, typename S, std::size_t K, typename... Members>
+        CPPYYJSON_ALWAYS_INLINE inline void validate_object_field(const S& s, WriteFlag flag, Members... members)
         {
             using F = struct_field_type<S, K>;
             if constexpr (validation_walks<F, AsNull> || constrained_field<S, K> || may_read_back_value<S, K>)
@@ -38437,9 +38806,31 @@ namespace yyjson
                     return;
                 }
                 if constexpr (validation_walks<F, AsNull> || constrained_field<S, K>)
-                    validate_at([] { return struct_field_key<S, K>; },
-                                [&] { validate_written_field<AsNull, S, K>(field, flag); });
+                {
+                    if constexpr (field_uses_json<S, K, AsNull> && sizeof...(Members) != 0)
+                    {
+                        auto json = written_json{nullptr};
+                        ((json = members != nullptr ? members->find(struct_field_key<S, K>) : nullptr), ...);
+                        validate_at([] { return struct_field_key<S, K>; },
+                                    [&] { validate_written_field<AsNull, S, K>(field, flag, nullptr, json); });
+                    }
+                    else
+                        validate_at([] { return struct_field_key<S, K>; },
+                                    [&] { validate_written_field<AsNull, S, K>(field, flag); });
+                }
             }
+        }
+
+        // Throws as read throws for the field K of S, `field`, if write leaves it out but read needs its key.
+        template <typename S, std::size_t K>
+        CPPYYJSON_ALWAYS_INLINE inline void validate_written_key(const S& s)
+        {
+            constexpr auto needed = (struct_policies<S> & missing_keys_policy) != 0 ? !struct_field_absence<S>[K]
+                                                                                    : struct_field_required<S>[K];
+            if constexpr (needed)
+                if (!validated_field_written<S, K>(struct_field<K>(s))) [[unlikely]]
+                    throw_bad_cast_at(cast_target{}, "{} is not constructible from JSON without the key \"{}\"",
+                                      type_name<S>(), struct_field_key<S, K>);
         }
 
         // Read checks the null of each member of an object under the policies before it reads the members.
@@ -38458,15 +38849,30 @@ namespace yyjson
 
         // The positions of `s`, a struct annotated with `yyjson::as_array`, up to the first that is left out, and
         // the elements of `yyjson::extra_items` if none is.
-        template <bool AsNull, typename S>
-        void validate_array_struct(const S& s, WriteFlag flag)
+        template <bool AsNull, typename S, typename... Written>
+        void validate_array_struct(const S& s, WriteFlag flag, const Written&... written)
         {
             constexpr auto n = array_position_count<S>;
+            constexpr auto with_json = sizeof...(Written) != 0;
+            [[maybe_unused]] auto elements = written_elements(json_of(written...));
             const auto complete = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return ([&] {
                     if (position_omitted<Ks>(s)) return false;
                     using F = struct_field_type<S, Ks>;
-                    if constexpr (validation_walks<F, AsNull> || constrained_field<S, Ks>)
+                    constexpr auto walks = validation_walks<F, AsNull> || constrained_field<S, Ks>;
+                    if constexpr (with_json)
+                    {
+                        const auto position = elements.next();
+                        if constexpr (walks)
+                            validate_at([] { return std::to_string(Ks); },
+                                        [&] {
+                                            validate_written_field<AsNull, S, Ks>(struct_field<Ks>(s), flag,
+                                                                                  nullptr, position);
+                                        });
+                        else
+                            (void)position;
+                    }
+                    else if constexpr (walks)
                         validate_at([] { return std::to_string(Ks); },
                                     [&] { validate_written_field<AsNull, S, Ks>(struct_field<Ks>(s), flag); });
                     return true;
@@ -38482,7 +38888,14 @@ namespace yyjson
                     auto i = n;
                     for (const auto& e : extra)
                     {
-                        validate_at([i] { return std::to_string(i); }, [&] { validate_nested<AsNull>(e, flag); });
+                        if constexpr (with_json)
+                        {
+                            const auto element = elements.next();
+                            validate_at([i] { return std::to_string(i); },
+                                        [&] { validate_nested<AsNull>(e, flag, nullptr, element); });
+                        }
+                        else
+                            validate_at([i] { return std::to_string(i); }, [&] { validate_nested<AsNull>(e, flag); });
                         ++i;
                     }
                 }
@@ -38502,55 +38915,381 @@ namespace yyjson
                 (void)complete;
         }
 
+        // The fields of `s`, whose members are found in `members`, after the keys that read needs unless
+        // `KeysChecked`.
+        template <bool AsNull, bool KeysChecked, typename S, typename... Members>
+        void validate_object_members(const S& s, WriteFlag flag, Members... members)
+        {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                if constexpr (AsNull) (validate_null_as_missing<S, Ks>(s, flag), ...);
+                if constexpr (!KeysChecked && checks_missing_keys<S>) (validate_written_key<S, Ks>(s), ...);
+                (validate_object_field<AsNull, S, Ks>(s, flag, members...), ...);
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+        template <bool AsNull, bool KeysChecked, typename S>
+        CPPYYJSON_NOINLINE void validate_object_members_in(const S& s, WriteFlag flag, written_json json)
+        {
+            auto members = written_members(json);
+            validate_object_members<AsNull, KeysChecked>(s, flag, members.open() ? &members : nullptr);
+        }
+        // The same for `s` whose object is `json`, if any.
+        template <bool AsNull, bool KeysChecked, typename S, typename... Json>
+        void validate_object_fields(const S& s, WriteFlag flag, const Json&... json)
+        {
+            if constexpr (fields_use_json<S, AsNull> && sizeof...(Json) != 0)
+                if (const written_json j = (json, ...); j != nullptr)
+                {
+                    validate_object_members_in<AsNull, KeysChecked>(s, flag, j);
+                    return;
+                }
+            validate_object_members<AsNull, KeysChecked>(s, flag);
+        }
+
+        // The JSON text of the object of `s`, with the keys of the tags `tag` that write puts in front of it, the
+        // outer first, unless it has them.  `flag` takes the flags that the text needs, as in
+        // `validated_text_allowing`.
+        template <typename S>
+        CPPYYJSON_NOINLINE std::optional<std::string> written_object_text(const S& s, WriteFlag& flag,
+                                                                          const validated_tag* tag)
+        {
+            auto text = validated_text_allowing(s, flag);
+            if (!text.has_value() || tag == nullptr) return text;
+            const auto doc = written_document(*text, flag);
+            const auto obj = doc.as_object();
+            if (!obj.has_value()) return text;
+            auto keys = std::vector<std::string_view>();
+            for (const auto& [key, value] : *obj) keys.emplace_back(key);
+            auto chain = std::vector<const validated_tag*>();
+            for (const auto* t = tag; t != nullptr; t = t->outer) chain.push_back(t);
+            auto members = std::string("{");
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+            {
+                if (std::ranges::find(keys, (*it)->key) != keys.end()) continue;
+                keys.push_back((*it)->key);
+                members += yyjson::write((*it)->key);
+                members += ':';
+                members += yyjson::write((*it)->id);
+                members += ',';
+            }
+            if (members.size() == 1) return text;
+            const auto rest = text->find_first_not_of(" \t\n\r", 1);
+            if (rest != std::string::npos && (*text)[rest] == '}')
+                members.back() = '}';
+            else
+                members.append(*text, 1);
+            return members;
+        }
+
+        // Calls `f()` with the keys of the tags `tag` marked in the object `obj`, as the read of the variants marks
+        // them.
+        template <typename F>
+        void with_written_tags(const void* obj, const validated_tag* tag, F&& f)
+        {
+            if (tag == nullptr)
+            {
+                std::forward<F>(f)();
+                return;
+            }
+            const internal_tag_key scope(obj, tag->key);
+            with_written_tags(obj, tag->outer, std::forward<F>(f));
+        }
+
+        // Reads back the member `json` of the key `key` of the object of S, which the map R of S receives, and
+        // checks it against the keywords of the values of the map.  A value that the keywords do not check is read
+        // back only if write can give null for an infinity or a NaN in it.
+        template <bool AsNull, typename S, std::size_t R, typename Json>
+        void check_written_map_value(std::string_view key, const Json& json)
+        {
+            using E = typename key_map_type<S, R>::mapped_type;
+            if constexpr (readable<E> &&
+                          (extra_keys_schema<S, R>::node.properties != 0 || (AsNull && writes_floating_point<E>)))
+            {
+                const exact_policy_scope scope(null_as_missing_policy);
+                const auto e = cast_nested<E>(json);
+                check_extra_value<S, R>(e, key, json);
+            }
+        }
+
+        // Checks the members of the object `obj` of S as read checks those that its maps of `yyjson::extra_keys`
+        // and `yyjson::pattern_properties` receive, and those whose keys a pattern of S matches.
+        template <bool AsNull, typename S, typename Json>
+        CPPYYJSON_NOINLINE void check_written_key_maps(const Json& obj)
+        {
+            const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(obj);
+            const auto& rules = struct_rules<S>;
+            auto hint = std::size_t{0};
+            for (auto&& [k, value] : obj)
+            {
+                const auto key = std::string_view(k);
+                if constexpr (has_pattern_fields<S>)
+                {
+                    auto mask = std::uint64_t{0};
+                    if (const auto i = rules.find(key, hint); i < rules.size)
+                    {
+                        hint = i + 1;
+                        if (!(value.is_null() && null_absent_fields<S>[i])) mask = key_patterns_of<S>().fields[i];
+                    }
+                    else if (const auto j = adjacent_tag_index(rules, key); j < rules.tag_count)
+                        mask = key_patterns_of<S>().tags[j];
+                    else if (internal_tag_key::contains(raw, key))
+                        mask = pattern_mask<S>(key);
+                    else if (const auto p = first_pattern<S>(key); p != pattern_count<S>)
+                    {
+                        call_at_index<pattern_count<S>>(p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
+                            constexpr auto r = pattern_field_indices<S>[P];
+                            check_extra_key<S, r>(key, value);
+                            check_written_map_value<AsNull, S, r>(key, value);
+                        });
+                        mask = pattern_mask<S>(key, p + 1);
+                    }
+                    else if constexpr (has_extra_keys<S>)
+                    {
+                        check_extra_key<S>(key, value);
+                        check_written_map_value<AsNull, S, extra_keys_index<S>>(key, value);
+                        continue;
+                    }
+                    if (mask != 0) [[unlikely]]
+                        check_pattern_members<S>(mask, key, value);
+                }
+                else if (extra_key_of<S>(raw, key, hint))
+                {
+                    check_extra_key<S>(key, value);
+                    check_written_map_value<AsNull, S, extra_keys_index<S>>(key, value);
+                }
+            }
+        }
+
+        inline bool is_tag_key(const validated_tag* tag, std::string_view key) noexcept
+        {
+            for (; tag != nullptr; tag = tag->outer)
+                if (tag->key == key) return true;
+            return false;
+        }
+
+        inline constexpr auto no_field_index = std::numeric_limits<std::size_t>::max();
+        // Throws for the key `key` of the map of the field R of S, which a read of the object of S stores in the
+        // field Into, or in no field if Into is `no_field_index`.
+        template <typename S, std::size_t R, std::size_t Into>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_key_read_into(std::string_view key)
+        {
+            auto e = [&] {
+                if constexpr (Into == no_field_index)
+                    return bad_cast(std::format("the key \"{}\" of the field \"{}\" of {} is read into no field", key,
+                                                declared_member_name<S, R>, type_name<S>()));
+                else
+                    return bad_cast(
+                        std::format("the key \"{}\" of the field \"{}\" of {} is read into the field \"{}\"", key,
+                                    declared_member_name<S, R>, type_name<S>(), declared_member_name<S, Into>));
+            }();
+            bad_cast_access::prepend_path(e, key);
+            throw e;
+        }
+
+        // Whether the key `key` of a map of S is the key of a field or of a tag of S, for which write throws.
+        template <typename S>
+        bool written_key_conflicts(std::string_view key)
+        {
+            const auto& rules = struct_rules<S>;
+            return rules.find(key, 0) < rules.size || rules.is_adjacent_tag(key);
+        }
+
+        // Throws for a key of a map of `s` that a read of the object of `s` stores in another field: a key of a
+        // field of `yyjson::pattern_properties` that the pattern of an earlier field matches, or that no pattern
+        // matches, and a key of the field of `yyjson::extra_keys` that a pattern matches.
+        template <typename S>
+        void check_key_map_routes(const S& s)
+        {
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (
+                    [&] {
+                        constexpr auto r = pattern_field_indices<S>[Ps];
+                        for (const auto& kv : field_reflection::get_field<r>(s))
+                        {
+                            const auto key = std::string_view(std::get<0>(kv));
+                            if (written_key_conflicts<S>(key)) continue;
+                            const auto p = first_pattern<S>(key);
+                            if (p == Ps) continue;
+                            if (p != pattern_count<S>)
+                                call_at_index<pattern_count<S>>(
+                                    p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
+                                        throw_key_read_into<S, r, pattern_field_indices<S>[P]>(key);
+                                    });
+                            else if constexpr (has_extra_keys<S>)
+                                throw_key_read_into<S, r, extra_keys_index<S>>(key);
+                            else if constexpr (!struct_closed<S> && (struct_policies<S> & unknown_keys_policy) == 0)
+                                throw_key_read_into<S, r, no_field_index>(key);
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<pattern_count<S>>{});
+            if constexpr (has_extra_keys<S> && has_pattern_fields<S>)
+            {
+                constexpr auto r = extra_keys_index<S>;
+                for (const auto& kv : field_reflection::get_field<r>(s))
+                {
+                    const auto key = std::string_view(std::get<0>(kv));
+                    if (written_key_conflicts<S>(key)) continue;
+                    if (const auto p = first_pattern<S>(key); p != pattern_count<S>)
+                        call_at_index<pattern_count<S>>(p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
+                            throw_key_read_into<S, r, pattern_field_indices<S>[P]>(key);
+                        });
+                }
+            }
+        }
+
+        // Walks the values of the maps of `s`.
         template <bool AsNull, typename S>
-        void validate_struct(const S& s, WriteFlag flag)
+        void validate_key_map_values(const S& s, WriteFlag flag, const validated_tag* tag, written_json json)
+        {
+            auto members = written_members(json);
+            const auto walk = [&]<std::size_t R>(std::integral_constant<std::size_t, R>) {
+                using M = key_map_type<S, R>;
+                if constexpr (validation_walks<typename M::mapped_type, AsNull>)
+                    for (const auto& kv : field_reflection::get_field<R>(s))
+                    {
+                        const auto& key = written_key_text(std::get<0>(kv));
+                        const auto value = !is_tag_key(tag, key) ? members.find(key) : nullptr;
+                        validate_at([&] { return std::string(key); },
+                                    [&] { validate_nested<AsNull>(std::get<1>(kv), flag, nullptr, value); });
+                    }
+            };
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (walk(std::integral_constant<std::size_t, pattern_field_indices<S>[Ps]> {}), ...);
+            }(std::make_index_sequence<pattern_count<S>>{});
+            if constexpr (has_extra_keys<S>) walk(std::integral_constant<std::size_t, extra_keys_index<S>>{});
+        }
+
+        // Checks the struct `s`, whose object is `json`, as read checks it, in the order of read: the keys of the
+        // object and their number, the fields, the members that the maps receive, and the conditions.
+        template <bool AsNull, typename S>
+        void check_written_object(const S& s, WriteFlag flag, const validated_tag* tag,
+                                  const reader::const_value_ref& json)
+        {
+            const auto obj = json.as_object();
+            if (!obj.has_value()) return;
+            const auto in_object = [&](const auto& f) {
+                throw_in_document(json, [&](const auto&) {
+                    with_written_tags(writer::detail::json_value_access::get(*obj), tag, [&] {
+                        const exact_policy_scope scope(0);
+                        f(*obj);
+                    });
+                });
+            };
+            in_object([](const auto& o) { check_struct_object<S>(o, false); });
+            validate_object_fields<AsNull, true>(s, flag, &json);
+            if constexpr (has_key_maps<S>)
+            {
+                validate_key_map_values<AsNull>(s, flag, tag, &json);
+                in_object([](const auto& o) { check_written_key_maps<AsNull, S>(o); });
+                check_key_map_routes(s);
+            }
+            if constexpr (has_struct_conditions<S>)
+                in_object([&](const auto& o) { check_struct_conditions(s, o, struct_key_matcher<S>()); });
+        }
+
+        // The same for the struct `s` whose object no write around it gave, `json` being null: it writes the
+        // object once, and the structs in it are checked with the parts of that object.
+        template <bool AsNull, typename S>
+        CPPYYJSON_NOINLINE void validate_written_object(const S& s, WriteFlag flag, const validated_tag* tag,
+                                                        written_json json)
+        {
+            if (json != nullptr && json->is_object())
+            {
+                check_written_object<AsNull>(s, flag, tag, *json);
+                return;
+            }
+            auto written = flag;
+            const auto text = written_object_text(s, written, tag);
+            if (!text.has_value())
+            {
+                validate_object_fields<AsNull, false>(s, flag);
+                if constexpr (has_key_maps<S>) validate_key_map_values<AsNull>(s, flag, tag, nullptr);
+                return;
+            }
+            const auto doc = written_document(*text, written);
+            const reader::const_value_ref root = doc;
+            check_written_object<AsNull>(s, flag, tag, root);
+        }
+
+        template <bool AsNull, typename S, typename... Written>
+        void validate_struct(const S& s, WriteFlag flag, const Written&... written)
         {
             [[maybe_unused]] const recursion_guard<S> guard;
             if constexpr (transparent_struct<S>)
-                validate_written_field<AsNull, S, 0>(struct_field<0>(s), flag);
+                validate_written_field<AsNull, S, 0>(struct_field<0>(s), flag, written...);
             else if constexpr (as_array_struct<S>)
-                validate_array_struct<AsNull>(s, flag);
+                validate_array_struct<AsNull>(s, flag, written...);
+            else if constexpr (checks_written_object<S>)
+                validate_written_object<AsNull>(s, flag, tag_of(written...), json_of(written...));
+            else if constexpr (sizeof...(Written) != 0)
+                validate_object_fields<AsNull, false>(s, flag, json_of(written...));
             else
-                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    if constexpr (AsNull) (validate_null_as_missing<S, Ks>(s, flag), ...);
-                    (validate_object_field<AsNull, S, Ks>(s, flag), ...);
-                }(std::make_index_sequence<struct_field_count<S>>{});
+                validate_object_fields<AsNull, false>(s, flag);
         }
 
         // Checks the fields of the structs in `v` with the keywords of their types, as the JSON that
         // `write(v, flag)` gives them.
-        template <bool AsNull, typename T>
-        void validate_value(const T& v, WriteFlag flag)
+        template <bool AsNull, typename T, typename... Written>
+        void validate_value(const T& v, WriteFlag flag, const Written&... written)
         {
+            [[maybe_unused]] const auto tag = tag_of(written...);
+            [[maybe_unused]] const auto json = json_of(written...);
             if constexpr (std::is_array_v<T>)
             {
+                if constexpr (needs_written_json<T>)
+                    if (json != nullptr) [[unlikely]]
+                    {
+                        validate_written_elements<AsNull>(v, flag, json);
+                        return;
+                    }
                 for (std::size_t i = 0; i < std::extent_v<T>; ++i)
                     validate_at([i] { return std::to_string(i); }, [&] { validate_nested<AsNull>(v[i], flag); });
             }
             else if constexpr (is_std_optional<T>::value || nullable_value<T>)
             {
-                if (v.has_value()) validate_nested<AsNull>(*v, flag);
+                if (v.has_value()) validate_nested<AsNull>(*v, flag, tag, json);
             }
             else if constexpr (owning_pointer<T>)
             {
-                if (v != nullptr) validate_nested<AsNull>(*v, flag);
+                if (v != nullptr) validate_nested<AsNull>(*v, flag, tag, json);
             }
             else if constexpr (indirect_value<T>)
             {
-                if (!v.valueless_after_move()) validate_nested<AsNull>(*v, flag);
+                if (!v.valueless_after_move()) validate_nested<AsNull>(*v, flag, tag, json);
             }
             else if constexpr (requires { std::variant_size<T>::value; })
-                visit_alternative(v, [&](const auto& a) { validate_nested<AsNull>(a, flag); });
+            {
+                if constexpr (internally_tagged<T>)
+                {
+                    if (v.valueless_by_exception()) return;
+                    const auto inner = validated_tag{variant_tags<T>::key, variant_tags<T>::ids[v.index()], tag};
+                    visit_alternative(v, [&](const auto& a) { validate_nested<AsNull>(a, flag, &inner, json); });
+                }
+                else
+                    visit_alternative(v, [&](const auto& a) { validate_nested<AsNull>(a, flag, tag, json); });
+            }
             else if constexpr (validated_struct<T>)
-                validate_struct<AsNull>(v, flag);
+                validate_struct<AsNull>(v, flag, written...);
             else if constexpr (object_written_range<T>)
             {
+                if constexpr (needs_written_json<T>)
+                    if (json != nullptr) [[unlikely]]
+                    {
+                        validate_written_members<AsNull>(v, flag, json);
+                        return;
+                    }
                 for (const auto& e : v)
                     validate_at([&] { return written_key_text(std::get<0>(e)); },
                                 [&] { validate_nested<AsNull>(std::get<1>(e), flag); });
             }
             else if constexpr (array_written_range<T>)
             {
+                if constexpr (needs_written_json<T>)
+                    if (json != nullptr) [[unlikely]]
+                    {
+                        validate_written_elements<AsNull>(v, flag, json);
+                        return;
+                    }
                 auto i = std::size_t{0};
                 for (const auto& e : v)
                 {
@@ -38560,23 +39299,34 @@ namespace yyjson
             }
             else if constexpr (tuple_like<T> &&
                                std::same_as<writer::detail::to_json_input_ref<T>, writer::detail::object_ref>)
+            {
+                auto members = written_members(json);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (
                         [&] {
                             const auto& [key, value] = std::get<Is>(v);
                             if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(key)>>)
                                 if (key == nullptr) return;
+                            const auto member = members.open() ? members.find(written_key_text(key)) : nullptr;
                             validate_at([&] { return written_key_text(key); },
-                                        [&] { validate_nested<AsNull>(value, flag); });
+                                        [&] { validate_nested<AsNull>(value, flag, nullptr, member); });
                         }(),
                         ...);
                 }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            }
             else if constexpr (tuple_like<T>)
+            {
+                auto elements = written_elements(json);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (validate_at([] { return std::to_string(Is); },
-                                 [&] { validate_nested<AsNull>(std::get<Is>(v), flag); }),
-                     ...);
+                    (
+                        [&] {
+                            const auto element = elements.next();
+                            validate_at([] { return std::to_string(Is); },
+                                        [&] { validate_nested<AsNull>(std::get<Is>(v), flag, nullptr, element); });
+                        }(),
+                        ...);
                 }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            }
         }
 
         // With `WriteFlag::InfAndNanAsNull`, an infinity or a NaN outside the structs in `t` is read back with `t`
@@ -38586,7 +39336,12 @@ namespace yyjson
         {
             validate_value<true>(t, flag);
             if (holds_non_finite(t)) [[unlikely]]
-                read_back_root(t, flag);
+            {
+                if constexpr (reaches_struct<T>)
+                    read_back_positions(t, flag);
+                else
+                    read_back_root(t, flag);
+            }
         }
 
         template <typename T>

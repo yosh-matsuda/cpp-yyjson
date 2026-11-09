@@ -1,5 +1,7 @@
 #include <cmath>
+#include <cstdlib>
 #include <memory>
+#include <new>
 #include "test_common.hpp"
 #include "test_pattern_matcher.hpp"
 
@@ -723,7 +725,7 @@ TEST(Validate, UnnamedEnumerator)
     EXPECT_EQ(e.path(), plain.path());
 }
 
-// the keywords that the check does not see yet still let the types be checked and written
+// the keywords of each kind let the types be checked and written
 struct VdClosed
 {
     int a = 0;
@@ -819,6 +821,486 @@ TEST(Validate, OtherKeywordsCompile)
     expect_valid(VdPatterned{});
     expect_valid(VdShortKeys{});
     expect_valid(VdKinds{});
+}
+
+// the object that the write gives for a struct, with the keys of its maps and of the tag that holds it
+struct VdPatternOnly
+{
+    int a = 0;
+    std::map<std::string, int> ps;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdPatternOnly> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::field("ps", yyjson::pattern_properties("^p")));
+struct VdTagCircle
+{
+    int r = 0;
+    std::optional<int> label;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdTagCircle> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::max_properties(2));
+struct VdTagSquare
+{
+    int side = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdTagSquare> = yyjson::annotate(yyjson::min_properties(2));
+struct VdTagLine
+{
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdTagLine> =
+    yyjson::annotate(yyjson::property_names(yyjson::pattern("^[a-n]")));
+struct VdTagNamed
+{
+    std::string type = "named";
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdTagNamed> = yyjson::annotate(yyjson::additional_properties(false));
+using VdTagShape = std::variant<VdTagCircle, VdTagSquare, VdTagLine, VdTagNamed>;
+template <>
+inline constexpr auto yyjson::annotations<VdTagShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "square", "line", "named"}));
+struct VdTagHolder
+{
+    std::vector<VdTagShape> shapes;
+};
+struct VdShortNames
+{
+    int a = 0;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdShortNames> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(2)), yyjson::field("rest", yyjson::extra_keys));
+struct VdLongField
+{
+    int abc = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdLongField> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(2)));
+
+// the number of members, with the defaults that the write leaves out
+struct VdCount
+{
+    int a = 0;
+    int b = 0;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdCount> =
+    yyjson::annotate(yyjson::max_properties(2), yyjson::default_, yyjson::field("rest", yyjson::extra_keys));
+struct VdCountEmit
+{
+    int a = 0;
+    int b = 0;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdCountEmit> = yyjson::annotate(
+    yyjson::max_properties(2), yyjson::default_, yyjson::field("a", yyjson::default_, yyjson::emit_defaults),
+    yyjson::field("rest", yyjson::extra_keys));
+struct VdCountMin
+{
+    int a = 0;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdCountMin> =
+    yyjson::annotate(yyjson::min_properties(3), yyjson::field("rest", yyjson::extra_keys));
+
+// the presence rules and the conditions, on the keys that the write gives
+struct VdPresence
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    int v = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdPresence> =
+    yyjson::annotate(yyjson::dependent_required("a", {"b"}), yyjson::property("v", yyjson::minimum(0)));
+struct VdDroppedDefault
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdDroppedDefault> =
+    yyjson::annotate(yyjson::field("a", yyjson::default_), yyjson::dependent_required("b", {"a"}));
+struct VdConditions
+{
+    int kind = 0;
+    std::optional<int> x;
+    std::optional<int> y;
+    std::optional<int> z;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdConditions> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::property("kind", yyjson::const_(1))), yyjson::then(yyjson::required("x")),
+                         yyjson::else_(yyjson::not_(yyjson::required("x")))),
+    yyjson::one_of(yyjson::required("y"), yyjson::required("z")),
+    yyjson::any_of(yyjson::max_properties(2), yyjson::required("z")),
+    yyjson::all_of(yyjson::property("kind", yyjson::maximum(1))));
+
+// object keywords at a field of struct type and in a condition of the struct
+struct VdInnerObj
+{
+    int a = 0;
+    std::optional<int> b;
+};
+struct VdOuterObj
+{
+    VdInnerObj in;
+    std::optional<int> c;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdOuterObj> =
+    yyjson::annotate(yyjson::field("in", yyjson::max_properties(1)), yyjson::all_of(yyjson::max_properties(1)));
+
+// the values of the maps of the keys
+struct VdKeyMaps
+{
+    std::map<std::string, int> ab;
+    std::map<std::string, int> a;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdKeyMaps> = yyjson::annotate(
+    yyjson::field("ab", yyjson::pattern_properties("^ab"), yyjson::additional_properties(yyjson::maximum(5))),
+    yyjson::field("a", yyjson::pattern_properties("^a"), yyjson::additional_properties(yyjson::minimum(0))),
+    yyjson::field("rest", yyjson::extra_keys, yyjson::additional_properties(yyjson::minimum(1))));
+
+// a non-finite number written as null beside a struct
+struct VdNanInner
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdNanInner> = yyjson::annotate(yyjson::max_properties(1));
+struct VdNanBeside
+{
+    std::tuple<double, VdNanInner> t;
+    std::vector<std::pair<VdNanInner, yyjson::nullable<double>>> v;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdNanBeside> = yyjson::annotate(yyjson::field("v", yyjson::max_items(1)));
+
+TEST(Validate, ObjectKeys)
+{
+    expect_valid(VdPatternOnly{0, {{"p1", 1}}});
+    expect_invalid(VdPatternOnly{0, {{"q", 1}}},
+                   R"(VdPatternOnly has the key "q", which yyjson::additional_properties(false) rejects)", "/q");
+    // the key of the internal tag is a key of the object of the alternative
+    expect_valid(VdTagShape{VdTagCircle{1, std::nullopt}});
+    expect_valid(VdTagShape{VdTagSquare{}});
+    expect_valid(VdTagShape{VdTagNamed{}});
+    expect_invalid(VdTagShape{VdTagLine{}}, R"(a key of VdTagLine does not match the pattern "^[a-n]")", "/type");
+    expect_invalid(VdTagHolder{{VdTagCircle{}, VdTagCircle{1, 2}}},
+                   "VdTagCircle has more properties than the maximum 2", "/shapes/1");
+    expect_valid(VdShortNames{0, {{"xy", 1}}});
+    expect_invalid(VdShortNames{0, {{"xyz", 1}}}, "a key of VdShortNames is longer than the maximum length 2", "/xyz");
+    expect_invalid(VdLongField{}, "a key of VdLongField is longer than the maximum length 2", "/abc");
+}
+
+TEST(Validate, ObjectCounts)
+{
+    using yyjson::emit_defaults, yyjson::with_validation;
+    expect_valid(VdCount{});
+    expect_valid(VdCount{0, 0, {{"x", 1}}});
+    expect_invalid(VdCount{1, 1, {{"x", 1}}}, "VdCount has more properties than the maximum 2", "");
+    // the defaults that `yyjson::emit_defaults` writes are counted
+    const auto message = std::string("VdCount has more properties than the maximum 2");
+    const auto defaults = VdCount{0, 0, {{"x", 1}}};
+    EXPECT_EQ(validation_error([&] { yyjson::validate(defaults, emit_defaults); }).what(), message);
+    EXPECT_EQ(validation_error([&] { (void)yyjson::write(defaults, emit_defaults, with_validation); }).what(), message);
+    EXPECT_THROW((void)yyjson::read<VdCount>(std::string(yyjson::write(defaults, emit_defaults))), yyjson::bad_cast);
+    expect_valid(VdCountEmit{0, 0, {{"x", 1}}});
+    expect_invalid(VdCountEmit{0, 0, {{"x", 1}, {"y", 1}}}, "VdCountEmit has more properties than the maximum 2", "");
+    expect_valid(VdCountMin{0, {{"x", 1}, {"y", 2}}});
+    expect_invalid(VdCountMin{0, {{"x", 1}}}, "VdCountMin has fewer properties than the minimum 3", "");
+    // at a field of struct type, and in a condition of the struct
+    expect_valid(VdOuterObj{});
+    expect_invalid(VdOuterObj{VdInnerObj{0, 1}, std::nullopt},
+                   R"(the value of the key "in" of VdOuterObj has more properties than the maximum 1)", "/in");
+    expect_invalid(VdOuterObj{{}, 1}, "VdOuterObj has more properties than the maximum 1 of yyjson::all_of", "");
+}
+
+TEST(Validate, Conditions)
+{
+    expect_valid(VdPresence{1, 1, 0});
+    expect_valid(VdPresence{});
+    expect_invalid(VdPresence{1, std::nullopt, 0},
+                   R"(VdPresence is not constructible from JSON without the key "b", which yyjson::dependent_required )"
+                   "requires",
+                   "");
+    expect_invalid(VdPresence{std::nullopt, std::nullopt, -1},
+                   R"(the value of the key "v" of VdPresence is less than the minimum 0)", "/v");
+    // a default that the write leaves out is a missing key
+    expect_valid(VdDroppedDefault{1, 1});
+    expect_invalid(VdDroppedDefault{0, 1},
+                   R"(VdDroppedDefault is not constructible from JSON without the key "a", which )"
+                   "yyjson::dependent_required requires",
+                   "");
+    EXPECT_NO_THROW(yyjson::validate(VdDroppedDefault{0, 1}, yyjson::emit_defaults));
+
+    expect_valid(VdConditions{0, std::nullopt, 1, std::nullopt});
+    expect_valid(VdConditions{1, 1, std::nullopt, 1});
+    expect_invalid(VdConditions{1, std::nullopt, 1, std::nullopt},
+                   R"(VdConditions is not constructible from JSON without the key "x", which yyjson::if_then_else )"
+                   "requires",
+                   "");
+    expect_invalid(VdConditions{0, 1, 1, std::nullopt},
+                   "VdConditions has the keys and the values that yyjson::not_ rejects", "");
+    expect_invalid(VdConditions{0, std::nullopt, 1, 1},
+                   R"(VdConditions is not constructible from JSON with all the keys of more than one of ["y"], ["z"])",
+                   "");
+    expect_invalid(VdConditions{0, std::nullopt, std::nullopt, std::nullopt},
+                   R"(VdConditions is not constructible from JSON without all the keys of one of ["y"], ["z"])", "");
+    expect_invalid(VdConditions{1, 1, 1, std::nullopt},
+                   "VdConditions satisfies none of the subschemas of yyjson::any_of", "");
+    expect_invalid(VdConditions{2, std::nullopt, 1, std::nullopt},
+                   R"(the value of the key "kind" of VdConditions is greater than the maximum 1)", "/kind");
+}
+
+TEST(Validate, KeyMaps)
+{
+    expect_valid(VdKeyMaps{{{"ab", 1}}, {{"a", 0}}, {{"x", 1}}});
+    // a key is checked by each pattern that matches it
+    expect_invalid(VdKeyMaps{{{"ab", -1}}, {}, {}},
+                   R"(the value of the key "ab" of VdKeyMaps is less than the minimum 0)", "/ab");
+    expect_invalid(VdKeyMaps{{{"ab", 6}}, {}, {}},
+                   R"(the value of the key "ab" of VdKeyMaps is greater than the maximum 5)", "/ab");
+    expect_invalid(VdKeyMaps{{}, {}, {{"x", 0}}}, R"(the value of the key "x" of VdKeyMaps is less than the minimum 1)",
+                   "/x");
+    // a key that the read stores in another field
+    expect_invalid(VdKeyMaps{{}, {{"abc", 1}}, {}},
+                   R"(the key "abc" of the field "a" of VdKeyMaps is read into the field "ab")", "/abc",
+                   read_leg::skipped);
+    expect_invalid(VdKeyMaps{{}, {}, {{"ax", 1}}},
+                   R"(the key "ax" of the field "rest" of VdKeyMaps is read into the field "a")", "/ax",
+                   read_leg::skipped);
+    expect_invalid(VdKeyMaps{{{"q", 1}}, {}, {}},
+                   R"(the key "q" of the field "ab" of VdKeyMaps is read into the field "rest")", "/q",
+                   read_leg::skipped);
+}
+
+TEST(Validate, InternalTagMismatch)
+{
+    const auto mismatch = VdTagShape{VdTagNamed{"other", 0}};
+    EXPECT_NO_THROW(yyjson::validate(mismatch));
+    EXPECT_THROW((void)yyjson::write(mismatch), std::invalid_argument);
+    try
+    {
+        (void)yyjson::write(mismatch, yyjson::with_validation);
+        ADD_FAILURE() << "no exception";
+    }
+    catch (const yyjson::bad_cast&)
+    {
+        ADD_FAILURE() << "the violation is thrown in the place of the error of write";
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+}
+
+TEST(Validate, NonFiniteBesideStruct)
+{
+    using yyjson::with_validation, yyjson::WriteFlag;
+    const auto as_null = WriteFlag::InfAndNanAsNull;
+    const auto nan = std::nan("");
+    expect_valid(VdNanBeside{});
+    auto e = validation_error([&] { (void)yyjson::write(VdNanBeside{{nan, {}}, {}}, as_null, with_validation); });
+    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /t/0");
+    EXPECT_EQ(e.path(), "/t/0");
+    const auto nullable = VdNanBeside{{0, {}}, {{{}, nan}}};
+    EXPECT_EQ(std::string(yyjson::write(nullable, as_null, with_validation)),
+              R"({"t":[0.0,{"a":0}],"v":[[{"a":0},null]]})");
+    // the struct beside the null is still checked
+    e = validation_error([&] { (void)yyjson::write(VdNanBeside{{0, {}}, {{{0, 1}, nan}}}, as_null, with_validation); });
+    EXPECT_EQ(std::string(e.what()), "VdNanInner has more properties than the maximum 1 at /v/0/0");
+    e = validation_error(
+        [&] { (void)yyjson::write(VdNanBeside{{0, {}}, {{{}, nan}, {{}, nan}}}, as_null, with_validation); });
+    EXPECT_EQ(std::string(e.what()),
+              R"(the value of the key "v" of VdNanBeside has more items than the maximum 1 at /v)");
+}
+
+// a non-finite number in a map of keys, written as null
+struct VdNanExtra
+{
+    int x = 0;
+    std::map<std::string, double> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdNanExtra> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+struct VdNanPattern
+{
+    int x = 0;
+    std::map<std::string, double> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdNanPattern> =
+    yyjson::annotate(yyjson::field("p", yyjson::pattern_properties("^k")));
+
+// a keyword of a field that holds null in the place of a NaN
+struct VdNotInner
+{
+    int a = 0;
+};
+struct VdNotNull
+{
+    std::vector<std::variant<std::optional<double>, VdNotInner>> v;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdNotNull> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::not_(yyjson::minimum(0)))));
+
+TEST(Validate, NonFiniteInKeyMapsAndFields)
+{
+    using yyjson::with_validation, yyjson::WriteFlag;
+    const auto as_null = WriteFlag::InfAndNanAsNull;
+    const auto nan = std::nan("");
+    auto e = validation_error([&] { (void)yyjson::write(VdNanExtra{0, {{"k", nan}}}, as_null, with_validation); });
+    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /k");
+    e = validation_error([&] { (void)yyjson::write(VdNanPattern{0, {{"k", nan}}}, as_null, with_validation); });
+    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /k");
+    EXPECT_EQ(std::string(yyjson::write(VdNanPattern{0, {{"k", 1.5}}}, as_null, with_validation)),
+              R"({"x":0,"k":1.5})");
+
+    // read checks the null, which `yyjson::not_` accepts, and not the NaN
+    const auto not_null = VdNotNull{{std::optional<double>(nan)}};
+    e = validation_error([&] { (void)yyjson::write(not_null, as_null, with_validation); });
+    EXPECT_EQ(std::string(e.what()),
+              R"(an element of the value of the key "v" of VdNotNull satisfies the settings of yyjson::not_ at /v/0)");
+    EXPECT_THROW((void)yyjson::read<VdNotNull>(std::string(yyjson::write(not_null, as_null))), yyjson::bad_cast);
+}
+
+// a struct with object keywords inside another, checked on the JSON of the outer
+struct VdLink
+{
+    int v = 0;
+    std::optional<int> w;
+    std::unique_ptr<VdLink> next;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdLink> =
+    yyjson::annotate(yyjson::max_properties(2), yyjson::field("v", yyjson::minimum(0)));
+
+TEST(Validate, NestedObjectKeywords)
+{
+    const auto chain = [](int depth, std::optional<int> w, int v) {
+        auto head = std::unique_ptr<VdLink>();
+        for (auto i = 0; i < depth; ++i)
+            head = std::make_unique<VdLink>(VdLink{i == 0 ? v : 0, i == 0 ? w : std::nullopt, std::move(head)});
+        return head;
+    };
+    const auto valid = VdLink{0, std::nullopt, chain(3, std::nullopt, 0)};
+    EXPECT_NO_THROW(yyjson::validate(valid));
+    const auto counted = VdLink{0, std::nullopt, chain(3, 1, 0)};
+    auto e = validation_error([&] { yyjson::validate(counted); });
+    EXPECT_EQ(std::string(e.what()), "VdLink has more properties than the maximum 2 at /next/next/next");
+    e = validation_error([&] { (void)yyjson::write(counted, yyjson::with_validation); });
+    EXPECT_EQ(e.path(), "/next/next/next");
+    const auto negative = VdLink{0, std::nullopt, chain(2, std::nullopt, -1)};
+    e = validation_error([&] { yyjson::validate(negative); });
+    EXPECT_EQ(std::string(e.what()),
+              R"(the value of the key "v" of VdLink is less than the minimum 0 at /next/next/v)");
+}
+
+// a key of a pattern map that read stores in no field
+struct VdUnmatched
+{
+    int x = 0;
+    std::map<std::string, int> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdUnmatched> =
+    yyjson::annotate(yyjson::field("p", yyjson::pattern_properties("^p")));
+
+TEST(Validate, KeyReadIntoNoField)
+{
+    expect_valid(VdUnmatched{0, {{"p1", 1}}});
+    expect_invalid(VdUnmatched{0, {{"q", 1}}}, R"(the key "q" of the field "p" of VdUnmatched is read into no field)",
+                   "/q", read_leg::skipped);
+}
+
+// the keys that read needs and that write leaves out
+struct VdOmitZero
+{
+    static int to_json(int v) { return v; }
+    static int from_json(int v) { return v; }
+    static bool should_omit(int v) { return v == 0; }
+};
+struct VdRequiredOmitted
+{
+    yyjson::with_caster<int, VdOmitZero> a;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdRequiredOmitted> = yyjson::annotate(yyjson::field("a", yyjson::required));
+struct VdMissingOmitted
+{
+    yyjson::with_caster<int, VdOmitZero> a;
+    int b = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdMissingOmitted> = yyjson::annotate(yyjson::reject_missing_keys);
+
+// a check of the keys of a struct without object keywords allocates no memory
+struct VdUnknownOnly
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdUnknownOnly> = yyjson::annotate(yyjson::reject_unknown_keys);
+struct VdRequiredOnly
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdRequiredOnly> = yyjson::annotate(yyjson::field("a", yyjson::required));
+
+namespace
+{
+    thread_local std::size_t vd_allocations = 0;
+
+    template <typename T>
+    std::size_t validate_allocations(const T& t)
+    {
+        const auto before = vd_allocations;
+        yyjson::validate(t);
+        return vd_allocations - before;
+    }
+}  // namespace
+
+void* operator new(std::size_t size)
+{
+    ++vd_allocations;
+    if (auto* p = std::malloc(size == 0 ? 1 : size)) return p;
+    throw std::bad_alloc();
+}
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept
+{
+    ++vd_allocations;
+    return std::malloc(size == 0 ? 1 : size);
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+
+TEST(Validate, MissingKeys)
+{
+    expect_valid(VdRequiredOmitted{1});
+    expect_invalid(VdRequiredOmitted{0}, R"(VdRequiredOmitted is not constructible from JSON without the key "a")", "");
+    expect_valid(VdMissingOmitted{1, 0});
+    expect_invalid(VdMissingOmitted{0, 1}, R"(VdMissingOmitted is not constructible from JSON without the key "a")",
+                   "");
+    EXPECT_EQ(validate_allocations(VdUnknownOnly{1}), 0U);
+    EXPECT_EQ(validate_allocations(VdRequiredOnly{1}), 0U);
+    EXPECT_EQ(validate_allocations(VdRequiredOmitted{1}), 0U);
 }
 
 // a type without keywords is checked by nothing
