@@ -1,4 +1,5 @@
 #include "test_common.hpp"
+#include "test_validation.hpp"
 
 // NOLINTBEGIN
 
@@ -998,5 +999,36 @@ TEST(AsArray, Annotations)
                                      "/s");
 }
 #endif
+
+TEST(AsArray, Validate)
+{
+    expect_valid(Rule{1, std::nullopt, std::nullopt});
+    expect_valid(Rule{1, "a", 3});
+    expect_valid(Closed{1, 4, 3});
+    expect_valid(Series{"s", {1, 2.5}});
+    expect_valid(Gap{std::nullopt, std::nullopt});
+    expect_valid(Gap{1, std::nullopt});
+    expect_valid(Node{"a", {{"b", {}}}});
+    expect_valid(Drawing{{1, 2}, Point{3, 4}, {{0, "a", 1}}, {{"k", {"s", {1}}}}, Point{5, 6}});
+
+    // the keywords of a position and of the elements after the positions
+    expect_invalid(Rule{-1, std::nullopt, std::nullopt}, "an element of the value of Rule is less than the minimum 0",
+                   "/0");
+    expect_invalid(Series{"s", {1, -2}}, "an element of the value of Series is less than the minimum 0", "/2");
+    expect_invalid(Drawing{{}, {}, {{0, {}, {}}, {-1, {}, {}}}, {}, 0},
+                   "an element of the value of Rule is less than the minimum 0", "/rules/1/0");
+    expect_invalid(Drawing{{}, {}, {}, {{"k", {"s", {-1}}}}, 0},
+                   "an element of the value of Series is less than the minimum 0", "/series/k/1");
+
+    // the keywords of the whole array
+    expect_valid(Banner{"a", "kk", {"x"}});
+    expect_invalid(BannerHolder{{"kk", std::nullopt, {}}}, "the value of Banner has fewer items than the minimum 2",
+                   "/shape");
+    expect_invalid(Banner{"a", "b", {}},
+                   "the value of Banner has no item that satisfies the constraints of yyjson::contains", "");
+    expect_invalid(BannerHolder{{"kk", "a", {"bb"}}},
+                   "the value of Banner has more than 1 item that satisfies the constraints of yyjson::contains",
+                   "/shape");
+}
 
 // NOLINTEND

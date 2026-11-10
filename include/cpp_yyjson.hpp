@@ -16409,6 +16409,7 @@ namespace yyjson
         {
             class direct_reader;
             struct absent_copy;
+            struct scalar_json;
         }
 
         class abstract_value_ref
@@ -16490,6 +16491,7 @@ namespace yyjson
             friend class const_object_ref;
             friend class detail::direct_reader;
             friend struct detail::absent_copy;
+            friend struct detail::scalar_json;
             friend class yyjson::json_view;
             friend class yyjson::json_object_view;
             friend class yyjson::json_array_view;
@@ -29646,6 +29648,16 @@ namespace yyjson
             }
         }
 
+        struct scalar_json
+        {
+            // Calls `f` with the JSON number, string or bool `val`, which no document holds.
+            template <typename F>
+            static decltype(auto) apply(yyjson_val* val, F&& f)
+            {
+                return std::forward<F>(f)(const_value_ref(val));
+            }
+        };
+
         struct absent_copy
         {
             // Calls `call(context, json)` with `json` a copy of the object `original` without the null members that
@@ -38185,11 +38197,85 @@ namespace yyjson
             }(std::make_index_sequence<n>{});
         }
 
+        // Whether the keywords of the field K of S, of the type F, check the JSON that write gives for it: a part of
+        // the value, or the JSON of a caster of the user.
+        template <typename S, std::size_t K, typename F>
+        inline constexpr bool field_checks_written_json =
+            field_counts_input<S, K, F> || checks_caster_json<field_schema<S, struct_declared_index<S, K>>, F>();
+        // Whether T bounds the number of the members of the JSON object that its caster of the user writes and reads.
+        template <typename T>
+        inline constexpr bool caster_counts_members =
+            write_conversion::opaque<T> && caster_names_from_json<T> && struct_property_counts<T>;
+
+        // Whether write can reject the alternative A of a variant that `internal_tag` of `Tags` tags: a value that
+        // may not be a JSON object, or one that may hold the key of the tag.
+        template <typename Tags, typename A>
+        consteval bool rejects_internal_alternative()
+        {
+            if constexpr (std::same_as<A, std::monostate>)
+                return false;
+            else if constexpr (object_struct_value<A>() && !write_conversion::opaque<A>)
+                return has_key_maps<A> || writes_member_of_key<A>(Tags::key);
+            else
+                return true;
+        }
+        template <typename V>
+        consteval bool rejects_internal_alternatives()
+        {
+            if constexpr (!variant_value<V>)
+                return false;
+            else if constexpr (internally_tagged<V>)
+                return []<typename... As>(std::type_identity<std::variant<As...>>) {
+                    return (rejects_internal_alternative<variant_tags<V>, As>() || ...);
+                }(std::type_identity<variant_base_t<V>>{});
+            else
+                return false;
+        }
+        // Throws what write throws for `a`, the alternative of the variant V tagged by `internal_tag`.
+        template <typename V, typename A>
+        void check_internal_alternative(const A& a, std::size_t index)
+        {
+            using tags = variant_tags<V>;
+            if constexpr (rejects_internal_alternative<tags, A>())
+            {
+                constexpr auto tagless_struct = [] {
+                    if constexpr (object_struct_value<A>() && !write_conversion::opaque<A>)
+                        return !writes_member_of_key<A>(tags::key);
+                    else
+                        return false;
+                }();
+                if constexpr (has_key_maps<A>) check_extra_tag_key<tags>(a);
+                if constexpr (!tagless_struct)
+                {
+                    auto doc = writer::detail::mutable_document();
+                    auto val = doc.template get_empty_value_ref<writer::value_ref>();
+                    val = a;
+                    insert_variant_tag(val, tags::key, tags::ids[index], type_name<V>());
+                }
+            }
+        }
+        // Whether a write of S checks a tag field beside a variant that `adjacent_tag` tags.
+        template <typename S>
+        consteval bool checks_adjacent_tag_fields()
+        {
+            if constexpr (has_adjacent_fields<S>)
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return any_true({[] {
+                        if constexpr (adjacent_field<S, Ks>)
+                            return !writes_adjacent_tag<S, struct_field_tags<S, Ks>>;
+                        else
+                            return false;
+                    }()...});
+                }(std::make_index_sequence<struct_field_count<S>>{});
+            else
+                return false;
+        }
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
         {
-            if constexpr (repeats_written_keys<T>())
+            if constexpr (repeats_written_keys<T>() || caster_counts_members<T>)
                 return true;
             else if constexpr (union_variant<T>)
                 return checks_union<T>();
@@ -38201,17 +38287,66 @@ namespace yyjson
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return ((constrained_field<T, Ks> || may_read_back_value<T, Ks>) || ...);
                 }(std::make_index_sequence<struct_field_count<T>>{}) ||
-                       checks_written_object<T> || checks_missing_keys<T> || checks_written_array<T>();
+                       checks_written_object<T> || checks_missing_keys<T> || checks_written_array<T>() ||
+                       has_key_maps<T> || checks_adjacent_tag_fields<T>();
         }
+        // Whether a caster of the user writes T as the value that its `to_json` returns.
+        template <typename T>
+        concept written_by_translator = write_conversion::opaque<T> && writer::detail::to_json_usr_translator<const T&>;
+        template <written_by_translator T>
+        using translated_t = std::remove_cvref_t<decltype(writer::detail::to_json_wrapper(std::declval<const T&>()))>;
+        // Whether each `from_json` of the caster of T reads the value that its `to_json` returns.
+        template <typename T>
+        consteval bool reads_translation()
+        {
+            using tr = from_json_translator<T>;
+            if constexpr (!written_by_translator<T> || !(tr::returns || tr::in_place))
+                return false;
+            else if constexpr (tr::returns && !std::same_as<from_json_source<T>, translated_t<T>>)
+                return false;
+            else if constexpr (tr::in_place)
+                return std::same_as<from_json_in_place_source<T>, translated_t<T>>;
+            else
+                return true;
+        }
+        // The node of the value that a caster of the user returns for T, which write writes in place of T. With
+        // `Read`, only if the caster reads that value back.
+        template <template <typename> class Node, typename T, bool Read = false>
+        consteval auto translation_nodes()
+        {
+            if constexpr (written_by_translator<T> && (!Read || reads_translation<T>()))
+                return type_list<Node<translated_t<T>>>{};
+            else
+                return type_list<>{};
+        }
+        // `with_caster` whose X has no `to_json`, which write writes as the library writes its value.
+        template <typename T>
+        concept written_by_library_caster =
+            is_with_caster<T>::value && !converter_writes<typename T::value_type, typename T::caster_type>;
+        // The node of the value of such a `with_caster`.
+        template <template <typename> class Node, typename T>
+        consteval auto library_written_nodes()
+        {
+            if constexpr (written_by_library_caster<T>)
+                return type_list<Node<typename T::value_type>>{};
+            else
+                return type_list<>{};
+        }
+
         // A node of the graph of `conversion_node`, marked when `yyjson::validate` checks something of its type.
         template <typename T>
         struct validation_node;
         template <typename... Ts>
         auto validation_nodes(type_list<conversion_node<write_conversion, Ts>...>) -> type_list<validation_node<Ts>...>;
+        template <typename... As, typename... Bs>
+        auto joined_nodes(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
         template <typename T>
         struct validation_node
         {
-            using edges = decltype(validation_nodes(typename conversion_node<write_conversion, T>::edges{}));
+            using edges = decltype(joined_nodes(
+                joined_nodes(validation_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                             translation_nodes<validation_node, T>()),
+                library_written_nodes<validation_node, T>()));
             static constexpr bool marked = validates_itself<T>();
         };
         // Whether `yyjson::validate` checks something of a value of the type T or of the values in it.
@@ -38224,8 +38359,6 @@ namespace yyjson
         template <typename... Ts>
         auto floating_point_nodes(type_list<conversion_node<write_conversion, Ts>...>)
             -> type_list<floating_point_node<Ts>...>;
-        template <typename... As, typename... Bs>
-        auto joined_nodes(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
         // The nodes of the values of the maps of `yyjson::extra_keys` and `yyjson::pattern_properties` of T, which
         // write gives as members of the object of T.
         template <template <typename> class Node, typename T>
@@ -38251,9 +38384,11 @@ namespace yyjson
         template <typename T>
         struct floating_point_node
         {
-            using edges =
-                decltype(joined_nodes(floating_point_nodes(typename conversion_node<write_conversion, T>::edges{}),
-                                      key_map_value_nodes<floating_point_node, T>()));
+            using edges = decltype(joined_nodes(
+                joined_nodes(floating_point_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                             key_map_value_nodes<floating_point_node, T>()),
+                joined_nodes(translation_nodes<floating_point_node, T, true>(),
+                             library_written_nodes<floating_point_node, T>())));
             static constexpr bool marked = std::floating_point<T>;
         };
         template <typename T>
@@ -38264,15 +38399,23 @@ namespace yyjson
         template <typename S>
         consteval bool counts_written_json()
         {
-            if constexpr (!validated_struct<S> || transparent_struct<S>)
+            if constexpr (!validated_struct<S>)
                 return false;
+            else if constexpr (transparent_struct<S>)
+            {
+                // the caster of the field reads the object of S with the keys of the tags around it
+                if constexpr (constrained_field<S, 0>)
+                    return checks_caster_json<field_schema<S, struct_declared_index<S, 0>>, struct_field_type<S, 0>>();
+                else
+                    return false;
+            }
             else if constexpr (checks_written_object<S> || written_array_counts_input<S>())
                 return true;
             else
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return ([] {
                         if constexpr (constrained_field<S, Ks>)
-                            return field_counts_input<S, Ks, struct_field_type<S, Ks>>;
+                            return field_checks_written_json<S, Ks, struct_field_type<S, Ks>>;
                         else
                             return false;
                     }() || ...);
@@ -38287,10 +38430,11 @@ namespace yyjson
         template <typename T>
         struct written_json_node
         {
-            using edges =
-                decltype(joined_nodes(written_json_nodes(typename conversion_node<write_conversion, T>::edges{}),
-                                      key_map_value_nodes<written_json_node, T>()));
-            static constexpr bool marked = counts_written_json<T>();
+            using edges = decltype(joined_nodes(
+                joined_nodes(written_json_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                             key_map_value_nodes<written_json_node, T>()),
+                translation_nodes<written_json_node, T>()));
+            static constexpr bool marked = counts_written_json<T>() || caster_counts_members<T>;
         };
         // Whether the check of a value of T needs the JSON that write gives for it.
         template <typename T>
@@ -38311,7 +38455,7 @@ namespace yyjson
                 else if constexpr (validated_struct<T> && transparent_struct<T>)
                     return type_list<written_tag_node<std::remove_cvref_t<struct_field_type<T, 0>>>>{};
                 else
-                    return type_list<>{};
+                    return translation_nodes<written_tag_node, T>();
             }
             using edges = decltype(inner_nodes());
             static constexpr bool marked = requires { std::variant_size<T>::value; };
@@ -38338,6 +38482,10 @@ namespace yyjson
         {
             if constexpr (!writes_floating_point<T>)
                 return false;
+            else if constexpr (written_by_translator<T>)
+                return holds_non_finite(writer::detail::to_json_wrapper(v));
+            else if constexpr (written_by_library_caster<T>)
+                return holds_non_finite(v.value);
             else if constexpr (std::floating_point<T>)
                 return !std::isfinite(v);
             else if constexpr (is_std_optional<T>::value || nullable_value<T>)
@@ -38638,10 +38786,65 @@ namespace yyjson
             throw_in_written_json(*text, flag, [&](const auto& json) { throw_field_violation<S, K, F>(json, kind); });
         }
 
-        // Checks the keywords of the field K of S, `field`, that count a part of the JSON value, such as the keys
-        // of a struct, on `json`, the JSON that write gives for it, or if none, on the JSON of a write of `field`.
+        struct validated_tag;
+        template <typename S>
+        std::optional<std::string> written_object_text(const S& s, WriteFlag& flag, const validated_tag* tag);
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+        // A C++ type that write gives as a JSON number, string or bool of the same value.
+        template <typename U>
+        concept exact_json_scalar =
+            std::same_as<U, bool> || std::same_as<U, double> || std::same_as<U, std::string> ||
+            std::same_as<U, std::string_view> ||
+            (std::integral<U> && sizeof(U) <= sizeof(std::uint64_t) && sizeof(U) > sizeof(char) &&
+             !std::same_as<U, wchar_t> && !std::same_as<U, char16_t> && !std::same_as<U, char32_t>);
+        // A type whose caster of the user translates it to such a value.
+        template <typename V>
+        concept scalar_translated =
+            writer::detail::to_json_usr_translator<const V&> && writer::detail::to_json_usr_noext<const V&> &&
+            exact_json_scalar<std::remove_cvref_t<decltype(caster<V>::to_json(std::declval<const V&>()))>>;
+
+        // Whether the keywords of the field K of S may reject `field`, whose caster translates it to a scalar,
+        // checked on that scalar without a document.  A real that `flag` may write in another form may be rejected.
         template <typename S, std::size_t K, typename F>
-        CPPYYJSON_NOINLINE void validate_counted_field(const F& field, WriteFlag flag,
+        bool scalar_field_rejected(const F& field, WriteFlag flag)
+        {
+            using V = constrained_value_t<F>;
+            const V* const v = held_value(field);
+            if (v == nullptr) return field_violation<S, K>(field) != constraint_kind::none;
+            using U = std::remove_cvref_t<decltype(caster<V>::to_json(*v))>;
+            if constexpr (std::same_as<U, double>)
+            {
+                constexpr auto real_form = static_cast<std::uint32_t>(YYJSON_WRITE_FP_TO_FIXED(15)) |
+                                           static_cast<std::uint32_t>(YYJSON_WRITE_FP_TO_FLOAT);
+                if ((to_underlying(flag) & real_form) != 0) return true;
+            }
+            const auto& u = caster<V>::to_json(*v);
+            auto val = yyjson_val{};
+            if constexpr (std::same_as<U, bool>)
+                unsafe_yyjson_set_bool(&val, u);
+            else if constexpr (std::same_as<U, double>)
+            {
+                if (!std::isfinite(u)) return true;
+                unsafe_yyjson_set_real(&val, u);
+            }
+            else if constexpr (std::is_signed_v<U>)
+                unsafe_yyjson_set_sint(&val, u);
+            else if constexpr (std::is_integral_v<U>)
+                unsafe_yyjson_set_uint(&val, u);
+            else
+                unsafe_yyjson_set_strn(&val, u.data(), u.size());
+            return reader::detail::scalar_json::apply(&val, [&](const reader::const_value_ref& json) {
+                return field_violation<S, K>(field, &json) != constraint_kind::none;
+            });
+        }
+#endif
+
+        // Checks the keywords of the field K of S, `field`, that count a part of the JSON value, such as the keys
+        // of a struct, on `json`, the JSON that write gives for it, or if none, on the JSON of a write of `field`
+        // with the keys of the tags `tag`, which a caster of the user reads with the object.
+        template <typename S, std::size_t K, typename F>
+        CPPYYJSON_NOINLINE void validate_counted_field(const F& field, WriteFlag flag, const validated_tag* tag,
                                                        const reader::const_value_ref* json)
         {
             const auto check = [&](const auto& doc) {
@@ -38654,7 +38857,30 @@ namespace yyjson
                 throw_in_document(*json, check);
                 return;
             }
-            const auto text = validated_text_allowing(writable_field(field), flag);
+#if YYJSON_VERSION_HEX >= 0x000C00
+            if constexpr (!field_counts_input<S, K, F> && scalar_translated<constrained_value_t<F>>)
+                if (!scalar_field_rejected<S, K>(field, flag)) return;
+#endif
+            using schema = field_schema<S, struct_declared_index<S, K>>;
+            if (!checks_caster_json<schema, F>()) tag = nullptr;
+            const auto text = written_object_text(writable_field(field), flag, tag);
+            if (!text.has_value()) return;
+            throw_in_written_json(*text, flag, check);
+        }
+
+        // Checks the number of the members of the JSON object that the caster of T writes for `v`, on `json` if not
+        // null, or else on the JSON of a write of `v` with the keys of the tags `tag`, as read checks it.
+        template <typename T>
+        CPPYYJSON_NOINLINE void validate_caster_members(const T& v, WriteFlag flag, const validated_tag* tag,
+                                                        const reader::const_value_ref* json)
+        {
+            const auto check = [](const auto& doc) { check_caster_members<T>(reader::const_value_ref(doc)); };
+            if (json != nullptr)
+            {
+                throw_in_document(*json, check);
+                return;
+            }
+            const auto text = written_object_text(v, flag, tag);
             if (!text.has_value()) return;
             throw_in_written_json(*text, flag, check);
         }
@@ -38763,6 +38989,10 @@ namespace yyjson
         {
             if constexpr (!writes_floating_point<T>)
                 return false;
+            else if constexpr (written_by_translator<T>)
+                return written_null_for_non_finite(writer::detail::to_json_wrapper(v));
+            else if constexpr (written_by_library_caster<T>)
+                return written_null_for_non_finite(v.value);
             else if constexpr (std::floating_point<T>)
                 return !std::isfinite(v);
             else if constexpr (is_std_optional<T>::value || nullable_value<T>)
@@ -38803,6 +39033,10 @@ namespace yyjson
             {
                 if (written_null_for_non_finite(v))
                     read_back_null<T>(flag);
+                else if constexpr (written_by_translator<T> || written_by_library_caster<T>)
+                {
+                    if (holds_non_finite(v)) read_back_root(v, flag);
+                }
                 else if constexpr (is_std_optional<T>::value || nullable_value<T>)
                 {
                     if (v.has_value()) read_back_positions(*v, flag);
@@ -38908,6 +39142,18 @@ namespace yyjson
         // write gives null for an infinity or a NaN, to find such a value too.
         template <typename T, bool AsNull>
         inline constexpr bool validation_walks = needs_validation<T> || (AsNull && writes_floating_point<T>);
+        // Whether the check of a value of T checks the value that a caster of the user returns for it.
+        template <typename T, bool AsNull>
+        consteval bool validates_translation()
+        {
+            if constexpr (written_by_translator<T>)
+            {
+                constexpr bool as_null = AsNull && reads_translation<T>();
+                return validation_walks<translated_t<T>, as_null>;
+            }
+            else
+                return false;
+        }
 
         // The tag of an internally tagged variant that holds the struct that is checked, whose object has the key
         // of the tag, and the tag of the variant that holds that variant, if any.
@@ -39070,8 +39316,8 @@ namespace yyjson
             }
             if constexpr (constrained_field<S, K>)
             {
-                if constexpr (field_counts_input<S, K, F>)
-                    validate_counted_field<S, K>(field, flag, json_of(written...));
+                if constexpr (field_checks_written_json<S, K, F>)
+                    validate_counted_field<S, K>(field, flag, tag_of(written...), json_of(written...));
                 else if (const auto kind = field_violation<S, K>(field); kind != constraint_kind::none) [[unlikely]]
                     throw_validated_field<S, K>(field, kind, flag);
             }
@@ -39083,7 +39329,7 @@ namespace yyjson
         {
             using F = struct_field_type<S, K>;
             if constexpr (constrained_field<S, K>)
-                return needs_written_json<F> || field_counts_input<S, K, F>;
+                return needs_written_json<F> || field_checks_written_json<S, K, F>;
             else
                 return needs_written_json<F>;
         }
@@ -39616,6 +39862,8 @@ namespace yyjson
         void validate_struct(const S& s, WriteFlag flag, const Written&... written)
         {
             [[maybe_unused]] const recursion_guard<S> guard;
+            if constexpr (checks_adjacent_tag_fields<S>()) check_adjacent_tags(s);
+            if constexpr (has_key_maps<S>) check_extra_key_conflicts(s);
             if constexpr (transparent_struct<S>)
                 validate_written_field<AsNull, S, 0>(struct_field<0>(s), flag, written...);
             else if constexpr (as_array_struct<S>)
@@ -39742,7 +39990,9 @@ namespace yyjson
         {
             [[maybe_unused]] const auto tag = tag_of(written...);
             [[maybe_unused]] const auto json = json_of(written...);
-            if constexpr (std::is_array_v<T>)
+            if constexpr (caster_counts_members<T>)
+                validate_caster_members(v, flag, tag, json);
+            else if constexpr (std::is_array_v<T>)
             {
                 if constexpr (needs_written_json<T>)
                     if (json != nullptr) [[unlikely]]
@@ -39771,7 +40021,10 @@ namespace yyjson
                 {
                     if (v.valueless_by_exception()) return;
                     const auto inner = validated_tag{variant_tags<T>::key, variant_tags<T>::ids[v.index()], tag};
-                    visit_alternative(v, [&](const auto& a) { validate_nested<AsNull>(a, flag, &inner, json); });
+                    visit_alternative(v, [&](const auto& a) {
+                        check_internal_alternative<T>(a, v.index());
+                        validate_nested<AsNull>(a, flag, &inner, json);
+                    });
                 }
                 else
                     validate_untagged<AsNull>(v, flag, tag, json);

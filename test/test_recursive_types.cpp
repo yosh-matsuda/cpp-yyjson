@@ -1,4 +1,5 @@
 #include "test_common.hpp"
+#include "test_validation.hpp"
 
 // NOLINTBEGIN
 
@@ -897,6 +898,47 @@ TEST(Reader, IndirectFields)
     taken = std::move(bare.leaf);
     yyjson::read_into(R"({"leaf":{"v":4},"list":[]})", bare);
     EXPECT_EQ(bare.leaf->v, 4);
+}
+
+// the keywords of a recursive type hold at every level of the value
+struct RecLimited
+{
+    std::vector<RecLimited> kids;
+    bool operator==(const RecLimited&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<RecLimited> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("kids", yyjson::max_items(3)));
+struct RecIndLimits
+{
+    yyjson::indirect<int> level{std::in_place, 3};
+    yyjson::indirect<std::vector<int>> scores{std::in_place};
+    std::optional<yyjson::indirect<int>> limit;
+    bool operator==(const RecIndLimits&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<RecIndLimits> = yyjson::annotate(
+    yyjson::field("level", yyjson::minimum(0)), yyjson::field("scores", yyjson::items(yyjson::minimum(0))),
+    yyjson::field("limit", yyjson::maximum(10)));
+
+TEST(RecursiveTypes, Validate)
+{
+    auto tree = RecLimited{{{}, {{{}, {}, {}}}}};
+    expect_valid(tree);
+    tree.kids[1].kids[0].kids.resize(4);
+    expect_invalid(tree, "the value of RecLimited has more items than the maximum 3", "/1/0");
+
+    auto settings = RecIndLimits();
+    expect_valid(settings);
+    settings.limit.emplace(std::in_place, 11);
+    expect_invalid(settings, "the value of the key \"limit\" of RecIndLimits is greater than the maximum 10", "/limit");
+    settings.limit.reset();
+    *settings.scores = {1, -1};
+    expect_invalid(settings, "an element of the value of the key \"scores\" of RecIndLimits is less than the minimum 0",
+                   "/scores/1");
+    *settings.scores = {};
+    *settings.level = -1;
+    expect_invalid(settings, "the value of the key \"level\" of RecIndLimits is less than the minimum 0", "/level");
 }
 
 // NOLINTEND

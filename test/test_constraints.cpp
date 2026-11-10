@@ -11,6 +11,7 @@
 #endif
 #include "test_common.hpp"
 #include "test_pattern_matcher.hpp"
+#include "test_validation.hpp"
 
 // NOLINTBEGIN
 
@@ -3140,6 +3141,15 @@ TEST(Constraints, Patterns)
                               R"(the value of the key "o" of Patterns is shorter than the minimum length 2)", "/o");
     expect_rejected<Patterns>(R"({"s":"az","v":"1a"})",
                               R"(the value of the key "v" of Patterns does not match the pattern "^[0-9]*$")", "/v");
+
+    // validate and the checked write check them as well
+    expect_valid(Patterns{"abz", "oxo", "123"});
+    expect_invalid(Patterns{"ab", {}, {}}, value("s") + R"("^a", "z$")", "/s");
+    expect_invalid(Patterns{"az", "oxx", {}}, value("o") + R"("^o", "o$", "x")", "/o");
+    expect_invalid(Patterns{"az", "o", {}},
+                   R"(the value of the key "o" of Patterns is shorter than the minimum length 2)", "/o");
+    expect_invalid(Patterns{"az", {}, "1a"},
+                   R"(the value of the key "v" of Patterns does not match the pattern "^[0-9]*$")", "/v");
 }
 
 TEST(Constraints, Satisfies)
@@ -3487,6 +3497,18 @@ TEST(Constraints, ConstAndEnumTexts)
     expect_rejected<ListedTexts>(R"({"scale":[2.5]})", value("scale") + "is not one of [1], [2.5, 2.5]", "/scale");
     // an object is no value of the variant: it reads no constant
     expect_rejected<ListedTexts>(R"({"mixed":1})", value("mixed") + "is not one of 0, [0], {}", "/mixed");
+
+    // validate and the checked write compare the text that the write gives
+    expect_valid(ListedTexts());
+    expect_valid(ListedTexts{.at = {1, 1}, .scale = std::vector{2.5, 2.5}, .mixed = std::vector{0}});
+    expect_valid(ListedTexts{.order = {{"b", 1}, {"a", 2}}});
+    expect_invalid(ListedTexts{.at = {2, 2}}, value("at") + R"(is not one of { "y": 0, "x": 0 }, {"x":1,"y":1})",
+                   "/at");
+    expect_invalid(ListedTexts{.pair = {}}, value("pair") + "is not equal to the constant [1, 2]", "/pair");
+    expect_invalid(ListedTexts{.scale = std::vector{2.5}}, value("scale") + "is not one of [1], [2.5, 2.5]", "/scale");
+    expect_invalid(ListedTexts{.mixed = 3}, value("mixed") + "is not one of 0, [0], {}", "/mixed");
+    expect_invalid(ListedTexts{.order = {{"a", 2}}}, value("order") + R"(is not equal to the constant {"a":2,"b":1})",
+                   "/order");
 
     EXPECT_NO_THROW((void)yyjson::read<ListedDom>(R"({"any":{"b":true,"a":[1.0,2]}})"));
     EXPECT_NO_THROW((void)yyjson::read<ListedDom>(R"({"any":null})"));

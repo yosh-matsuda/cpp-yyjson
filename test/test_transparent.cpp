@@ -1,4 +1,5 @@
 #include "test_common.hpp"
+#include "test_validation.hpp"
 
 // NOLINTBEGIN
 
@@ -284,6 +285,64 @@ TEST(Transparent, Visitable)
     expect_rejected<VisitableId>("true", "");
     expect_read<std::vector<VisitableId>>("[1,2]", {{1}, {2}});
     expect_rejected<std::vector<VisitableId>>("[1,true]", "/1");
+}
+
+// the keywords of the fields of transparent structs, which `yyjson::validate` checks where the value is written
+struct CheckedId
+{
+    int value = 1;
+    bool operator==(const CheckedId&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CheckedId> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::minimum(1)));
+struct CheckedTags
+{
+    std::vector<std::string> v = {"a"};
+    bool operator==(const CheckedTags&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CheckedTags> = yyjson::annotate(
+    yyjson::transparent, yyjson::field("v", yyjson::min_items(1), yyjson::items(yyjson::max_length(3))));
+struct CheckedLimit
+{
+    std::optional<int> o = 7;
+    bool operator==(const CheckedLimit&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CheckedLimit> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("o", yyjson::maximum(10)));
+struct CheckedAccount
+{
+    CheckedId id;
+    CheckedTags tags;
+    std::optional<CheckedId> other;
+    std::vector<CheckedId> ids;
+    std::map<std::string, CheckedId> by_name;
+    CheckedLimit limit;
+    bool operator==(const CheckedAccount&) const = default;
+};
+
+TEST(Transparent, Validate)
+{
+    expect_valid(CheckedAccount());
+    auto bad = CheckedAccount();
+    bad.ids = {{1}, {0}};
+    expect_invalid(bad, "the value of CheckedId is less than the minimum 1", "/ids/1");
+    bad = CheckedAccount();
+    bad.tags.v.clear();
+    expect_invalid(bad, "the value of CheckedTags has fewer items than the minimum 1", "/tags");
+    bad = CheckedAccount();
+    bad.tags.v = {"a", "long"};
+    expect_invalid(bad, "an element of the value of CheckedTags is longer than the maximum length 3", "/tags/1");
+    bad = CheckedAccount();
+    bad.limit.o = 11;
+    expect_invalid(bad, "the value of CheckedLimit is greater than the maximum 10", "/limit");
+    bad = CheckedAccount();
+    bad.by_name = {{"k", {0}}};
+    expect_invalid(bad, "the value of CheckedId is less than the minimum 1", "/by_name/k");
+    expect_invalid(CheckedId{0}, "the value of CheckedId is less than the minimum 1", "");
+    expect_invalid(std::vector{CheckedId{0}}, "the value of CheckedId is less than the minimum 1", "/0");
 }
 
 #if FIELD_RFL_ANNOTATIONS

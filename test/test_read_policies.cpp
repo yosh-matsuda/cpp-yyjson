@@ -1,4 +1,5 @@
 #include "test_common.hpp"
+#include "test_validation.hpp"
 
 // NOLINTBEGIN
 
@@ -2044,6 +2045,22 @@ TEST(ExtraKeys, Write)
     EXPECT_EQ(std::string(yyjson::value(ExtraEmitted{{1, {{"x", 2}}}}).write()), R"({"a":1,"x":2,"last":1})");
     EXPECT_EQ(invalid_argument_of([] { (void)yyjson::write(ExtraEmitted{{1, {{"a", 2}}}}); }), conflict);
     EXPECT_EQ(invalid_argument_of([] { (void)yyjson::value(ExtraEmitted{{1, {{"a", 2}}}}); }), conflict);
+}
+TEST(ExtraKeys, Validate)
+{
+    expect_valid(ExtraOpen{1, {{"x", 2}}});
+    expect_valid(ExtraShape(ExtraCircle{1, {{"x", 2}}}));
+    expect_valid(ExtraShort{1, {{"xy", 2}}});
+    // the keywords of the values and of the keys of the map
+    expect_invalid(ExtraOpen{1, {{"x", -1}}}, R"(the value of the key "x" of ExtraOpen is less than the minimum 0)",
+                   "/x");
+    expect_invalid(std::vector{ExtraOpen{1, {{"x", -1}}}},
+                   R"(the value of the key "x" of ExtraOpen is less than the minimum 0)", "/0/x");
+    expect_invalid(ExtraShort{1, {{"xyz", 1}}}, "a key of ExtraShort is longer than the maximum length 2", "/xyz");
+    // a key that the struct writes for a field or a tag is no keyword, but the checked write throws as the write
+    EXPECT_THROW((void)yyjson::write(ExtraOpen{1, {{"a", 2}}}, yyjson::with_validation), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::write(ExtraShape(ExtraCircle{1, {{"type", 2}}}), yyjson::with_validation),
+                 std::invalid_argument);
 }
 #if FIELD_RFL_ANNOTATIONS
 

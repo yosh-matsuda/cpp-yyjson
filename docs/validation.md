@@ -538,6 +538,7 @@ yyjson::read<Post>(R"({"tags":["cpp20"]})");  // -> accepted: the value is an ar
 *   `yyjson::min_properties` and `yyjson::max_properties` of a [struct](#the-number-of-members-of-a-struct) that a caster reads count the members of the JSON object.
 *   The type takes no constraints of the elements and the members, such as `yyjson::items`, `yyjson::property` and `yyjson::required("key", ...)`, because the caster reads them. In a subschema of a combinator or of the elements, the type takes no constraint of a JSON kind. These are [compile errors](#how-constraints-are-checked). `yyjson::additional_properties(false)` and `yyjson::property_names` check the keys of the JSON object. The type names no key, so `yyjson::additional_properties(false)` accepts only an empty object.
 *   `merge_into` replaces the value of such a field, and the constraints check the member of the patch. See [How constraints are checked](#how-constraints-are-checked).
+*   [`yyjson::validate`](#checking-a-value-before-writing) and a `write` with `yyjson::with_validation` check the same constraints on the JSON value that `to_json` writes. They call `to_json` for this check only when the field, the element or the type has such a constraint. Thus `to_json` must write the same JSON each time for the same value.
 
 ### Combining constraints
 
@@ -880,6 +881,15 @@ The check follows these rules:
         *   For a `yyjson::one_of_variant`, no other alternative can read the JSON of the alternative. The library compares the alternatives at compile time, as for the compile errors of `yyjson::one_of_variant`.
 
         In other cases, the check writes the variant and reads the JSON into a temporary document. Thus the check allocates memory.
+*   For a type with a [user-defined caster](#values-that-a-caster-reads), the check checks the constraints on the JSON value that the caster writes. These are the constraints of the field, and `yyjson::min_properties` and `yyjson::max_properties` of the type, of the element and of the subschema. In an internally tagged variant, the JSON object holds the key of the tag, as in a read.
+    *   For each such value, the check calls `to_json` of the caster. When `to_json` returns a `bool`, an integer, a `double` or a string, the check checks that value without a document.
+    *   In other cases, the check writes the value and reads the JSON into a temporary document. Thus the check allocates memory for this value. It also does this when it finds a violation, and when the write flags change the form of a `double`. Then it calls `to_json` again.
+    *   When a struct around the value already needs the written object, the check uses that document.
+    *   A `write` with `yyjson::with_validation` calls `to_json` again for the write.
+    *   When `to_json` returns a value of another type, such as a struct, the check also checks that value. It checks the value with the keywords of its type and of the types in it. In an internally tagged variant, the object of that value holds the key of the tag.
+    *   With `WriteFlag::InfAndNanAsNull`, the check checks a `null` in that value only if each `from_json` of the caster takes the type of that value. Another `from_json` reads the JSON in its own way.
+    *   A `yyjson::with_caster<T, X>` whose `X` has no `to_json` writes its value as the library writes a `T`. The check checks that value with the keywords of `T`.
+    *   A caster type without such constraints is not checked, and the check does not call its `to_json`. This is also true when its `to_json` returns a value of a type that has nothing to check.
 *   The check counts the depth of recursive types as a read does. It throws `yyjson::bad_cast` beyond `CPPYYJSON_RECURSION_DEPTH_LIMIT`.
 *   The compiler removes the check of each value whose type has nothing to check. A type has something to check in these cases:
     *   It or a type in it has a constraint.
@@ -889,6 +899,8 @@ The check follows these rules:
     *   It or a type in it is a struct with `yyjson::reject_missing_keys` or with a field with `yyjson::required`.
     *   It or a type in it is a `yyjson::any_of_variant` or a `yyjson::one_of_variant` with settings in a `yyjson::alt`.
     *   It or a type in it is a `yyjson::one_of_variant` whose alternatives can read the same JSON.
+    *   It or a type in it has a user-defined caster, and the field, the element or the type has a constraint on its JSON.
+    *   It or a type in it has a user-defined caster whose `to_json` returns a value of a type that has something to check.
     *   It or a type in it is a struct with a `std::optional` field that the rule of the empty `std::optional` above checks. This is a field of a struct that has a default constructor, or a field with `yyjson::default_from<f>`.
 
     `validate` does no work for other types, except for the search of a NaN or an infinity with `WriteFlag::InfAndNanAsNull`.
@@ -913,7 +925,7 @@ A field without constraints reads as it does without this feature. A constraint 
 
 *   `yyjson::unique_items` compares each pair of elements, so its time grows with the square of the number of elements. A range of more than 16 numbers, enumerations or strings, or pairs of them, is sorted first. When other ranges come from JSON that you do not trust, bound their size with `yyjson::max_items`.
 *   `yyjson::matches<T>` of a type other than a kind of JSON value reads the value into a `T`.
-*   A constraint on a field whose type has a [user-defined caster](#values-that-a-caster-reads) checks the JSON value after the caster reads it. The lengths and `yyjson::pattern` can read the string again. `yyjson::unique_items` compares the elements as JSON values. In `yyjson::read<T>`, `yyjson::min_items` and `yyjson::max_items` walk an array that the caster did not walk. A check in the caster itself does not have this cost.
+*   A constraint on a field whose type has a [user-defined caster](#values-that-a-caster-reads) checks the JSON value after the caster reads it. The lengths and `yyjson::pattern` can read the string again. `yyjson::unique_items` compares the elements as JSON values. In `yyjson::read<T>`, `yyjson::min_items` and `yyjson::max_items` walk an array that the caster did not walk. `yyjson::validate` writes the value with `to_json` and reads the JSON into a temporary document. It does not do this for a `bool`, a number or a string. A check in the caster itself does not have this cost.
 *   When a read with `yyjson::read<T>` fails, it reads the text again to find the path of the error.
 
 ### Pattern matcher
