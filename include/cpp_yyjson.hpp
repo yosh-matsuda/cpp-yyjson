@@ -1997,6 +1997,9 @@ namespace yyjson
         inline constexpr std::uint8_t missing_keys_policy = 2;
         inline constexpr std::uint8_t null_as_missing_policy = 4;
         inline constexpr std::uint8_t duplicates_policy = 8;
+        // A repeated element of a set whose JSON array has unique items, which `uniqueItems` rejects too: the
+        // alternatives of a `yyjson::one_of_variant` are counted under it.  `duplicates_policy` implies it.
+        inline constexpr std::uint8_t unique_items_policy = 16;
         inline constexpr std::uint8_t key_policies = unknown_keys_policy | missing_keys_policy | duplicates_policy;
 
         template <typename P>
@@ -18218,6 +18221,34 @@ namespace yyjson
             { t.insert(std::move(v)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
         };
 
+        // A set whose elements are equal exactly when their JSON values are: scalars that a standard comparison
+        // orders, so that a JSON array of the set has unique items.
+        template <typename T>
+        concept json_unique_set = insertable_set<T> && unique_set<T> && [] {
+            using K = typename T::key_type;
+            if constexpr (!std::is_arithmetic_v<K> && !std::is_enum_v<K> && !std::same_as<K, std::string> &&
+                          !std::same_as<K, std::string_view>)
+                return false;
+            // the writer rounds a wider float to a double, which can give two elements one text
+            else if constexpr (std::floating_point<K> &&
+                               std::numeric_limits<K>::digits > std::numeric_limits<double>::digits)
+                return false;
+            else if constexpr (requires { typename T::key_compare; })
+                return std::same_as<typename T::key_compare, std::less<K>> ||
+                       std::same_as<typename T::key_compare, std::less<>> ||
+                       std::same_as<typename T::key_compare, std::greater<K>> ||
+                       std::same_as<typename T::key_compare, std::greater<>>;
+            else if constexpr (requires { typename T::key_equal; })
+                return std::same_as<typename T::key_equal, std::equal_to<K>> ||
+                       std::same_as<typename T::key_equal, std::equal_to<>>;
+            else
+                return false;
+        }();
+        // The policies under which the set T rejects a repeated element.
+        template <typename T>
+        inline constexpr std::uint8_t repeated_element_policies =
+            json_unique_set<T> ? duplicates_policy | unique_items_policy : duplicates_policy;
+
         // A map whose keys are neither strings nor `enum_key`s is written as a JSON array of [key, value] pairs, and
         // is read back from one with `emplace`.
         template <typename T>
@@ -19263,6 +19294,10 @@ namespace yyjson
                 return null;
             else if (value == nullptr)
                 return null;
+            else if constexpr (variant_value<V>)
+                return !value->valueless_by_exception() &&
+                       std::visit([](const auto& b) { return alternative_equals_listed<Schema, I>(b); },
+                                  as_std_variant(*value));
             else if constexpr (dom_json_value<V>)
                 return dom_equals_listed<Schema, I>(*value);
             else if constexpr (null)
@@ -19416,18 +19451,26 @@ namespace yyjson
                 return struct_json_violation<Schema, false>(s, *input, tag);
         }
 
-        // The keyword of `Schema` that the alternative `a` of a variant does not satisfy, of the keywords of its kind
-        // but `yyjson::const_` and `yyjson::enum_`.
-        template <typename Schema, typename A, typename Input>
-        constraint_kind alternative_violation(const A& a, Input input, std::string_view tag)
+        // The keyword of `Schema` that the alternative `a` of a variant, read from `whole` unless it is `no_input`,
+        // does not satisfy, of the keywords of its kind but `yyjson::const_` and `yyjson::enum_`.
+        template <typename Schema, typename A, typename Whole>
+        constraint_kind alternative_violation(const A& a, Whole whole, std::string_view tag)
         {
             using V = constrained_value_t<A>;
             constexpr const field_constraints& c = Schema::constraints;
             const V* value = held_value(a);
+            [[maybe_unused]] const auto input = input_for<Schema, A>(whole);
             if constexpr (std::same_as<V, std::monostate> || std::same_as<V, std::nullptr_t>)
                 return constraint_kind::none;
             else if (value == nullptr)
                 return constraint_kind::none;
+            else if constexpr (variant_value<V>)
+            {
+                if (value->valueless_by_exception()) return constraint_kind::none;
+                if constexpr (internally_tagged<V>) tag = variant_tags<V>::key;
+                return std::visit([whole, tag](const auto& b) { return alternative_violation<Schema>(b, whole, tag); },
+                                  as_std_variant(*value));
+            }
             else if constexpr (dom_checked<V>)
                 return dom_violation<Schema, false>(*value);
             else
@@ -19470,11 +19513,8 @@ namespace yyjson
                 else
                     return std::string_view();
             }();
-            return std::visit(
-                [input, tag]<typename A>(const A& a) {
-                    return alternative_violation<Schema>(a, input_for<Schema, A>(input), tag);
-                },
-                as_std_variant(v));
+            return std::visit([input, tag](const auto& a) { return alternative_violation<Schema>(a, input, tag); },
+                              as_std_variant(v));
         }
 
         // Reads the JSON value `e` again as E, through Read, and throws at it, or at a value in it, if it does not
@@ -20557,7 +20597,7 @@ namespace yyjson
                     result.insert(result.end(), detail::cast_nested<value_type>(e));
                     if constexpr (unique_set<T>)
                     {
-                        if (result.size() == size && (read_policies & duplicates_policy) != 0) [[unlikely]]
+                        if (result.size() == size && (read_policies & repeated_element_policies<T>) != 0) [[unlikely]]
                             throw_repeated_element(target_of(e), type_name<T>());
                     }
                 }
@@ -25083,7 +25123,7 @@ namespace yyjson
 
             // The policies under which the alternatives are counted.  A schema does not hold
             // `yyjson::reject_duplicates`, so it applies only to the alternative that the count selects.
-            static constexpr std::uint8_t counting_policies = missing_keys_policy | null_as_missing_policy;
+            static constexpr std::uint8_t counting_policies = missing_keys_policy | null_as_missing_policy | unique_items_policy;
 
             // The alternatives that the keys of the JSON value, an object, prove to fail.
             template <typename Json>
@@ -34406,7 +34446,8 @@ namespace yyjson
                         {
                             const auto size = result.size();
                             result.insert(result.end(), std::move(e));
-                            if (result.size() == size && (policies_ & d::duplicates_policy) != 0) [[unlikely]]
+                            if (result.size() == size && (policies_ & d::repeated_element_policies<V>) != 0)
+                                [[unlikely]]
                                 fail();
                         }
                         else if constexpr (d::pair_array_map<V>)
@@ -35138,8 +35179,9 @@ namespace yyjson
                         result.insert(result.end(), read_element<value_type>());
                         if constexpr (yyjson::detail::unique_set<T>)
                         {
-                            if (result.size() == size && (policies_ & yyjson::detail::duplicates_policy) != 0)
-                                [[unlikely]] fail();
+                            if (result.size() == size &&
+                                (policies_ & yyjson::detail::repeated_element_policies<T>) != 0) [[unlikely]]
+                                fail();
                         }
                     }
                     else if constexpr (yyjson::detail::pair_array_map<T>)
@@ -38117,12 +38159,40 @@ namespace yyjson
                 return false;
         }
 
+        // Whether the alternative `i` of a `yyjson::one_of_variant` may read the JSON of another, by the table `rows`.
+        template <std::size_t N>
+        constexpr bool overlaps_another(const std::array<std::array<bool, N>, N>& rows, std::size_t i)
+        {
+            for (std::size_t j = 0; j < N; ++j)
+                if (j != i && rows[i][j]) return true;
+            return false;
+        }
+        // Whether `yyjson::validate` checks the union V itself: the settings of an alternative, or the alternatives
+        // of a `yyjson::one_of_variant` that may read the same JSON.
+        template <typename V>
+        consteval bool checks_union()
+        {
+            constexpr auto n = std::variant_size_v<V>;
+            if constexpr (is_one_of_variant<V>)
+            {
+                for (std::size_t i = 0; i < n; ++i)
+                    if (overlaps_another(one_of_variant_cast<V>::overlap, i) ||
+                        overlaps_another(one_of_variant_cast<V>::tagged_overlap, i))
+                        return true;
+            }
+            return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return (constrained_union_alternative<V, Is> || ...);
+            }(std::make_index_sequence<n>{});
+        }
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
         {
             if constexpr (repeats_written_keys<T>())
                 return true;
+            else if constexpr (union_variant<T>)
+                return checks_union<T>();
             else if constexpr (!validated_struct<T>)
                 return false;
             else if constexpr (!std::is_trivially_destructible_v<recursion_guard<T>>)
@@ -38225,6 +38295,32 @@ namespace yyjson
         // Whether the check of a value of T needs the JSON that write gives for it.
         template <typename T>
         inline constexpr bool needs_written_json = graph_search(&graph_node<written_json_node<std::remove_cvref_t<T>>>);
+        // A node of a graph whose edges go from a type to the value that the walk passes the same written JSON, marked
+        // for a variant.
+        template <typename T>
+        struct written_tag_node
+        {
+            static consteval auto inner_nodes()
+            {
+                if constexpr (is_std_optional<T>::value || nullable_value<T>)
+                    return type_list<written_tag_node<std::remove_cvref_t<typename T::value_type>>>{};
+                else if constexpr (owning_pointer<T>)
+                    return type_list<written_tag_node<typename is_owning_pointer<T>::value_type>>{};
+                else if constexpr (indirect_value<T>)
+                    return type_list<written_tag_node<typename is_indirect<T>::value_type>>{};
+                else if constexpr (validated_struct<T> && transparent_struct<T>)
+                    return type_list<written_tag_node<std::remove_cvref_t<struct_field_type<T, 0>>>>{};
+                else
+                    return type_list<>{};
+            }
+            using edges = decltype(inner_nodes());
+            static constexpr bool marked = requires { std::variant_size<T>::value; };
+        };
+        // Whether the walk passes a value of the type T the tag of an internally tagged variant around it: a
+        // variant that is not tagged, also inside a wrapper, reads its written JSON with that tag when its
+        // alternative fails.
+        template <typename T>
+        inline constexpr bool takes_written_tag = graph_search(&graph_node<written_tag_node<std::remove_cvref_t<T>>>);
 
         // Calls `f` with the alternative that the variant `v` holds, if it holds one.
         template <typename V, typename F>
@@ -38908,7 +39004,7 @@ namespace yyjson
         {
             if constexpr (validation_walks<T, AsNull>)
             {
-                if constexpr (needs_written_json<T>)
+                if constexpr (needs_written_json<T> || takes_written_tag<T>)
                     validate_value<AsNull>(v, flag, tag, json);
                 else
                     validate_value<AsNull>(v, flag);
@@ -38949,7 +39045,13 @@ namespace yyjson
         template <bool AsNull, typename S, std::size_t K, typename F, typename... Written>
         void validate_written_field(const F& field, WriteFlag flag, const Written&... written)
         {
-            validate_nested<AsNull>(field, flag, written...);
+            if constexpr (adjacent_declared_field<S, struct_declared_index<S, K>>)
+            {
+                if constexpr (validation_walks<F, AsNull>)
+                    visit_alternative(field, [&](const auto& a) { validate_nested<AsNull>(a, flag, written...); });
+            }
+            else
+                validate_nested<AsNull>(field, flag, written...);
             if constexpr (AsNull && writes_floating_point<F>)
             {
                 if (holds_non_finite(field)) [[unlikely]]
@@ -39238,16 +39340,11 @@ namespace yyjson
             validate_object_members<AsNull, KeysChecked>(s, flag);
         }
 
-        // The JSON text of the object of `s`, with the keys of the tags `tag` that write puts in front of it, the
-        // outer first, unless it has them.  `flag` takes the flags that the text needs, as in
-        // `validated_text_allowing`.
-        template <typename S>
-        CPPYYJSON_NOINLINE std::optional<std::string> written_object_text(const S& s, WriteFlag& flag,
-                                                                          const validated_tag* tag)
+        // The JSON text `text` that write gives with `flag`, with the keys of the tags `tag` that write puts in front
+        // of it, the outer first, unless it has them, if it is an object.
+        inline std::string tagged_object_text(std::string text, WriteFlag flag, const validated_tag* tag)
         {
-            auto text = validated_text_allowing(s, flag);
-            if (!text.has_value() || tag == nullptr) return text;
-            const auto doc = written_document(*text, flag);
+            const auto doc = written_document(text, flag);
             const auto obj = doc.as_object();
             if (!obj.has_value()) return text;
             auto keys = std::vector<std::string_view>();
@@ -39265,12 +39362,23 @@ namespace yyjson
                 members += ',';
             }
             if (members.size() == 1) return text;
-            const auto rest = text->find_first_not_of(" \t\n\r", 1);
-            if (rest != std::string::npos && (*text)[rest] == '}')
+            const auto rest = text.find_first_not_of(" \t\n\r", 1);
+            if (rest != std::string::npos && text[rest] == '}')
                 members.back() = '}';
             else
-                members.append(*text, 1);
+                members.append(text, 1);
             return members;
+        }
+
+        // The JSON text of the object of `s`, with the keys of the tags `tag` as above.  `flag` takes the flags that
+        // the text needs, as in `validated_text_allowing`.
+        template <typename S>
+        CPPYYJSON_NOINLINE std::optional<std::string> written_object_text(const S& s, WriteFlag& flag,
+                                                                          const validated_tag* tag)
+        {
+            auto text = validated_text_allowing(s, flag);
+            if (!text.has_value() || tag == nullptr) return text;
+            return tagged_object_text(std::move(*text), flag, tag);
         }
 
         // Calls `f()` with the keys of the tags `tag` marked in the object `obj`, as the read of the variants marks
@@ -39520,6 +39628,113 @@ namespace yyjson
                 validate_object_fields<AsNull, false>(s, flag);
         }
 
+        // Reads V from the JSON that write gives for `v`, with the tags `tag` or as `json` if not null: the JSON
+        // passes if another alternative reads it with all of its required keys.  It throws `failure`, the error of
+        // the walk of the alternative, if read gives that alternative too.
+        template <bool AsNull, typename V>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void read_untagged(const V& v, WriteFlag flag, const validated_tag* tag,
+                                                             written_json json, const std::exception_ptr& failure)
+        {
+            if constexpr (!readable<V>)
+            {
+                if (failure) std::rethrow_exception(failure);
+            }
+            else
+            {
+                // after a failed walk, only a read of another alternative passes
+                auto passed = !failure;
+                const auto read = [&](const reader::const_value_ref& value) {
+                    const auto run = [&] {
+                        const exact_policy_scope scope(duplicates_policy | missing_keys_policy |
+                                                       (AsNull ? null_as_missing_policy : 0));
+                        passed = cast_nested<V>(value).index() != v.index() || passed;
+                    };
+                    if (const auto obj = value.as_object(); obj.has_value() && tag != nullptr)
+                        with_written_tags(writer::detail::json_value_access::get(*obj), tag, run);
+                    else
+                        run();
+                };
+                if (json != nullptr)
+                    throw_in_document(*json, read);
+                else if (auto text = validated_text(v, flag); text.has_value())
+                {
+                    if (tag != nullptr) text = tagged_object_text(std::move(*text), flag, tag);
+                    const auto doc = written_document(*text, flag);
+                    throw_in_document(doc, [&](const auto& root) { read(reader::const_value_ref(root)); });
+                }
+                if (!passed) std::rethrow_exception(failure);
+            }
+        }
+
+        // Whether the alternative I of the union V, `a`, whose JSON is `json` if not null, violates its settings, or
+        // else may, as only its JSON can tell: a keyword that counts the JSON, or a number that write gives as null.
+        template <bool AsNull, typename V, std::size_t I, typename A>
+        bool violates_alternative(const A& a, written_json json)
+        {
+            using Schema = union_alternative_schema<V, I>;
+            if constexpr (AsNull && writes_floating_point<A>)
+                if (holds_non_finite(a)) return true;
+            if constexpr (counts_input<Schema, A>() || checks_caster_json<Schema, A>())
+                return json == nullptr ||
+                       constraint_violation<Schema, true>(a, input_for<Schema, A>(json)) != constraint_kind::none;
+            else
+                return constraint_violation<Schema, true>(a) != constraint_kind::none;
+        }
+
+        // Walks the alternative I of the untagged variant V, `a`, and tells whether read must decide: `a` may violate
+        // its settings, or V is a `yyjson::one_of_variant` whose other alternatives may read the JSON of `a`.
+        template <bool AsNull, typename V, std::size_t I, typename A>
+        bool validate_held(const A& a, WriteFlag flag, const validated_tag* tag, written_json json)
+        {
+            validate_nested<AsNull>(a, flag, tag, json);
+            if constexpr (is_one_of_variant<V>)
+            {
+                using cast = one_of_variant_cast<V>;
+                if constexpr (overlaps_another(cast::overlap, I))
+                    return true;
+                else if constexpr (overlaps_another(cast::tagged_overlap, I))
+                {
+                    if (tag != nullptr) return true;
+                }
+            }
+            if constexpr (constrained_union_alternative<V, I>)
+                return violates_alternative<AsNull, V, I>(a, json);
+            else
+                return false;
+        }
+
+        // Checks the untagged variant `v`: the alternative that it holds, its settings, and for a
+        // `yyjson::one_of_variant`, that no other alternative reads its JSON.  Read decides when one fails.
+        template <bool AsNull, typename V>
+        void validate_untagged(const V& v, WriteFlag flag, const validated_tag* tag, written_json json)
+        {
+            if (v.valueless_by_exception()) return;
+            auto failure = std::exception_ptr();
+            auto limit = std::exception_ptr();
+            auto fallback = false;
+            try
+            {
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((v.index() == Is
+                                ? (fallback = validate_held<AsNull, V, Is>(std::get<Is>(v), flag, tag, json), true)
+                                : false) ||
+                           ...);
+                }(std::make_index_sequence<std::variant_size_v<V>>{});
+            }
+            catch (const recursion_limit_error&)
+            {
+                limit = std::current_exception();
+            }
+            catch (const bad_cast&)
+            {
+                failure = std::current_exception();
+                fallback = true;
+            }
+            if (limit) std::rethrow_exception(limit);
+            if (fallback) [[unlikely]]
+                read_untagged<AsNull>(v, flag, tag, json, failure);
+        }
+
         // Checks the fields of the structs in `v` with the keywords of their types, as the JSON that
         // `write(v, flag)` gives them.
         template <bool AsNull, typename T, typename... Written>
@@ -39559,7 +39774,7 @@ namespace yyjson
                     visit_alternative(v, [&](const auto& a) { validate_nested<AsNull>(a, flag, &inner, json); });
                 }
                 else
-                    visit_alternative(v, [&](const auto& a) { validate_nested<AsNull>(a, flag, tag, json); });
+                    validate_untagged<AsNull>(v, flag, tag, json);
             }
             else if constexpr (validated_struct<T>)
                 validate_struct<AsNull>(v, flag, written...);

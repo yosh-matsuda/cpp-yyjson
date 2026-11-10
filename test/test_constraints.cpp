@@ -5841,6 +5841,16 @@ TEST(Constraints, UnionReading)
     expect_rejected<UnionTagged>(R"({"kind":"p","x":1,"z":1})",
                                  read_by_none<std::variant_alternative_t<0, UnionTagged>>(), "");
 
+    // the settings of an alternative reach the value that a variant held in a variant holds, at any depth
+    using IntOrText = std::variant<int, std::string>;
+    using Nested = yyjson::any_of_variant<
+        yyjson::alt<std::variant<std::variant<IntOrText, double>, bool>, yyjson::minimum(5), yyjson::min_length(2)>>;
+    for (const auto json : {"1", "1.5", R"("a")"}) expect_rejected<Nested>(json, read_by_none<Nested>(), "");
+    for (const auto json : {"7", "7.5", R"("ab")", "true"}) EXPECT_NO_THROW((void)yyjson::read<Nested>(json)) << json;
+    using NestedListed = yyjson::any_of_variant<yyjson::alt<std::variant<IntOrText, bool>, yyjson::enum_(5, "ab")>>;
+    expect_alternative<NestedListed>("5", 0);
+    expect_alternative<NestedListed>(R"("ab")", 0);
+    expect_rejected<NestedListed>("1", read_by_none<NestedListed>(), "");
     // read_into and merge_into replace the value
     auto fields = UnionFields{UnionValues(std::in_place_index<0>, 2), UnionPoint{1, 2}};
     yyjson::merge_into(R"({"p":{"x":5}})", fields);
@@ -6104,6 +6114,10 @@ using OneOfInts = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, y
 inline bool one_of_has_value(const yyjson::nullable<int>& v) { return v.has_value(); }
 inline constexpr auto one_of_present = yyjson::satisfies<one_of_has_value>;
 inline constexpr auto one_of_object = yyjson::matches<yyjson::object>;
+struct OneOfOrder
+{
+    bool operator()(int a, int b) const { return a < b; }
+};
 struct OneOfFields
 {
     OneOfInts n;
@@ -6169,9 +6183,17 @@ TEST(Constraints, OneOfReading)
     EXPECT_THROW((void)yyjson::read(R"({"x":1,"k":2})").cast<XOrText>(yyjson::reject_unknown_keys), yyjson::bad_cast);
     expect_alternative<XOrText>(R"({"x":1})", 0, yyjson::reject_unknown_keys);
     expect_alternative<XOrText>(R"("a")", 1, yyjson::reject_unknown_keys);
-    // a schema does not reject a repeated element or key, so yyjson::reject_duplicates does not change the count
+    // a set does not match a repeated element, which `uniqueItems` rejects, under any policies
     using SetOrList = yyjson::one_of_variant<std::set<int>, std::vector<int>>;
-    expect_rejected_under<SetOrList>("[1,1]", read_by_two<SetOrList>(0, 1), yyjson::reject_duplicates);
+    expect_alternative<SetOrList>("[1,1]", 1);
+    expect_alternative<SetOrList>("[1,1]", 1, yyjson::reject_duplicates);
+    expect_rejected_under<SetOrList>("[1,2]", read_by_two<SetOrList>(0, 1));
+    using CountedSet = yyjson::one_of_variant<yyjson::alt<std::set<int>, yyjson::min_items(1)>,
+                                              yyjson::alt<std::vector<int>, yyjson::max_items(2)>>;
+    expect_alternative<CountedSet>("[1,1]", 1, yyjson::strict);
+    // a set of another order has no `uniqueItems`, and no schema rejects a repeated key
+    using OrderedOrList = yyjson::one_of_variant<std::set<int, OneOfOrder>, std::vector<int>>;
+    expect_rejected_under<OrderedOrList>("[1,1]", read_by_two<OrderedOrList>(0, 1));
     EXPECT_THROW((void)yyjson::read<XOrText>(R"({"x":1,"x":2})", yyjson::reject_duplicates), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read(R"({"x":1,"x":2})").cast<XOrText>(yyjson::reject_duplicates), yyjson::bad_cast);
 

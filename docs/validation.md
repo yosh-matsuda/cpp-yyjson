@@ -870,6 +870,16 @@ The check follows these rules:
     *   With `WriteFlag::InfAndNanAsNull`, the check checks each `null` that the write gives for such a number. It checks the `null` as `yyjson::read<T>` with [`yyjson::reject_null_as_missing`](#null-in-a-stdoptional) checks it at that position. A `double` cannot read `null`, so the check throws `yyjson::bad_cast`. A `std::optional<double>` field rejects `null` too. A `std::optional<double>` element of an array and a `yyjson::nullable<double>` accept `null`.
 *   A string that is not valid UTF-8 is checked as a read with `ReadFlag::AllowInvalidUnicode` checks it. A `write` with `yyjson::with_validation` throws `yyjson::write_error`, as `yyjson::write` does, unless the call gives `WriteFlag::AllowInvalidUnicode`.
 *   The check does not check the constraints of a value that the write rejects for another reason, such as an enumeration value without a name. A `write` with `yyjson::with_validation` throws the exception of the write.
+*   For a `std::variant`, the check checks the alternative that the variant holds. For a `yyjson::any_of_variant` and a `yyjson::one_of_variant`, it also checks the settings of the `yyjson::alt` of that alternative.
+    *   A variant with an internal tag or an adjacent tag checks only the alternative that the tag names. The message is that of the alternative.
+    *   If the read of the written JSON gives an alternative, an untagged variant accepts the value, as `anyOf` and `oneOf` of JSON Schema do. This read rejects a missing key, as a read with `yyjson::reject_missing_keys` does, because the JSON Schema of the write makes each such key [required](conversions.md#default-values-and-required-keys). Thus, if another alternative reads the JSON with all of its required keys, the check accepts a value whose alternative fails its check. Then `yyjson::read<T>(yyjson::write(t))` holds the other alternative. Its JSON can differ from the written JSON, because the other alternative can ignore some keys. For example, a `std::variant<std::multimap<std::string, int>, yyjson::value>` that holds a repeated key passes, because `yyjson::value` reads the JSON. If no alternative reads the JSON, the message is the message of the read.
+    *   For a `yyjson::one_of_variant`, the check also rejects the value when another alternative reads the written JSON. The message is like `the value matches the alternatives 0 and 1 of V`.
+    *   When all of these conditions are true, the check of a variant allocates no memory:
+        *   The alternative that the variant holds passes its check.
+        *   The settings of the alternative do not count the written JSON, as `yyjson::max_properties` does.
+        *   For a `yyjson::one_of_variant`, no other alternative can read the JSON of the alternative. The library compares the alternatives at compile time, as for the compile errors of `yyjson::one_of_variant`.
+
+        In other cases, the check writes the variant and reads the JSON into a temporary document. Thus the check allocates memory.
 *   The check counts the depth of recursive types as a read does. It throws `yyjson::bad_cast` beyond `CPPYYJSON_RECURSION_DEPTH_LIMIT`.
 *   The compiler removes the check of each value whose type has nothing to check. A type has something to check in these cases:
     *   It or a type in it has a constraint.
@@ -877,6 +887,8 @@ The check follows these rules:
     *   It or a type in it is a struct with a field of `yyjson::extra_keys` or `yyjson::pattern_properties`.
     *   It or a type in it can write a key twice, such as a `std::multimap` with string keys.
     *   It or a type in it is a struct with `yyjson::reject_missing_keys` or with a field with `yyjson::required`.
+    *   It or a type in it is a `yyjson::any_of_variant` or a `yyjson::one_of_variant` with settings in a `yyjson::alt`.
+    *   It or a type in it is a `yyjson::one_of_variant` whose alternatives can read the same JSON.
     *   It or a type in it is a struct with a `std::optional` field that the rule of the empty `std::optional` above checks. This is a field of a struct that has a default constructor, or a field with `yyjson::default_from<f>`.
 
     `validate` does no work for other types, except for the search of a NaN or an infinity with `WriteFlag::InfAndNanAsNull`.

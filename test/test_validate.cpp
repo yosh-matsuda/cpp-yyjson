@@ -1503,6 +1503,358 @@ TEST(Validate, RepeatedKeys)
     EXPECT_EQ(validate_allocations(std::multimap<std::string, int>{{"a", 1}, {"b", 2}}), 0U);
 }
 
+// a union: the settings of the alternative that it holds, the count of a one_of, and the read of its JSON when the
+// alternative fails, which passes if another alternative reads it
+struct VdUnionA
+{
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdUnionA> = yyjson::annotate(yyjson::field("x", yyjson::minimum(0)));
+struct VdUnionB
+{
+    int x = 0;
+};
+struct VdUnionC
+{
+    int x = 0;
+    std::optional<int> y;
+};
+struct VdUnionD
+{
+    int y = 0;
+};
+struct VdUnionE
+{
+    std::string msg;
+};
+using VdLowOrInt = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(0)>, int>;
+using VdLowOrHigh =
+    yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(-10)>>;
+using VdLowOrShort =
+    yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<std::string, yyjson::max_length(3)>>;
+using VdItemsOrText =
+    yyjson::any_of_variant<yyjson::alt<std::vector<int>, yyjson::items(yyjson::minimum(0))>, std::string>;
+using VdSignedOrUnsigned = yyjson::one_of_variant<std::int64_t, std::uint64_t>;
+// some alternatives other than the last one may read its values and some may not
+using VdPartlyOverlapping =
+    yyjson::one_of_variant<yyjson::alt<double, yyjson::maximum(0.5)>, std::string,
+                           yyjson::alt<std::int64_t, yyjson::minimum(-100), yyjson::maximum(10)>, std::uint64_t>;
+using VdAB = std::variant<VdUnionA, VdUnionB>;
+using VdAnyAB = yyjson::any_of_variant<VdUnionA, VdUnionB>;
+using VdOneCD = yyjson::one_of_variant<VdUnionC, VdUnionD>;
+using VdOneAD = yyjson::one_of_variant<VdUnionA, VdUnionD>;
+struct VdUnionFields
+{
+    VdOneCD u = VdUnionD{};
+    VdLowOrShort n = 0;
+};
+struct VdCounted
+{
+    int a = 0;
+    int b = 0;
+};
+using VdCountedOrMap =
+    yyjson::any_of_variant<yyjson::alt<VdCounted, yyjson::max_properties(1)>, std::map<std::string, int>>;
+struct VdDefaulted
+{
+    int a = 0;
+    int b = 5;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdDefaulted> = yyjson::annotate(yyjson::field("b", yyjson::default_));
+using VdDefaultedOrInt = yyjson::any_of_variant<yyjson::alt<VdDefaulted, yyjson::max_properties(1)>, int>;
+struct VdDisjointField
+{
+    int a = 0;
+    std::variant<int, std::string> u;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdDisjointField> = yyjson::annotate(yyjson::field("a", yyjson::minimum(0)));
+
+namespace
+{
+    template <typename V>
+    std::string vd_name()
+    {
+        return std::string(yyjson::detail::variant_name<V>());
+    }
+}  // namespace
+
+TEST(Validate, Unions)
+{
+    static_assert(yyjson::detail::needs_validation<VdLowOrInt>);
+    static_assert(yyjson::detail::needs_validation<VdOneCD>);
+    static_assert(!yyjson::detail::needs_validation<yyjson::any_of_variant<int, std::string>>);
+    static_assert(!yyjson::detail::needs_validation<yyjson::one_of_variant<int, std::string>>);
+    static_assert(!yyjson::detail::needs_validation<std::variant<VdUnionB, int>>);
+
+    // the settings of the alternative, where another alternative may read the JSON
+    expect_valid(VdLowOrInt(std::in_place_index<0>, 5));
+    expect_valid(VdLowOrInt(std::in_place_index<0>, -5));
+    expect_valid(VdLowOrHigh(std::in_place_index<0>, 3));
+    expect_valid(VdLowOrHigh(std::in_place_index<1>, -20));
+    expect_invalid(VdLowOrHigh(std::in_place_index<0>, -5),
+                   vd_name<VdLowOrHigh>() +
+                       " is not constructible from JSON: alternative 0 (int): the value is less than the minimum 0; "
+                       "alternative 1 (int): the value is greater than the maximum -10",
+                   "");
+    const auto text = std::string(yyjson::detail::type_name<std::string>());
+    expect_valid(VdLowOrShort(std::string("abc")));
+    expect_invalid(VdLowOrShort(-1),
+                   vd_name<VdLowOrShort>() +
+                       " is not constructible from JSON: alternative 0 (int): the value is less than the minimum 0; "
+                       "alternative 1 (" +
+                       text + "): reads no JSON number",
+                   "");
+    expect_invalid(VdLowOrShort(std::string("abcd")),
+                   vd_name<VdLowOrShort>() + " is not constructible from JSON: alternative 0 (int): reads no JSON " +
+                       "string; alternative 1 (" + text + "): the value is longer than the maximum length 3",
+                   "");
+    expect_invalid(VdItemsOrText(std::vector<int>{1, -2}),
+                   vd_name<VdItemsOrText>() + " is not constructible from JSON: alternative 0 (std::vector<int>): " +
+                       "the value has an element that does not satisfy the constraints of yyjson::items; " +
+                       "alternative 1 (" + text + "): reads no JSON array",
+                   "");
+    // a keyword that counts the JSON of the alternative
+    expect_valid(VdCountedOrMap(VdCounted{1, 2}));
+    expect_valid(VdDefaultedOrInt(VdDefaulted{1, 5}));
+    const auto defaulted = vd_name<VdDefaultedOrInt>() +
+                           " is not constructible from JSON: alternative 0 (VdDefaulted): the value has more "
+                           "properties than the maximum 1; alternative 1 (int): reads no JSON object";
+    EXPECT_EQ(std::string(validation_error([] {
+                              yyjson::validate(VdDefaultedOrInt(VdDefaulted{1, 5}), yyjson::emit_defaults);
+                          }).what()),
+              defaulted);
+    EXPECT_EQ(std::string(validation_error([] {
+                              (void)yyjson::write(VdDefaultedOrInt(VdDefaulted{1, 5}), yyjson::emit_defaults,
+                                                  yyjson::with_validation);
+                          }).what()),
+              defaulted);
+
+    // a value whose alternative fails passes if another reads its JSON
+    expect_valid(VdAB(VdUnionA{-1}));
+    expect_valid(VdAnyAB(VdUnionA{-1}));
+    // another alternative that reads the JSON only without its required keys
+    expect_invalid(
+        std::variant<VdUnionA, VdUnionE>(VdUnionA{-1}),
+        vd_name<std::variant<VdUnionA, VdUnionE>>() +
+            R"( is not constructible from JSON: alternative 0 (VdUnionA) at /x: the value of the key "x" of )"
+            R"(VdUnionA is less than the minimum 0; alternative 1 )"
+            R"((VdUnionE): VdUnionE is not constructible from JSON without the key "msg")",
+        "", read_leg::skipped);
+    expect_invalid(VdOneAD(VdUnionA{-1}),
+                   R"(yyjson::one_of_variant<VdUnionA, VdUnionD> is not constructible from JSON: alternative 0 )"
+                   R"((VdUnionA) at /x: the value of the key "x" of VdUnionA is less than the minimum 0; )"
+                   R"(alternative 1 (VdUnionD): VdUnionD is not constructible from JSON without the key "y")",
+                   "");
+    // a walk that fails for the alternative that read gives too, which read does not check
+    expect_invalid(std::variant<VdReadBack, int>(VdReadBack{3, {}, std::nullopt}),
+                   "the key \"z\" of VdReadBack holds an empty std::optional, which is not written and reads back "
+                   "as the default value",
+                   "/z", read_leg::skipped);
+
+    // the count of a one_of, which a disjoint alternative skips
+    const auto matches_cd = std::string("the value matches the alternatives 0 and 1 of ") + vd_name<VdOneCD>();
+    expect_invalid(VdOneCD(VdUnionC{1, 2}), matches_cd, "");
+    expect_valid(VdOneCD(VdUnionC{1, {}}));
+    expect_valid(VdOneCD(VdUnionD{1}));
+    expect_valid(yyjson::one_of_variant<int, std::string>(1));
+    expect_valid(VdSignedOrUnsigned(std::int64_t{-5}));
+    expect_invalid(VdSignedOrUnsigned(std::int64_t{5}),
+                   "the value matches the alternatives 0 and 1 of " + vd_name<VdSignedOrUnsigned>(), "");
+    expect_invalid(std::vector<VdSignedOrUnsigned>{std::int64_t{-5}, std::uint64_t{5}},
+                   "the value matches the alternatives 0 and 1 of " + vd_name<VdSignedOrUnsigned>(), "/1");
+    expect_valid(VdPartlyOverlapping(-300.0));
+    expect_valid(VdPartlyOverlapping(std::uint64_t{20}));
+    const auto partly = vd_name<VdPartlyOverlapping>();
+    expect_invalid(VdPartlyOverlapping(std::int64_t{0}), "the value matches the alternatives 0 and 2 of " + partly, "");
+    expect_invalid(VdPartlyOverlapping(std::uint64_t{5}), "the value matches the alternatives 2 and 3 of " + partly,
+                   "");
+
+    // nested unions, and a union in an array, a map and a struct
+    expect_invalid(yyjson::any_of_variant<VdOneCD, int>(VdOneCD(VdUnionC{1, 2})),
+                   vd_name<yyjson::any_of_variant<VdOneCD, int>>() + " is not constructible from JSON: alternative " +
+                       "0 (" + vd_name<VdOneCD>() + "): " + matches_cd + "; alternative 1 (int): reads no JSON object",
+                   "");
+    expect_valid(yyjson::any_of_variant<VdOneAD, VdUnionB>(VdOneAD(VdUnionA{-1})));
+    expect_valid(yyjson::one_of_variant<VdAB, VdUnionD>(VdAB(VdUnionA{-1})));
+    expect_invalid(std::vector<VdOneCD>{VdUnionD{1}, VdUnionD{2}, VdUnionD{3}, VdUnionC{1, 2}}, matches_cd, "/3");
+    expect_invalid(std::map<std::string, VdOneCD>{{"k", VdUnionC{1, 2}}}, matches_cd, "/k");
+    expect_invalid(VdUnionFields{VdUnionC{1, 2}, 1}, matches_cd, "/u");
+    expect_valid(VdUnionFields{VdUnionC{1, {}}, std::string("ab")});
+    // the settings of an alternative that is a variant check the alternative that the inner variant holds
+    using VdNested = yyjson::any_of_variant<
+        yyjson::alt<std::variant<std::variant<int, std::string>, bool>, yyjson::minimum(5), yyjson::min_length(2)>>;
+    using VdInner = std::variant<std::variant<int, std::string>, bool>;
+    expect_valid(VdNested(VdInner(std::variant<int, std::string>(7))));
+    expect_valid(VdNested(VdInner(std::variant<int, std::string>(std::string("ab")))));
+    expect_valid(VdNested(VdInner(true)));
+    const auto nested = vd_name<VdNested>() + " is not constructible from JSON: alternative 0 (" + vd_name<VdInner>() +
+                        "): the value is ";
+    expect_invalid(VdNested(VdInner(std::variant<int, std::string>(1))), nested + "less than the minimum 5", "");
+    expect_invalid(VdNested(VdInner(std::variant<int, std::string>(std::string("a")))),
+                   nested + "shorter than the minimum length 2", "");
+
+    // a passing check of a disjoint union, or of an alternative that satisfies its settings, allocates nothing
+    EXPECT_EQ(validate_allocations(std::vector<VdLowOrInt>(100, VdLowOrInt(std::in_place_index<0>, 1))), 0U);
+    EXPECT_EQ(validate_allocations(yyjson::one_of_variant<int, std::string>(1)), 0U);
+    EXPECT_EQ(validate_allocations(VdDisjointField{1, std::string("x")}), 0U);
+}
+
+// a union in a tagged variant, and a variant that is tagged
+struct VdClosedA
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdClosedA> = yyjson::annotate(yyjson::additional_properties(false));
+struct VdTypedA
+{
+    std::string type;
+    int a = 0;
+};
+using VdOneClosed = yyjson::one_of_variant<VdClosedA, VdTypedA>;
+struct VdOtherZ
+{
+    int z = 0;
+};
+using VdTaggedOne = std::variant<VdOneClosed, VdOtherZ>;
+template <>
+inline constexpr auto yyjson::annotations<VdTaggedOne> = yyjson::annotate(yyjson::internal_tag("type", {"one", "z"}));
+using VdTaggedAD = std::variant<VdUnionA, VdUnionD>;
+template <>
+inline constexpr auto yyjson::annotations<VdTaggedAD> = yyjson::annotate(yyjson::internal_tag("kind", {"a", "d"}));
+// a union that a wrapper holds in a tagged variant
+struct VdOneWrapped
+{
+    VdOneClosed u;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdOneWrapped> = yyjson::annotate(yyjson::transparent);
+using VdTaggedWrapped = std::variant<VdOneWrapped, std::unique_ptr<VdOneClosed>, std::optional<VdOneClosed>, VdOtherZ>;
+template <>
+inline constexpr auto yyjson::annotations<VdTaggedWrapped> =
+    yyjson::annotate(yyjson::internal_tag("type", {"w", "p", "o", "z"}));
+// a variant that is not tagged, whose map alternative reads the written object only without the tag
+using VdUnionOrMap = std::variant<VdUnionA, std::map<std::string, int>>;
+struct VdMapWrapped
+{
+    VdUnionOrMap u;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdMapWrapped> = yyjson::annotate(yyjson::transparent);
+using VdTaggedMap =
+    std::variant<VdUnionOrMap, VdMapWrapped, std::unique_ptr<VdUnionOrMap>, std::optional<VdUnionOrMap>, VdOtherZ>;
+template <>
+inline constexpr auto yyjson::annotations<VdTaggedMap> =
+    yyjson::annotate(yyjson::internal_tag("type", {"u", "w", "p", "o", "z"}));
+struct VdAdjacentAB
+{
+    std::string kind = "a";
+    std::variant<VdUnionA, VdUnionB> data;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdAdjacentAB> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"a", "b"})));
+
+TEST(Validate, TaggedUnions)
+{
+    // the key of the tag lets the alternatives of the one_of read the same object
+    const auto matches = std::string("the value matches the alternatives 0 and 1 of ") + vd_name<VdOneClosed>();
+    expect_valid(VdOneClosed(VdClosedA{0}));
+    expect_invalid(VdTaggedOne(VdOneClosed(VdClosedA{0})), matches, "");
+    expect_invalid(VdTaggedOne(VdOneClosed(VdTypedA{"one", 0})), matches, "");
+    expect_invalid(std::vector<VdTaggedOne>{VdOtherZ{}, VdOneClosed(VdClosedA{0})}, matches, "/1");
+    expect_valid(VdTaggedOne(VdOtherZ{1}));
+
+    // the tag reaches a union through a transparent struct, a pointer and an optional
+    expect_invalid(VdTaggedWrapped(VdOneWrapped{VdClosedA{0}}), matches, "");
+    expect_invalid(VdTaggedWrapped(std::make_unique<VdOneClosed>(VdClosedA{0})), matches, "");
+    expect_invalid(VdTaggedWrapped(std::optional<VdOneClosed>(VdClosedA{0})), matches, "");
+    expect_valid(VdTaggedWrapped(VdOtherZ{1}));
+    const auto no_map = vd_name<VdUnionOrMap>() + " is not constructible from JSON: alternative 0 (VdUnionA) at /x: " +
+                        R"(the value of the key "x" of VdUnionA is less than the minimum 0; alternative 1 ()" +
+                        vd_name<std::map<std::string, int>>() + ") at /type: int is not constructible from JSON string";
+    expect_invalid(VdTaggedMap(VdUnionOrMap(VdUnionA{-1})), no_map, "");
+    expect_invalid(VdTaggedMap(VdMapWrapped{VdUnionA{-1}}), no_map, "");
+    expect_invalid(VdTaggedMap(std::make_unique<VdUnionOrMap>(VdUnionA{-1})), no_map, "");
+    expect_invalid(VdTaggedMap(std::optional<VdUnionOrMap>(VdUnionA{-1})), no_map, "");
+    expect_valid(VdTaggedMap(VdUnionOrMap(VdUnionA{1})));
+    expect_valid(VdTaggedMap(VdMapWrapped{VdUnionA{1}}));
+
+    // a tagged variant reads only the alternative of its tag
+    const auto low = std::string(R"(the value of the key "x" of VdUnionA is less than the minimum 0)");
+    expect_invalid(VdTaggedAD(VdUnionA{-1}), low, "/x");
+    expect_invalid(VdAdjacentAB{"a", VdUnionA{-1}}, low, "/data/x");
+    expect_valid(VdAdjacentAB{"b", VdUnionB{-1}});
+}
+
+// a union whose alternative write gives a repeated key or null for a NaN
+using VdRepeatedOrMap = std::variant<std::multimap<std::string, int>, std::map<std::string, int>>;
+using VdLowOrNull = yyjson::any_of_variant<yyjson::alt<double, yyjson::minimum(0)>, std::nullptr_t>;
+using VdLowDouble = yyjson::any_of_variant<yyjson::alt<double, yyjson::minimum(0)>, int>;
+// a tree whose depth the check limits through a union
+struct VdUnionTree
+{
+    int v = 0;
+    std::vector<std::variant<VdUnionTree, int>> kids;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdUnionTree> = yyjson::annotate(yyjson::field("v", yyjson::minimum(0)));
+
+TEST(Validate, UnionWrittenForms)
+{
+    using yyjson::with_validation, yyjson::WriteFlag;
+    // the other alternative does not read the key twice either, as a strict read
+    const auto repeated = VdRepeatedOrMap(std::multimap<std::string, int>{{"a", 1}, {"a", 2}});
+    const auto twice = [](auto t) {
+        return std::format(R"(alternative {} ({}) at /a: the object read into {} has the key "a" twice)", t.first,
+                           t.second, t.second);
+    };
+    const auto multi = std::string(yyjson::detail::type_name<std::multimap<std::string, int>>());
+    const auto single = std::string(yyjson::detail::type_name<std::map<std::string, int>>());
+    const auto message = vd_name<VdRepeatedOrMap>() + " is not constructible from JSON: " + twice(std::pair(0, multi)) +
+                         "; " + twice(std::pair(1, single));
+    expect_invalid(repeated, message, "", read_leg::skipped);
+    EXPECT_NO_THROW((void)yyjson::read<VdRepeatedOrMap>(yyjson::write(repeated)));
+    EXPECT_TRUE(std::string_view(validation_error([&] {
+                                     (void)yyjson::read<VdRepeatedOrMap>(yyjson::write(repeated), yyjson::strict);
+                                 }).what())
+                    .starts_with(message));
+
+    // a NaN that write gives as null, which another alternative reads
+    const auto nan = std::nan("");
+    EXPECT_EQ(std::string(yyjson::write(VdLowOrNull(nan), WriteFlag::InfAndNanAsNull, with_validation)), "null");
+    EXPECT_EQ(std::string(validation_error([&] {
+                              (void)yyjson::write(VdLowDouble(nan), WriteFlag::InfAndNanAsNull, with_validation);
+                          }).what()),
+              vd_name<VdLowDouble>() + " is not constructible from JSON: alternative 0 (double): reads no JSON null; " +
+                  "alternative 1 (int): reads no JSON null");
+    EXPECT_EQ(std::string(validation_error([&] {
+                              (void)yyjson::write(VdLowDouble(nan), WriteFlag::AllowInfAndNan, with_validation);
+                          }).what()),
+              vd_name<VdLowDouble>() + " is not constructible from JSON: alternative 0 (double): the value is less " +
+                  "than the minimum 0; alternative 1 (int): reads no JSON number");
+
+    // the depth of a walk and of the read of a failing union
+    expect_invalid(VdUnionTree{0, {VdUnionTree{-1, {}}}},
+                   vd_name<std::variant<VdUnionTree, int>>() +
+                       " is not constructible from JSON: alternative 0 (VdUnionTree) at /v: the value of the key " +
+                       R"("v" of VdUnionTree is less than the minimum 0; alternative 1 (int): reads no JSON object)",
+                   "/kids/0");
+    auto tree = VdUnionTree();
+    for (auto i = 0; i < 300; ++i) tree = VdUnionTree{0, {std::move(tree)}};
+    const auto e = validation_error([&] { yyjson::validate(tree); });
+    EXPECT_TRUE(std::string_view(e.what()).find("CPPYYJSON_RECURSION_DEPTH_LIMIT") != std::string_view::npos)
+        << e.what();
+    EXPECT_EQ(yyjson::detail::recursion_depth, 0);
+    auto failing = VdUnionTree{-1, {}};
+    for (auto i = 0; i < 100; ++i) failing = VdUnionTree{0, {std::move(failing)}};
+    EXPECT_THROW(yyjson::validate(failing), yyjson::bad_cast);
+    EXPECT_EQ(yyjson::detail::recursion_depth, 0);
+}
+
 // a type without keywords is checked by nothing
 struct VdPlain
 {
