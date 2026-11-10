@@ -2016,6 +2016,68 @@ using VdTaggedCasters = std::variant<VdLetters, VdLettersBox, VdWidth>;
 template <>
 inline constexpr auto yyjson::annotations<VdTaggedCasters> =
     yyjson::annotate(yyjson::internal_tag("type", {"l", "box", "w"}));
+// casters that check the keys of their objects, also as alternatives of a variant tagged in the object
+struct VdClosedKeys
+{
+    int n = 0;
+};
+template <>
+struct yyjson::caster<VdClosedKeys>
+{
+    static VdClosedKeys from_json(const std::map<std::string, std::string>& m)
+    {
+        return {static_cast<int>(m.size() - m.count("type"))};
+    }
+    static std::map<std::string, std::string> to_json(const VdClosedKeys& v)
+    {
+        auto m = std::map<std::string, std::string>();
+        for (int i = 0; i < v.n; ++i) m.emplace(std::string(1, static_cast<char>('a' + i)), "x");
+        return m;
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<VdClosedKeys> = yyjson::annotate(yyjson::additional_properties(false));
+struct VdNamedKey
+{
+    std::string key;
+};
+template <>
+struct yyjson::caster<VdNamedKey>
+{
+    static VdNamedKey from_json(const std::map<std::string, std::string>& m)
+    {
+        for (const auto& [k, v] : m)
+            if (k != "type") return {k};
+        return {};
+    }
+    static std::map<std::string, std::string> to_json(const VdNamedKey& v)
+    {
+        if (v.key.empty()) return {};
+        return {{v.key, "x"}};
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<VdNamedKey> = yyjson::annotate(yyjson::property_names(yyjson::max_length(2)));
+using VdTaggedKeys = std::variant<VdClosedKeys, VdNamedKey>;
+template <>
+inline constexpr auto yyjson::annotations<VdTaggedKeys> = yyjson::annotate(yyjson::internal_tag("type", {"c", "s"}));
+// a closed type whose caster only reads, so that write reflects it and gives the keys of its fields
+struct VdReadClosed
+{
+    int a = 0;
+};
+template <>
+struct yyjson::caster<VdReadClosed>
+{
+    static VdReadClosed from_json(const std::map<std::string, int>& m) { return {m.at("x")}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<VdReadClosed> =
+    yyjson::annotate(yyjson::field("a", yyjson::rename("x")), yyjson::additional_properties(false));
+struct VdReadClosedHolder
+{
+    VdReadClosed s;
+};
 // translators to an integer and to a bool
 struct VdLevel
 {
@@ -2195,6 +2257,28 @@ TEST(Validate, CasterJson)
     expect_invalid(VdTaggedCasters{VdLettersBox{{0}}},
                    "the value of VdLettersBox has fewer properties than the minimum 2", "");
     expect_valid(std::vector<VdTaggedCasters>{VdLettersBox{{1}}});
+
+    // the keys of the object of a caster: a closed type takes only the key of a tag, and yyjson::property_names
+    // checks that key too
+    const auto closed = R"(VdClosedKeys has the key "a", which yyjson::additional_properties(false) rejects)";
+    expect_valid(VdClosedKeys{0});
+    expect_invalid(VdClosedKeys{1}, closed, "/a");
+    expect_invalid(std::vector<VdClosedKeys>{{0}, {2}}, closed, "/1/a");
+    expect_valid(VdTaggedKeys{VdClosedKeys{0}});
+    expect_invalid(VdTaggedKeys{VdClosedKeys{1}}, closed, "/a");
+    const auto longer = "a key of VdNamedKey is longer than the maximum length 2";
+    expect_valid(VdNamedKey{"ab"});
+    expect_invalid(VdNamedKey{"abc"}, longer, "/abc");
+    expect_invalid(std::vector<VdNamedKey>{{"ab"}, {"abc"}}, longer, "/1/abc");
+    expect_invalid(VdTaggedKeys{VdNamedKey{}}, longer, "/type");
+    // a closed type that write reflects takes the keys of its fields
+    expect_valid(VdReadClosed{1});
+    expect_valid(VdReadClosedHolder{{1}});
+    const auto other = R"(VdReadClosed has the key "y", which yyjson::additional_properties(false) rejects)";
+    EXPECT_EQ(validation_error([] { (void)yyjson::read<VdReadClosed>(R"({"x":1,"y":2})"); }).path(), "/y");
+    const auto nested = validation_error([] { (void)yyjson::read<VdReadClosedHolder>(R"({"s":{"x":1,"y":2}})"); });
+    EXPECT_TRUE(std::string_view(nested.what()).starts_with(other)) << nested.what();
+    EXPECT_EQ(nested.path(), "/s/y");
 
     // translators to an integer and to a bool, also in an optional
     expect_valid(VdPanel{VdLevel{9}, VdSwitch{true}});

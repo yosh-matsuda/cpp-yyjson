@@ -11973,18 +11973,6 @@ namespace yyjson
                                   constraint_what<struct_count_schema<T>>(kind));
         }
 
-        // Throws when the JSON object `json` that a caster of the user reads into the struct T has a number of
-        // members outside the bounds of T.
-        template <typename T, typename Json>
-        void check_caster_members(const Json& json)
-        {
-            if constexpr (struct_property_counts<T> && !std::derived_from<caster<T>, builtin_caster>)
-            {
-                const auto* const v = dependent_t<writer::detail::json_value_access, Json>::get(json);
-                if (unsafe_yyjson_is_obj(const_cast<std::remove_cvref_t<decltype(*v)>*>(v))) check_struct_members<T>(v);
-            }
-        }
-
         // Whether `yyjson::satisfies` in `yyjson::property_names` of the struct S takes a key as a `std::string`,
         // rather than as a `std::string_view`.
         template <typename S>
@@ -12040,6 +12028,104 @@ namespace yyjson
                     throw_bad_cast_at(target_of(value), "a key of {} {}", type_name<T>(),
                                       constraint_what<struct_names_schema<T>>(kind));
             });
+        }
+
+        // Whether `annotations<T>` or, under C++26, the annotations of T have a keyword that the caster of the user
+        // would read in place of T: a member, a key that T requires, a condition or a read policy.
+        template <typename T>
+        inline constexpr bool caster_annotated_members = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+            return count_true<(combinator_setting<As> || presence_setting<As> || member_annotation<As> ||
+                               required_keys_setting<As>)...> != 0 ||
+                   struct_policies<T> != 0
+#if FIELD_RFL_ANNOTATIONS
+                   || !type_conditions<T>.empty() || !type_keys<T>.empty()
+#endif
+                ;
+        }(std::type_identity<annotation_values_of<T>>{});
+
+        // Whether read checks the JSON object that the caster of the user reads into T against the keywords of the
+        // object of T.
+        template <typename T>
+        inline constexpr bool caster_checks_object = [] {
+            if constexpr (!caster_names_from_json<T> || std::derived_from<caster<T>, builtin_caster>)
+                return false;
+            else
+            {
+                static_assert(!caster_annotated_members<T>,
+                              "a type that a caster reads takes no yyjson::property, required(\"key\", ...), "
+                              "dependent_required, not_, if_then_else, all_of, any_of, one_of and read policy in "
+                              "yyjson::annotate, because the caster reads the members");
+                return struct_property_counts<T> || struct_closed<T> || struct_property_names<T>;
+            }
+        }();
+
+        // Whether `yyjson::additional_properties(false)` of T rejects the key `key` of the object `obj` that the
+        // caster of the user reads into T.  A key of a tag passes.  If the caster writes no T, write reflects T, and
+        // the keys of its fields pass too, as validate checks them.
+        template <typename T, typename Val>
+        bool caster_key_closed(const Val* obj, std::string_view key)
+        {
+            if constexpr (!caster_names_to_json<T> && reflectable<T>)
+            {
+                const auto& rules = struct_rules<T>;
+                if (rules.find(key, 0) < rules.size || rules.is_adjacent_tag(key)) return false;
+            }
+            return !internal_tag_key::contains(obj, key);
+        }
+
+        // Throws at the first key of the object `obj` that the caster of the user reads into T, if T rejects it by
+        // `yyjson::additional_properties(false)` or by `yyjson::property_names`.
+        template <typename T, typename Val>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_caster_keys(const Val* obj)
+        {
+            if constexpr (struct_closed<T>)
+                for_each_member(obj, [&](std::string_view key, const Val* value) {
+                    if (caster_key_closed<T>(obj, key)) throw_closed_key(target_of(value), key, type_name<T>());
+                });
+            if constexpr (struct_property_names<T>)
+                for_each_member(obj, [&](std::string_view key, const Val* value) {
+                    if (const auto kind = struct_key_violation<T>(key); kind != constraint_kind::none)
+                        throw_bad_cast_at(target_of(value), "a key of {} {}", type_name<T>(),
+                                          constraint_what<struct_names_schema<T>>(kind));
+                });
+        }
+
+        // Whether the object `obj` that the caster of the user reads into T violates a keyword of the object of T.
+        template <typename T, typename Val>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD bool caster_keys_rejected(const Val* obj)
+        {
+            auto rejected = false;
+            for_each_member(obj, [&](std::string_view key, const Val*) {
+                if constexpr (struct_closed<T>) rejected = rejected || caster_key_closed<T>(obj, key);
+                if constexpr (struct_property_names<T>)
+                    rejected = rejected || struct_key_violation<T>(key) != constraint_kind::none;
+            });
+            return rejected;
+        }
+        template <typename T, typename Val>
+        bool caster_object_rejected(const Val* obj)
+        {
+            if constexpr (struct_property_counts<T>)
+                if (struct_count_violation<T>(unsafe_yyjson_get_len(const_cast<Val*>(obj))) != constraint_kind::none)
+                    return true;
+            if constexpr (struct_closed<T> || struct_property_names<T>)
+                return caster_keys_rejected<T>(obj);
+            else
+                return false;
+        }
+
+        // Throws when the JSON object `json` that the caster of the user reads into T violates a keyword of the
+        // object of T.
+        template <typename T, typename Json>
+        void check_caster_members(const Json& json)
+        {
+            if constexpr (caster_checks_object<T>)
+            {
+                const auto* const v = dependent_t<writer::detail::json_value_access, Json>::get(json);
+                if (!unsafe_yyjson_is_obj(const_cast<std::remove_cvref_t<decltype(*v)>*>(v))) return;
+                if constexpr (struct_closed<T> || struct_property_names<T>) check_caster_keys<T>(v);
+                if constexpr (struct_property_counts<T>) check_struct_members<T>(v);
+            }
         }
 
         template <typename T, typename Json>
@@ -32034,9 +32120,8 @@ namespace yyjson
                     if (check != nullptr && check->json(root)) [[unlikely]]
                         fail();
                 if constexpr (caster_counted<T>)
-                    if (const auto o = root.as_object();
-                        o.has_value() && yyjson::detail::struct_count_violation<T>(o->size()) !=
-                                             yyjson::detail::constraint_kind::none) [[unlikely]]
+                    if (yyjson_is_obj(yyjson_doc_get_root(doc.get())) &&
+                        yyjson::detail::caster_object_rejected<T>(yyjson_doc_get_root(doc.get()))) [[unlikely]]
                         fail();
                 return std::forward<F>(f)(root);
             }
@@ -32056,15 +32141,27 @@ namespace yyjson
                 else
                     return yyjson::detail::caster_reads_json<T>;
             }();
-            // Whether T is a struct that a caster of the user reads, whose bounds on the number of the members of
-            // an object are checked on the JSON value.
+            // Whether T is a type that a caster of the user reads, whose keywords of an object are checked on the
+            // JSON value.
             template <typename T>
             static constexpr bool caster_counted = [] {
                 if constexpr (caster_checked<T>)
-                    return yyjson::detail::struct_property_counts<T>;
+                    return yyjson::detail::caster_checks_object<T>;
                 else
                     return false;
             }();
+            // Whether the keywords of the object of T reject the object at `open`, which the caster read as a view.
+            template <typename T>
+            bool view_object_rejected(const char* open)
+            {
+                const auto size = view_object_size(open);
+                if constexpr (yyjson::detail::struct_closed<T> || yyjson::detail::struct_property_names<T>)
+                    if (size != 0) return yyjson::detail::caster_object_rejected<T>(view_document(open));
+                if constexpr (yyjson::detail::struct_property_counts<T>)
+                    return yyjson::detail::struct_count_violation<T>(size) != yyjson::detail::constraint_kind::none;
+                else
+                    return false;
+            }
             bool caster_check_at() const noexcept { return caster_check_ != nullptr && caster_check_->at == cur_; }
             caster_check* take_caster_check() const noexcept
             {
@@ -32107,8 +32204,7 @@ namespace yyjson
                             if (check != nullptr && check->view(*this, start)) [[unlikely]]
                                 fail();
                         if constexpr (counted)
-                            if (*start == '{' && yyjson::detail::struct_count_violation<T>(view_object_size(start)) !=
-                                                     yyjson::detail::constraint_kind::none) [[unlikely]]
+                            if (*start == '{' && view_object_rejected<T>(start)) [[unlikely]]
                                 fail();
                         view_close(start);
                     };
@@ -38202,10 +38298,9 @@ namespace yyjson
         template <typename S, std::size_t K, typename F>
         inline constexpr bool field_checks_written_json =
             field_counts_input<S, K, F> || checks_caster_json<field_schema<S, struct_declared_index<S, K>>, F>();
-        // Whether T bounds the number of the members of the JSON object that its caster of the user writes and reads.
+        // Whether the keywords of the object of T check the JSON object that its caster of the user writes and reads.
         template <typename T>
-        inline constexpr bool caster_counts_members =
-            write_conversion::opaque<T> && caster_names_from_json<T> && struct_property_counts<T>;
+        inline constexpr bool caster_checks_written_object = write_conversion::opaque<T> && caster_checks_object<T>;
 
         // Whether write can reject the alternative A of a variant that `internal_tag` of `Tags` tags: a value that
         // may not be a JSON object, or one that may hold the key of the tag.
@@ -38275,7 +38370,7 @@ namespace yyjson
         template <typename T>
         consteval bool validates_itself()
         {
-            if constexpr (repeats_written_keys<T>() || caster_counts_members<T>)
+            if constexpr (repeats_written_keys<T>() || caster_checks_written_object<T>)
                 return true;
             else if constexpr (union_variant<T>)
                 return checks_union<T>();
@@ -38434,7 +38529,7 @@ namespace yyjson
                 joined_nodes(written_json_nodes(typename conversion_node<write_conversion, T>::edges{}),
                              key_map_value_nodes<written_json_node, T>()),
                 translation_nodes<written_json_node, T>()));
-            static constexpr bool marked = counts_written_json<T>() || caster_counts_members<T>;
+            static constexpr bool marked = counts_written_json<T>() || caster_checks_written_object<T>;
         };
         // Whether the check of a value of T needs the JSON that write gives for it.
         template <typename T>
@@ -38868,13 +38963,19 @@ namespace yyjson
             throw_in_written_json(*text, flag, check);
         }
 
-        // Checks the number of the members of the JSON object that the caster of T writes for `v`, on `json` if not
-        // null, or else on the JSON of a write of `v` with the keys of the tags `tag`, as read checks it.
+        template <typename F>
+        void with_written_tags(const void* obj, const validated_tag* tag, F&& f);
+        // Checks the JSON object that the caster of T writes for `v` against the keywords of the object of T, on
+        // `json` if not null, or else on the JSON of a write of `v` with the keys of the tags `tag`, as read checks it.
         template <typename T>
         CPPYYJSON_NOINLINE void validate_caster_members(const T& v, WriteFlag flag, const validated_tag* tag,
                                                         const reader::const_value_ref* json)
         {
-            const auto check = [](const auto& doc) { check_caster_members<T>(reader::const_value_ref(doc)); };
+            const auto check = [tag](const auto& doc) {
+                const auto value = reader::const_value_ref(doc);
+                with_written_tags(writer::detail::json_value_access::get(value), tag,
+                                  [&] { check_caster_members<T>(value); });
+            };
             if (json != nullptr)
             {
                 throw_in_document(*json, check);
@@ -39990,7 +40091,15 @@ namespace yyjson
         {
             [[maybe_unused]] const auto tag = tag_of(written...);
             [[maybe_unused]] const auto json = json_of(written...);
-            if constexpr (caster_counts_members<T>)
+            if constexpr (validates_translation<T, AsNull>())
+            {
+                [[maybe_unused]] const recursion_guard<T> guard;
+                if constexpr (caster_checks_written_object<T>) validate_caster_members(v, flag, tag, json);
+                validate_nested<AsNull && reads_translation<T>()>(writer::detail::to_json_wrapper(v), flag, tag, json);
+            }
+            else if constexpr (written_by_library_caster<T>)
+                validate_nested<AsNull>(v.value, flag, tag, json);
+            else if constexpr (caster_checks_written_object<T>)
                 validate_caster_members(v, flag, tag, json);
             else if constexpr (std::is_array_v<T>)
             {

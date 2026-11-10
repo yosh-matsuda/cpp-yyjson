@@ -1677,6 +1677,34 @@ struct yyjson::caster<CasterXY>
 };
 template <>
 inline constexpr auto yyjson::annotations<CasterXY> = yyjson::annotate(yyjson::max_properties(2));
+// type-level keys of the objects that casters read through a view
+struct CasterShortKeys
+{
+    int n = 0;
+    bool operator==(const CasterShortKeys&) const = default;
+};
+template <>
+struct yyjson::caster<CasterShortKeys>
+{
+    static CasterShortKeys from_json(yyjson::json_view json) { return {static_cast<int>(json.as_object()->size())}; }
+    static std::map<std::string, int> to_json(const CasterShortKeys&) { return {}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterShortKeys> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(1)));
+struct CasterNoKeys
+{
+    int n = 0;
+    bool operator==(const CasterNoKeys&) const = default;
+};
+template <>
+struct yyjson::caster<CasterNoKeys>
+{
+    static CasterNoKeys from_json(yyjson::json_view json) { return {static_cast<int>(json.as_object()->size())}; }
+    static std::map<std::string, int> to_json(const CasterNoKeys&) { return {}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CasterNoKeys> = yyjson::annotate(yyjson::additional_properties(false));
 
 struct CasterViews
 {
@@ -6734,6 +6762,14 @@ TEST(Constraints, CasterJsonViews)
     expect_rejected<CasterViews>(R"({"xys":[{"x":1,"y":2,"z":3}]})", "CasterXY has more properties than the maximum 2",
                                  "/xys/0");
     expect_rejected<CasterXY>(R"({"x":1,"y":2,"z":3})", "CasterXY has more properties than the maximum 2", "");
+    EXPECT_EQ(yyjson::read<CasterShortKeys>(R"({"a":1,"b":2})"), CasterShortKeys{2});
+    expect_rejected<CasterShortKeys>(R"({"a":1,"bc":2})",
+                                     "a key of CasterShortKeys is longer than the maximum length 1", "/bc");
+    expect_rejected<CasterShortKeys>(R"({"\u0061b":1})", "a key of CasterShortKeys is longer than the maximum length 1",
+                                     "/ab");
+    EXPECT_EQ(yyjson::read<CasterNoKeys>("{}"), CasterNoKeys{0});
+    expect_rejected<CasterNoKeys>(
+        R"({"a":1})", R"(CasterNoKeys has the key "a", which yyjson::additional_properties(false) rejects)", "/a");
 
     expect_accepted<CasterWrapped>(R"(["a"])", {T({"a"})});
     expect_rejected<CasterWrapped>(R"(["a","b"])", "the value of CasterWrapped has more items than the maximum 1", "");
