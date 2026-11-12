@@ -161,6 +161,105 @@ namespace schema_test
         FieldRequired f;
         Maybe p;
     };
+
+    inline int seven() { return 7; }
+    inline int calls = 0;
+    inline int counted_seven()
+    {
+        ++calls;
+        return 7;
+    }
+    inline std::string name() { return "anon"; }
+
+    struct Inner
+    {
+        int x = 3;
+        std::vector<int> v{1, 2};
+    };
+
+    struct WithDefaults
+    {
+        int a = 1;
+        Inner in;
+        int from;
+        std::optional<std::string> named;
+        yyjson::nullable<int> n;
+        std::unique_ptr<int> u;
+        std::optional<int> none;
+        std::optional<int> held = 5;
+        double nan = std::numeric_limits<double>::quiet_NaN();
+        int req = 4;
+        std::map<std::string, int> m{{"k", 1}};
+        int pair[2] = {7, 8};
+    };
+
+    // a struct without `S()`, which only `write` takes
+    struct Fixed
+    {
+        const int a;
+        int b;
+    };
+
+    // values in `S()`, which are defaults only where the read schema takes them
+    struct Narrowed
+    {
+        std::map<Level, int> wide{{Level{100}, 1}};
+        std::map<Level, int> fits{{Level{99}, 1}, {Level::low, 2}};
+        std::vector<std::map<Level, int>> nested{{{Level{-100}, 1}}};
+        std::tuple<std::pair<std::string, int>, std::pair<std::string, std::string>> mixed{{"a", 1}, {"b", "x"}};
+        std::tuple<std::pair<std::string, int>, std::pair<std::string, int>> same{{"a", 1}, {"b", 2}};
+    };
+
+    // a field whose value in `S()` violates its keywords
+    struct Sentinel
+    {
+        int a = -1;
+        int b = 5;
+        std::optional<int> c = -1;
+    };
+
+    // a field whose default `write` gives because the struct counts its members
+    struct Counted
+    {
+        int a = 1;
+        int b = 2;
+    };
+
+    struct Called
+    {
+        int a;
+        Inner in;
+    };
+
+    struct OptionalInit
+    {
+        int a;
+        std::optional<int> o = 1;
+    };
+
+    struct StrictInner
+    {
+        int a;
+        std::optional<int> b;
+        int c = 2;
+    };
+    struct MissingInner
+    {
+        int a;
+        int c = 2;
+    };
+    struct UnknownInner
+    {
+        int a;
+    };
+    struct PolicyOuter
+    {
+        int z;
+        StrictInner s;
+        MissingInner m;
+        UnknownInner u;
+        Point p;
+    };
 }  // namespace schema_test
 
 template <>
@@ -184,6 +283,30 @@ template <>
 inline constexpr auto yyjson::annotations<schema_test::Flags> = yyjson::annotate(yyjson::enum_format::name_or_integer);
 template <>
 inline constexpr auto yyjson::annotations<schema_test::Switch> = yyjson::annotate(yyjson::enum_format::integer);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::WithDefaults> = yyjson::annotate(
+    yyjson::field("from", yyjson::default_from<schema_test::seven>),
+    yyjson::field("named", yyjson::default_from<schema_test::name>), yyjson::field("req", yyjson::required));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Fixed> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_from<schema_test::seven>));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Sentinel> =
+    yyjson::annotate(yyjson::field("a", yyjson::minimum(0)), yyjson::field("b", yyjson::minimum(0)),
+                     yyjson::field("c", yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Called> =
+    yyjson::annotate(yyjson::field("a", yyjson::default_from<schema_test::counted_seven>));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Counted> =
+    yyjson::annotate(yyjson::default_, yyjson::min_properties(1));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::StrictInner> = yyjson::annotate(yyjson::strict);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::MissingInner> =
+    yyjson::annotate(yyjson::reject_missing_keys, yyjson::field("c", yyjson::default_));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::UnknownInner> = yyjson::annotate(yyjson::reject_unknown_keys);
 VISITABLE_STRUCT(schema_test::Visited, b, a);
 
 namespace
@@ -196,9 +319,14 @@ namespace
     enum difference : unsigned
     {
         same = 0,
-        // the read takes the document, which the read schema does not describe: null in a `std::optional` field, a
-        // repeated element of a set, an integer key longer than `digits10`, and a value of a tuple of pairs
+        // the read takes the document, which the read schema does not describe: a value of a tuple of pairs
         lenient = 1,
+        // the read takes null in a `std::optional` field unless it takes `yyjson::reject_null_as_missing`
+        lenient_null = 2,
+        // the read takes a repeated element of a set unless it takes `yyjson::reject_duplicates`
+        lenient_repeat = 4,
+        // the read with `yyjson::reject_duplicates` rejects a repeated key, which no schema can describe
+        not_expressible = 8,
     };
 
     struct doc
@@ -221,12 +349,12 @@ namespace
         return meta;
     }
 
-    template <typename T>
-    bool reads(std::string_view json)
+    template <typename T, typename... Ps>
+    bool reads(std::string_view json, const Ps&... ps)
     {
         try
         {
-            (void)yyjson::read<T>(json);
+            (void)yyjson::read<T>(json, ps...);
             return true;
         }
         catch (const yyjson::bad_cast&)
@@ -235,12 +363,12 @@ namespace
         }
     }
 
-    template <typename T>
-    bool meets_constraints(const T& t)
+    template <typename T, typename... Args>
+    bool meets_constraints(const T& t, const Args&... args)
     {
         try
         {
-            yyjson::validate(t);
+            yyjson::validate(t, args...);
             return true;
         }
         catch (const yyjson::bad_cast&)
@@ -249,38 +377,91 @@ namespace
         }
     }
 
-    // The schemas of T are valid 2020-12 schemas.  The read schema takes only what `read<T>` takes, and all of it
-    // but where a document is marked `lenient`.  What `write` writes of a document that T reads is valid against the
-    // write schema.
+    // Each `default` of `schema` and of its subschemas is valid against the schema that holds it.
+    void check_defaults(const json& root, const json& schema)
+    {
+        if (!schema.is_object()) return;
+        if (schema.contains("default"))
+        {
+            auto holder = schema;
+            holder.erase("default");
+            holder["$schema"] = root["$schema"];
+            if (root.contains("$defs")) holder["$defs"] = root["$defs"];
+            EXPECT_TRUE(compile(holder).is_valid(schema["default"])) << schema.to_string();
+        }
+        for (const auto& m : schema.object_range())
+        {
+            const auto k = m.key();
+            if (k == "$defs" || k == "properties")
+                for (const auto& s : m.value().object_range()) check_defaults(root, s.value());
+            else if (k == "anyOf" || k == "allOf" || k == "oneOf" || k == "prefixItems")
+                for (const auto& s : m.value().array_range()) check_defaults(root, s);
+            else if (k == "items" || k == "additionalProperties" || k == "propertyNames" || k == "not")
+                check_defaults(root, m.value());
+        }
+    }
+
+    // The schema of T is a valid 2020-12 schema whose defaults it takes.
+    json checked_schema(const yyjson::object& schema)
+    {
+        const auto s = to_jsoncons(schema);
+        EXPECT_TRUE(meta_schema().is_valid(s)) << s.to_string();
+        check_defaults(s, s);
+        return s;
+    }
+
+    // The read schema of T under the policies Ps takes only what `read<T>(json, Ps...)` takes, and all of it but
+    // where a document is marked: `lenient` and its kinds where the read takes more, and `not_expressible` where it
+    // takes less.
+    template <typename T, typename... Ps>
+    void check_read(std::initializer_list<doc> docs, const Ps&... ps)
+    {
+        constexpr auto policies = yyjson::detail::policies_of<Ps...>;
+        constexpr bool null = (policies & yyjson::detail::null_as_missing_policy) != 0;
+        constexpr bool repeat = (policies & yyjson::detail::duplicates_policy) != 0;
+        const auto validator = compile(checked_schema(yyjson::json_schema<T>(ps...)));
+        for (const auto& d : docs)
+        {
+            const auto more = (d.diff & (lenient | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
+            const auto less = repeat && (d.diff & not_expressible) != 0;
+            const auto valid = validator.is_valid(json::parse(d.json));
+            const auto accepted = reads<T>(d.json, ps...);
+            const auto policy = yyjson::detail::policies_of<Ps...>;
+            EXPECT_EQ(valid && !accepted, less) << "valid, but not read: " << d.json << " under " << +policy;
+            EXPECT_EQ(accepted && !valid, more) << "read, but not valid: " << d.json << " under " << +policy;
+        }
+    }
+
+    // The schemas of T are valid 2020-12 schemas, and each read schema takes what the read under its policies takes.
+    // What `write` writes of a document that T reads is valid against the write schema, with `yyjson::emit_defaults`
+    // as well.
     template <typename T>
     void check(std::initializer_list<doc> docs)
     {
-        const auto schemas = std::array{to_jsoncons(yyjson::json_schema<T>()),
-                                        to_jsoncons(yyjson::json_schema<T>(yyjson::write_direction))};
-        for (const auto& s : schemas) EXPECT_TRUE(meta_schema().is_valid(s)) << s.to_string();
-        const auto validators = std::array{compile(schemas[0]), compile(schemas[1])};
+        check_read<T>(docs);
+        check_read<T>(docs, yyjson::reject_unknown_keys);
+        check_read<T>(docs, yyjson::reject_missing_keys);
+        check_read<T>(docs, yyjson::reject_null_as_missing);
+        check_read<T>(docs, yyjson::reject_duplicates);
+        check_read<T>(docs, yyjson::strict);
+        check_read<T>(docs, yyjson::strict, yyjson::reject_unknown_keys);
+        const auto validators =
+            std::array{compile(checked_schema(yyjson::json_schema<T>(yyjson::write_direction))),
+                       compile(checked_schema(yyjson::json_schema<T>(yyjson::write_direction, yyjson::emit_defaults)))};
         for (const auto& d : docs)
         {
-            const auto j = json::parse(d.json);
-            const auto valid = validators[0].is_valid(j);
-            const auto accepted = reads<T>(d.json);
-            if (valid)
+            if (!reads<T>(d.json)) continue;
+            const auto t = yyjson::read<T>(d.json);
+            if (meets_constraints(t))
             {
-                EXPECT_TRUE(accepted) << "valid, but not read: " << d.json;
+                const auto written = std::string(yyjson::write(t));
+                EXPECT_TRUE(validators[0].is_valid(json::parse(written))) << "write: " << written << " of " << d.json;
             }
-            if (accepted && !valid)
+            if (meets_constraints(t, yyjson::emit_defaults))
             {
-                EXPECT_TRUE(d.diff & lenient) << "read, but not valid: " << d.json;
-            }
-            else
-            {
-                EXPECT_FALSE(d.diff & lenient) << "marked lenient, but agree: " << d.json;
-            }
-            if (accepted && meets_constraints(yyjson::read<T>(d.json)))
-            {
-                const auto written = std::string(yyjson::write(yyjson::read<T>(d.json)));
-                const auto written_valid = validators[1].is_valid(json::parse(written));
-                EXPECT_TRUE(written_valid) << "write: " << written << " of " << d.json;
+                const auto written = std::string(yyjson::write(t, yyjson::emit_defaults));
+                EXPECT_TRUE(validators[1].is_valid(json::parse(written)))
+                    << "write with emit_defaults: " << written << " of " << d.json;
             }
         }
     }
@@ -292,13 +473,17 @@ namespace
     }
 
     // The schema in `$defs` of the struct T, with each `$ref` left as it is.
+    template <typename T, typename... Args>
+    json definition_with(const Args&... args)
+    {
+        const auto s = to_jsoncons(yyjson::json_schema<T>(args...));
+        const auto ref = s["$ref"].template as<std::string>();
+        return s["$defs"][ref.substr(std::string_view("#/$defs/").size())];
+    }
     template <typename T>
     json definition(bool writing)
     {
-        const auto s = writing ? to_jsoncons(yyjson::json_schema<T>(yyjson::write_direction))
-                               : to_jsoncons(yyjson::json_schema<T>());
-        const auto ref = s["$ref"].template as<std::string>();
-        return s["$defs"][ref.substr(std::string_view("#/$defs/").size())];
+        return writing ? definition_with<T>(yyjson::write_direction) : definition_with<T>();
     }
 
     // The keys of the properties of the struct T in their order, which `json` of jsoncons does not keep.
@@ -321,15 +506,15 @@ namespace
     }
 
     // The write schema requires the keys that `write` gives of each value: of `values`, where the first one gives
-    // the fewest keys.
-    template <typename T>
-    void check_write_required(const std::vector<T>& values)
+    // the fewest keys.  `Args` is empty or `yyjson::emit_defaults`.
+    template <typename T, typename... Args>
+    void check_write_required(const std::vector<T>& values, const Args&... args)
     {
-        const auto required = required_keys(definition<T>(true));
+        const auto required = required_keys(definition_with<T>(yyjson::write_direction, args...));
         for (std::size_t i = 0; i < values.size(); ++i)
         {
             auto keys = std::set<std::string>();
-            const auto written = yyjson::read(yyjson::write(values[i]));
+            const auto written = yyjson::read(yyjson::write(values[i], args...));
             const auto object = written.as_object();
             for (const auto& [k, v] : *object) keys.insert(std::string(k));
             if (i == 0)
@@ -409,11 +594,11 @@ TEST(Schema, Sequences)
     check<std::vector<int>>({"[]", "[1,2,2]", R"([1,"a"])", "{}", "null", "[2147483648]"});
     check<std::list<std::string>>({"[]", R"(["a"])", "[1]"});
     check<std::deque<double>>({"[1.5]", "[null]"});
-    check<std::set<int>>({"[]", "[1,2]", {"[2,2]", lenient}, "[1.5]"});
-    check<std::unordered_set<std::string>>({R"(["a","b"])", {R"(["a","a"])", lenient}});
+    check<std::set<int>>({"[]", "[1,2]", {"[2,2]", lenient_repeat}, "[1.5]"});
+    check<std::unordered_set<std::string>>({R"(["a","b"])", {R"(["a","a"])", lenient_repeat}});
     check<std::multiset<int>>({"[2,2,1]", "[]"});
     check<std::set<std::shared_ptr<int>>>({"[1,1]", "[]"});
-    check<std::set<int, std::greater<>>>({"[1,2]", "[2,2]"});
+    check<std::set<int, std::greater<>>>({"[1,2]", {"[2,2]", lenient_repeat}});
     check<std::array<int, 2>>({"[1,2]", "[1]", "[1,2,3]", "[]"});
     check<std::vector<bool>>({"[true,false]", "[1]", "[]"});
     check<std::vector<std::vector<Hue>>>({R"([["red"],[]])", R"([["pink"]])", "[[0]]"});
@@ -424,6 +609,11 @@ TEST(Schema, Sequences)
     EXPECT_FALSE(to_jsoncons(yyjson::json_schema<std::set<std::shared_ptr<int>>>(yyjson::write_direction))
                      .contains("uniqueItems"));
     EXPECT_TRUE(to_jsoncons(yyjson::json_schema<std::unordered_set<std::string>>()).contains("uniqueItems"));
+    if constexpr (std::numeric_limits<long double>::digits > std::numeric_limits<double>::digits)
+    {
+        EXPECT_FALSE(to_jsoncons(yyjson::json_schema<std::set<long double>>(yyjson::write_direction))
+                         .contains("uniqueItems"));
+    }
     const auto array = to_jsoncons(yyjson::json_schema<std::array<int, 3>>(yyjson::write_direction));
     EXPECT_EQ(array["minItems"].as<int>(), 3);
     EXPECT_EQ(array["maxItems"].as<int>(), 3);
@@ -431,19 +621,17 @@ TEST(Schema, Sequences)
 
 TEST(Schema, Maps)
 {
-    check<std::map<std::string, int>>({"{}", R"({"a":1,"b":2})", R"({"a":"x"})", "[]", R"([["a",1]])"});
+    check<std::map<std::string, int>>(
+        {"{}", R"({"a":1,"b":2})", R"({"a":"x"})", "[]", R"([["a",1]])", {R"({"a":1,"a":2})", not_expressible}});
     check<std::unordered_map<std::string, std::vector<int>>>({R"({"a":[1]})", R"({"a":1})"});
     check<std::map<Hue, int>>({"{}", R"({"red":1})", R"({"pink":1})", R"({"0":1})", R"([["red",1]])"});
-    check<std::map<Level, int>>(
-        {R"({"-1":1,"1":2})", R"({"0":1})", R"({"low":1})", R"({"01":1})", R"({"+1":1})", R"({"-0":1})", {R"({"-128":1})", lenient}});
+    check<std::map<Level, int>>({R"({"-1":1,"1":2})", R"({"0":1})", R"({"low":1})", R"({"01":1})", R"({"+1":1})",
+                                 R"({"-0":1})", R"({"-128":1})", R"({"127":1})", R"({"128":1})", R"({"-129":1})"});
     check<std::map<Switch, int>>({R"({"0":1,"1":2})", R"({"2":1})", R"({"01":1})", R"({"true":1})"});
-    check<std::map<Flags, int>>({R"({"read":1})",
-                                 R"({"3":1})",
-                                 {R"({"65535":1})", lenient},
-                                 R"({"-1":1})",
-                                 R"({"all":1})",
-                                 R"({"03":1})"});
-    check<std::map<int, std::string>>({"[]", R"([[1,"a"],[2,"b"]])", R"({"1":"a"})", R"([[1]])"});
+    check<std::map<Flags, int>>({R"({"read":1})", R"({"3":1})", R"({"65535":1})", R"({"65536":1})", R"({"-1":1})",
+                                 R"({"all":1})", R"({"03":1})"});
+    check<std::map<int, std::string>>(
+        {"[]", R"([[1,"a"],[2,"b"]])", R"({"1":"a"})", R"([[1]])", {R"([[1,"a"],[1,"b"]])", not_expressible}});
     check<std::vector<std::pair<std::string, int>>>({"{}", R"({"a":1})", R"([["a",1]])", R"({"a":"x"})"});
     check<std::array<std::pair<std::string, int>, 2>>({R"({"a":1,"b":2})", R"([["a",1],["b",2]])", R"({"a":1})",
                                                        R"({"a":1,"b":2,"c":3})", R"([["a",1]])", R"({"a":"x","b":1})"});
@@ -457,13 +645,18 @@ TEST(Schema, Maps)
     check<Grid>({R"({"g":[[1,2],[3,4]],"p":[{"a":1},[["b",2]]]})", R"({"g":[[1,2],[3]]})", R"({"g":[[1,2]]})",
                  R"({"p":[{"a":1},{"b":2,"c":3}]})", R"({"p":[{"a":1}]})", R"({"g":[[1,2],[3,"x"]]})"});
     check<std::map<std::string, Point>>({R"({"p":{"x":1,"y":2}})", R"({"p":{"x":1}})", R"({"p":1})"});
+    constexpr auto level_keys =
+        "^(0|[1-9][0-9]{0,1}|1[0-1][0-9]|12[0-6]|127|-([1-9][0-9]{0,1}|1[0-1][0-9]|12[0-7]|128))$";
     EXPECT_EQ(to_jsoncons(yyjson::json_schema<std::map<Level, int>>())["propertyNames"]["pattern"].as<std::string>(),
-              "^(0|-?[1-9][0-9]{0,1})$");
-    EXPECT_EQ(to_jsoncons(yyjson::json_schema<std::map<Level, int>>(yyjson::write_direction))["propertyNames"]["pattern"]
+              level_keys);
+    EXPECT_EQ(
+        to_jsoncons(yyjson::json_schema<std::map<Level, int>>(yyjson::write_direction))["propertyNames"]["pattern"]
+            .as<std::string>(),
+        level_keys);
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<std::map<Flags, int>>(
+                  yyjson::write_direction))["propertyNames"]["anyOf"][1]["pattern"]
                   .as<std::string>(),
-              "^(0|-?[1-9][0-9]{0,2})$");
-    EXPECT_TRUE(to_jsoncons(yyjson::json_schema<std::map<Flags, int>>(yyjson::write_direction))["propertyNames"]
-                    .contains("anyOf"));
+              "^(0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-4]|65535)$");
 }
 
 TEST(Schema, Tuples)
@@ -505,17 +698,24 @@ TEST(Schema, Nullable)
 
 TEST(Schema, Structs)
 {
-    check<Point>({R"({"x":1,"y":2})", R"({"x":1})", "{}", R"({"x":1,"y":2,"z":3})", R"({"x":"1"})", "[1,2]"});
+    check<Point>({R"({"x":1,"y":2})",
+                  R"({"x":1})",
+                  "{}",
+                  R"({"x":1,"y":2,"z":3})",
+                  R"({"x":"1"})",
+                  "[1,2]",
+                  {R"({"x":1,"y":2,"x":3})", not_expressible}});
     check<Node>({R"({"name":"a","children":[{"name":"b","children":[]}]})", R"({"children":[{"name":1}]})"});
     check<Tree>({R"({"value":1,"kids":[{"value":2,"kids":[]}]})", R"({"kids":[{"value":"x"}]})"});
     check<Renamed>({R"({"A":1,"b":2})", R"({"a":1})", R"({"A":"x"})", R"({"cache":"x"})"});
     check<Optional>({R"({"a":1,"o":2,"p":{"x":1,"y":2},"n":3,"u":4})",
                      R"({"n":null,"u":null})",
-                     {R"({"o":null})", lenient},
-                     {R"({"p":null})", lenient},
+                     {R"({"a":1,"n":null,"u":null,"o":null})", lenient_null},
+                     {R"({"a":1,"n":null,"u":null,"p":null})", lenient_null},
                      R"({"o":"x"})"});
     check<FieldRequired>({R"({"a":1,"c":2})", R"({"a":1})", R"({"c":1})", R"({"a":1,"c":null})"});
-    check<StructRequired>({R"({"b":"x"})", "{}", R"({"a":1})", R"({"b":null})", {R"({"b":"x","c":null})", lenient}});
+    check<StructRequired>(
+        {R"({"b":"x"})", "{}", R"({"a":1})", R"({"b":null})", {R"({"a":1,"b":"x","c":null})", lenient_null}});
     check<Closed>({R"({"a":1,"b":"x"})", "{}", R"({"a":1,"c":2})"});
     check<Defaults>({"{}", R"({"a":5})", R"({"a":"x"})"});
     check<StructDefault>({"{}", R"({"a":5})"});
@@ -526,13 +726,13 @@ TEST(Schema, Structs)
 
     const auto point = definition<Point>(false);
     EXPECT_EQ(point.to_string(),
-              R"({"properties":{"x":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},)"
-              R"("y":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"type":"object"})");
+              R"({"properties":{"x":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"},)"
+              R"("y":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"type":"object"})");
     EXPECT_EQ(schema<Point>(yyjson::write_direction),
               R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.Point":{"type":)"
-              R"("object","properties":{"x":{"type":"integer","minimum":-2147483648,"maximum":2147483647},"y":{)"
-              R"("type":"integer","minimum":-2147483648,"maximum":2147483647}},"required":["x","y"]}},"$ref":"#/)"
-              R"($defs/schema_test.Point"})");
+              R"("object","properties":{"x":{"type":"integer","minimum":-2147483648,"maximum":2147483647,)"
+              R"("default":0},"y":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},)"
+              R"("required":["x","y"]}},"$ref":"#/$defs/schema_test.Point"})");
 
     // the order of the properties is that of the fields, and a skipped field has none
     EXPECT_EQ(property_keys<Renamed>(), (std::vector<std::string>{"A", "b"}));
@@ -636,6 +836,155 @@ TEST(Schema, Options)
     EXPECT_EQ(point["$id"].as<std::string>(), id);
     EXPECT_TRUE(compile(point).is_valid(json::parse(R"({"x":1})")));
     EXPECT_FALSE(compile(point).is_valid(json::parse(R"({"x":"1"})")));
+}
+
+TEST(Schema, Defaults)
+{
+    const auto read = definition<WithDefaults>(false);
+    const auto& p = read["properties"];
+    EXPECT_EQ(p["a"]["default"].as<int>(), 1);
+    EXPECT_EQ(p["in"]["default"], json::parse(R"({"x":3,"v":[1,2]})"));
+    EXPECT_EQ(p["from"]["default"].as<int>(), 7);
+    EXPECT_EQ(p["named"]["default"].as<std::string>(), "anon");
+    EXPECT_TRUE(p["n"]["default"].is_null());
+    EXPECT_TRUE(p["u"]["default"].is_null());
+    EXPECT_FALSE(p["none"].contains("default"));
+    EXPECT_EQ(p["held"]["default"].as<int>(), 5);
+    EXPECT_FALSE(p["nan"].contains("default"));
+    EXPECT_FALSE(p["req"].contains("default"));
+    EXPECT_EQ(p["m"]["default"], json::parse(R"({"k":1})"));
+    EXPECT_EQ(p["pair"]["default"], json::parse("[7,8]"));
+    // every schema has the same defaults
+    for (const auto& other :
+         {definition<WithDefaults>(true), definition_with<WithDefaults>(yyjson::strict, yyjson::reject_unknown_keys),
+          definition_with<WithDefaults>(yyjson::write_direction, yyjson::emit_defaults)})
+        for (const auto& m : p.object_range())
+        {
+            const auto& o = other["properties"][m.key()];
+            EXPECT_EQ(o.contains("default"), m.value().contains("default")) << m.key();
+            if (o.contains("default"))
+            {
+                EXPECT_EQ(o["default"], m.value()["default"]) << m.key();
+            }
+        }
+    check<WithDefaults>(
+        {R"({"req":1,"nan":1.5})",
+         R"({"nan":1.5})",
+         R"({"req":1,"nan":1.5,"in":{"x":"a"}})",
+         R"({"req":1,"nan":1.5,"n":null,"held":2})",
+         {R"({"a":1,"in":{"x":1,"v":[]},"n":null,"u":null,"nan":1.5,"req":1,"m":{},"pair":[1,2],"held":null})",
+          lenient_null}});
+
+    // a generation calls the function of `yyjson::default_from` once
+    const auto before = calls;
+    EXPECT_EQ(definition<Called>(false)["properties"]["a"]["default"].as<int>(), 7);
+    EXPECT_EQ(calls, before + 1);
+
+    // a struct without `S()` has the defaults of `yyjson::default_from` only
+    const auto fixed = definition_with<Fixed>(yyjson::write_direction);
+    EXPECT_FALSE(fixed["properties"]["a"].contains("default"));
+    EXPECT_EQ(fixed["properties"]["b"]["default"].as<int>(), 7);
+
+    // a value in `S()` that violates the keywords of its field is no default
+    auto names = yyjson::schema_detail::registry();
+    EXPECT_FALSE((yyjson::schema_detail::field_default<Sentinel, 0>(names)));
+    EXPECT_EQ((yyjson::schema_detail::field_default<Sentinel, 1>(names)), "5");
+    EXPECT_FALSE((yyjson::schema_detail::field_default<Sentinel, 2>(names)));
+
+    const auto narrowed = definition<Narrowed>(false)["properties"];
+    EXPECT_EQ(narrowed["wide"]["default"], json::parse(R"({"100":1})"));
+    EXPECT_EQ(narrowed["fits"]["default"], json::parse(R"({"-1":2,"99":1})"));
+    EXPECT_EQ(narrowed["nested"]["default"], json::parse(R"([{"-100":1}])"));
+    EXPECT_FALSE(narrowed["mixed"].contains("default"));
+    EXPECT_EQ(narrowed["same"]["default"], json::parse(R"({"a":1,"b":2})"));
+    check<Narrowed>({"{}"});
+}
+
+TEST(Schema, WriteRequired)
+{
+    check_write_required<Point>({Point{}, Point{1, 2}}, yyjson::emit_defaults);
+    auto optional = std::vector<Optional>(2);
+    optional[1] = Optional{1, 2, Point{}, 3, std::make_unique<int>(4)};
+    check_write_required(optional, yyjson::emit_defaults);
+    check_write_required<Defaults>({Defaults{}, Defaults{5, 6, "x"}}, yyjson::emit_defaults);
+    check_write_required<StructDefault>({StructDefault{}, StructDefault{5, 6}}, yyjson::emit_defaults);
+    EXPECT_EQ(required_keys(definition_with<StructDefault>(yyjson::write_direction, yyjson::emit_defaults)),
+              (std::set<std::string>{"a", "b"}));
+    const auto init = std::vector<OptionalInit>{OptionalInit{1, std::nullopt}, OptionalInit{}};
+    check_write_required(init);
+    check_write_required(init, yyjson::emit_defaults);
+    EXPECT_EQ(definition<OptionalInit>(false)["properties"]["o"]["default"].as<int>(), 1);
+
+    auto defaults = std::vector<WithDefaults>(2);
+    defaults[0].from = 7;
+    defaults[0].held.reset();
+    defaults[0].nan = 0;
+    defaults[1].from = 8;
+    defaults[1].named = "x";
+    defaults[1].none = 1;
+    defaults[1].nan = 0;
+    check_write_required(defaults);
+    check_write_required(defaults, yyjson::emit_defaults);
+    EXPECT_EQ(required_keys(definition<WithDefaults>(true)),
+              (std::set<std::string>{"a", "in", "n", "u", "nan", "req", "m", "pair"}));
+
+    // a struct that counts its members writes every default, which `json_schema` does not emit yet
+    namespace sd = yyjson::schema_detail;
+    EXPECT_TRUE((sd::write_requires<Counted, 0>(false)));
+    EXPECT_TRUE((sd::write_requires<Counted, 1>(false)));
+    EXPECT_FALSE((sd::write_requires<StructDefault, 0>(false)));
+    EXPECT_TRUE((sd::write_requires<StructDefault, 0>(true)));
+    const auto counted = yyjson::read(yyjson::write(Counted{}));
+    EXPECT_EQ(counted.as_object()->size(), 2);
+}
+
+TEST(Schema, Policies)
+{
+    // the tags of the call apply to every struct
+    EXPECT_EQ(required_keys(definition_with<Point>(yyjson::reject_missing_keys)), (std::set<std::string>{"x", "y"}));
+    EXPECT_EQ(required_keys(definition_with<Optional>(yyjson::strict)), (std::set<std::string>{"a", "n", "u"}));
+    EXPECT_EQ(required_keys(definition_with<Defaults>(yyjson::strict)), (std::set<std::string>{"b", "c"}));
+    EXPECT_FALSE(definition_with<StructDefault>(yyjson::strict).contains("required"));
+    EXPECT_EQ(required_keys(definition_with<FieldRequired>(yyjson::reject_unknown_keys)),
+              (std::set<std::string>{"a", "c"}));
+    EXPECT_FALSE(definition_with<Point>(yyjson::reject_unknown_keys)["additionalProperties"].as<bool>());
+    EXPECT_FALSE(definition_with<Point>(yyjson::strict).contains("additionalProperties"));
+    EXPECT_EQ(schema<Optional>(yyjson::reject_null_as_missing, yyjson::reject_duplicates), schema<Optional>());
+    const auto holder = to_jsoncons(yyjson::json_schema<Holder>(yyjson::strict, yyjson::reject_unknown_keys));
+    for (const auto& m : holder["$defs"].object_range())
+    {
+        EXPECT_FALSE(m.value()["additionalProperties"].as<bool>()) << m.key();
+        EXPECT_FALSE(required_keys(m.value()).empty()) << m.key();
+    }
+
+    // the policies of a type apply to its own schema
+    const auto outer = to_jsoncons(yyjson::json_schema<PolicyOuter>());
+    const auto& defs = outer["$defs"];
+    EXPECT_FALSE(defs["schema_test.PolicyOuter"].contains("required"));
+    EXPECT_FALSE(defs["schema_test.PolicyOuter"].contains("additionalProperties"));
+    EXPECT_EQ(required_keys(defs["schema_test.StrictInner"]), (std::set<std::string>{"a", "c"}));
+    EXPECT_FALSE(defs["schema_test.StrictInner"].contains("additionalProperties"));
+    EXPECT_EQ(required_keys(defs["schema_test.MissingInner"]), (std::set<std::string>{"a"}));
+    EXPECT_FALSE(defs["schema_test.UnknownInner"].contains("required"));
+    EXPECT_FALSE(defs["schema_test.UnknownInner"]["additionalProperties"].as<bool>());
+    EXPECT_EQ(defs["schema_test.Point"], definition<Point>(false));
+    EXPECT_EQ(defs["schema_test.StrictInner"], definition<StrictInner>(false));
+    // a default has every member, as the write with `yyjson::emit_defaults` gives it, so every schema takes it
+    EXPECT_EQ(defs["schema_test.PolicyOuter"]["properties"]["m"]["default"], json::parse(R"({"a":0,"c":2})"));
+    // a read policy has no effect on the write schema
+    EXPECT_FALSE(definition<UnknownInner>(true).contains("additionalProperties"));
+    EXPECT_EQ(required_keys(definition<StrictInner>(true)), (std::set<std::string>{"a", "c"}));
+    check<PolicyOuter>(
+        {R"({"z":1,"s":{"a":1,"c":2},"m":{"a":1},"u":{"a":1},"p":{}})",
+         R"({"s":{"a":1}})",
+         R"({"s":{"a":1,"c":2,"q":3}})",
+         R"({"s":{"a":1,"c":2,"b":null}})",
+         R"({"m":{}})",
+         R"({"m":{"a":1,"q":3}})",
+         R"({"u":{"a":1,"q":2}})",
+         R"({"u":{}})",
+         R"({"p":{"x":1,"q":2}})",
+         {R"({"z":1,"s":{"a":1,"c":2},"m":{"a":1},"u":{"a":1,"a":2},"p":{"x":1,"y":2}})", not_expressible}});
 }
 
 // NOLINTEND

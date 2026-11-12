@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <set>
@@ -73,6 +74,8 @@ namespace yyjson
 
         template <typename T>
         inline constexpr char type_identity_tag = 0;
+        template <typename S, std::size_t K>
+        inline constexpr char field_tag = 0;
 
         template <typename T>
         concept user_caster = (yyjson::detail::caster_names_from_json<T> || yyjson::detail::caster_names_to_json<T>) &&
@@ -101,7 +104,7 @@ namespace yyjson
         template <typename T>
         concept primitive_type = std::same_as<T, bool> || std::integral<T> || std::floating_point<T> || string_type<T>;
 
-        // A set whose elements are equal exactly when their JSON values are: scalars that the default comparison
+        // A set whose elements are equal exactly when their JSON values are: scalars that a standard comparison
         // orders, so that a JSON array of the set has unique items.
         template <typename T>
         concept json_unique_set = yyjson::detail::insertable_set<T> && yyjson::detail::unique_set<T> && [] {
@@ -109,9 +112,15 @@ namespace yyjson
             if constexpr (!std::is_arithmetic_v<K> && !std::is_enum_v<K> && !std::same_as<K, std::string> &&
                           !std::same_as<K, std::string_view>)
                 return false;
+            // the writer rounds a wider float to a double, which can give two elements one text
+            else if constexpr (std::floating_point<K> &&
+                               std::numeric_limits<K>::digits > std::numeric_limits<double>::digits)
+                return false;
             else if constexpr (requires { typename T::key_compare; })
                 return std::same_as<typename T::key_compare, std::less<K>> ||
-                       std::same_as<typename T::key_compare, std::less<>>;
+                       std::same_as<typename T::key_compare, std::less<>> ||
+                       std::same_as<typename T::key_compare, std::greater<K>> ||
+                       std::same_as<typename T::key_compare, std::greater<>>;
             else if constexpr (requires { typename T::key_equal; })
                 return std::same_as<typename T::key_equal, std::equal_to<K>> ||
                        std::same_as<typename T::key_equal, std::equal_to<>>;
@@ -120,6 +129,14 @@ namespace yyjson
         }();
 
         class generator;
+
+        // What the call of `json_schema` asks for besides the direction: its read policies, and whether the write
+        // takes `yyjson::emit_defaults`.
+        struct schema_mode
+        {
+            std::uint8_t policies = 0;
+            bool emit_defaults = false;
+        };
 
         // The named types that the schemas refer to.  A type has one schema per direction, or one for both
         // directions while the two are the same.
@@ -142,6 +159,9 @@ namespace yyjson
             std::string ref_prefix;
             // Until the names are settled, a reference names the entry, so that the schemas can be compared.
             bool settled = false;
+            // `S()` of each struct, and the JSON text of the `default` of each field, made once per generation.
+            std::map<const void*, std::shared_ptr<const void>> initial;
+            std::map<const void*, std::optional<std::string>> defaults;
 
             template <typename T>
             std::size_t find_or_add(bool writing);
@@ -190,7 +210,13 @@ namespace yyjson
         class generator
         {
         public:
-            generator(registry& names, bool writing) : names_(names), writing_(writing) {}
+            generator(registry& names, bool writing, schema_mode mode)
+                : names_(names),
+                  writing_(writing),
+                  policies_(writing ? 0 : mode.policies),
+                  emit_defaults_(writing && mode.emit_defaults)
+            {
+            }
 
             [[nodiscard]] bool writing() const noexcept { return writing_; }
 
@@ -226,6 +252,8 @@ namespace yyjson
         private:
             registry& names_;
             bool writing_;
+            std::uint8_t policies_;
+            bool emit_defaults_;
 
             template <typename T>
             void emit_named(object_ref out)
@@ -435,9 +463,38 @@ namespace yyjson
             }
         }
 
-        // The keys of a map of the enumeration K: the names, or the integers in decimal without a leading zero.  The
-        // read pattern takes at most `digits10` digits, so that it never takes a key that the read rejects, and the
-        // write pattern takes one digit more, so that it takes every key that the write gives.
+        // The decimal texts of the integers in [1, n], without a leading zero, as alternatives of a regular expression.
+        inline std::string positive_range_pattern(std::uint64_t n)
+        {
+            const auto s = std::to_string(n);
+            const auto digit_class = [](char lo, char hi) {
+                return lo == hi ? std::string(1, lo) : std::string{'[', lo, '-', hi, ']'};
+            };
+            const auto any_digits = [](std::size_t count) {
+                return count == 0   ? std::string()
+                       : count == 1 ? std::string("[0-9]")
+                                    : "[0-9]{" + std::to_string(count) + "}";
+            };
+            std::string out;
+            const auto add = [&](const std::string& alternative) {
+                if (!out.empty()) out += '|';
+                out += alternative;
+            };
+            if (n == 0) return out;
+            if (s.size() == 2) add("[1-9]");
+            if (s.size() > 2) add("[1-9][0-9]{0," + std::to_string(s.size() - 2) + "}");
+            for (std::size_t i = 0; i < s.size(); ++i)
+            {
+                const char lo = i == 0 ? '1' : '0';
+                if (s[i] > lo)
+                    add(s.substr(0, i) + digit_class(lo, static_cast<char>(s[i] - 1)) + any_digits(s.size() - i - 1));
+            }
+            add(s);
+            return out;
+        }
+
+        // The keys of a map of the enumeration K: the names, or the integers of the underlying type in decimal without
+        // a leading zero, which the read takes and the write gives.
         template <typename K>
         void generator::emit_property_names(object_ref out)
         {
@@ -447,14 +504,18 @@ namespace yyjson
                 auto values = o.emplace("enum", empty_array);
                 for (const auto name : conv::names) values.emplace_back(name);
             };
-            const auto integer = [this](object_ref o) {
+            const auto integer = [](object_ref o) {
                 if constexpr (std::same_as<U, bool>)
                     o.emplace("pattern", "^[01]$");
                 else
                 {
-                    const auto digits = std::numeric_limits<U>::digits10 + (writing_ ? 1 : 0);
-                    auto pattern = std::string(std::is_signed_v<U> ? "^(0|-?[1-9]" : "^(0|[1-9]");
-                    pattern += digits > 1 ? "[0-9]{0," + std::to_string(digits - 1) + "})$" : ")$";
+                    auto pattern = "^(0|" + positive_range_pattern(std::numeric_limits<U>::max());
+                    if constexpr (std::is_signed_v<U>)
+                    {
+                        const auto magnitude = static_cast<std::uint64_t>(-(std::numeric_limits<U>::min() + 1)) + 1;
+                        pattern += "|-(" + positive_range_pattern(magnitude) + ")";
+                    }
+                    pattern += ")$";
                     o.emplace("pattern", pattern, copy_string);
                 }
             };
@@ -481,7 +542,6 @@ namespace yyjson
                           "C7d: yyjson::extra_keys and yyjson::pattern_properties are not emitted yet");
             static_assert(!yd::struct_property_counts<S> && !yd::struct_property_names<S>,
                           "C7d: the keywords of the keys of a struct are not emitted yet");
-            static_assert(yd::struct_policies<S> == 0, "C7b: the read policies of a struct are not emitted yet");
             static_assert(!yd::has_adjacent_fields<S>, "C7f: yyjson::adjacent_tag is not emitted yet");
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
@@ -494,16 +554,165 @@ namespace yyjson
                 auto keys = out.emplace("required", empty_array);
                 for (const auto key : required) keys.emplace_back(key);
             }
-            if constexpr (yd::struct_closed<S>) out.emplace("additionalProperties", false);
+            // the read rejects an unknown key as `struct_key_list::closed` decides it, and a read policy has no effect
+            // on the write
+            if (yd::struct_closed<S> ||
+                (!writing_ && ((policies_ | yd::struct_policies<S>)&yd::unknown_keys_policy) != 0))
+                out.emplace("additionalProperties", false);
         }
 
-        // The read schema requires the keys of `yyjson::required`.  The write schema requires the keys that every
-        // write gives: those of the fields that are neither omitted when empty nor when equal to their defaults.
+        // Whether the read of S, under the policies `policies`, requires the key of its field K, as
+        // `check_struct_keys` decides it.
+        template <typename S, std::size_t K>
+        [[nodiscard]] constexpr bool read_requires(std::uint8_t policies) noexcept
+        {
+            namespace yd = yyjson::detail;
+            if (((policies | yd::struct_policies<S>)&yd::missing_keys_policy) != 0)
+                return !yd::struct_field_absence<S>[K];
+            return yd::presence_of<S, yd::struct_declared_index<S, K>>.required;
+        }
+        // Whether every write of S gives the key of its field K: the field is not omitted when empty, nor when equal
+        // to its default unless the write takes `yyjson::emit_defaults`.
+        template <typename S, std::size_t K>
+        [[nodiscard]] constexpr bool write_requires(bool emit_defaults) noexcept
+        {
+            namespace yd = yyjson::detail;
+            using F = yd::struct_field_type<S, K>;
+            return (emit_defaults || !yd::omits_default<S, yd::struct_declared_index<S, K>>) &&
+                   !yd::omittable<decltype(yd::writable_field(std::declval<const F&>()))>;
+        }
+
+        // A C array is read as the `std::array` of as many elements.
+        template <typename F>
+        struct read_back
+        {
+            using type = F;
+        };
+        template <typename E, std::size_t N>
+        struct read_back<E[N]>
+        {
+            using type = std::array<typename read_back<E>::type, N>;
+        };
+
+        // Whether the read schema takes the written value `v` where it is narrower than the read: a tuple of pairs
+        // whose values differ in type.
+        template <typename T>
+        bool read_schema_takes(const T& v)
+        {
+            namespace yd = yyjson::detail;
+            if constexpr (yd::is_std_optional<T>::value || yd::nullable_value<T> || yd::owning_pointer<T>)
+                return !v || read_schema_takes(*v);
+            else if constexpr (yd::indirect_value<T>)
+                return v.valueless_after_move() || read_schema_takes(*v);
+            else if constexpr (struct_type<T>)
+                return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return (read_schema_takes(yd::struct_field<Ks>(v)) && ...);
+                }(std::make_index_sequence<yd::struct_field_count<T>>{});
+            else if constexpr (primitive_type<T> || std::is_enum_v<T> || std::same_as<T, std::vector<bool>>)
+                return true;
+            else if constexpr (std::ranges::range<T>)
+            {
+                for (const auto& e : v)
+                    if (!read_schema_takes(e)) return false;
+                return true;
+            }
+            else if constexpr (yd::tuple_like<T>)
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    if constexpr (writer::detail::to_json_obj_defined<const T&>)
+                    {
+                        using first = std::remove_cv_t<std::tuple_element_t<1, std::tuple_element_t<0, T>>>;
+                        return (std::same_as<std::remove_cv_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>,
+                                             first> &&
+                                ...) &&
+                               (read_schema_takes(std::get<1>(std::get<Is>(v))) && ...);
+                    }
+                    else
+                        return (read_schema_takes(std::get<Is>(v)) && ...);
+                }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            else
+                return true;
+        }
+
+        // The JSON text that `write` with `yyjson::emit_defaults` gives for the default `d` of a field of F, which
+        // every schema of F takes, if the field is written and the read of F under every policy takes it back.
+        template <typename F, typename D>
+        std::optional<std::string> default_text(const D& d)
+        {
+            namespace yd = yyjson::detail;
+            decltype(auto) field = yd::writable_field(d);
+            if constexpr (yd::omittable<decltype(field)>)
+                if (yd::should_omit_field(field)) return std::nullopt;
+            using R = typename read_back<std::remove_cv_t<F>>::type;
+            if constexpr (!readable<R>)
+                return std::nullopt;
+            else
+            {
+                try
+                {
+                    auto text = std::string(yyjson::write(field, yyjson::emit_defaults));
+                    (void)yyjson::read<R>(text, yyjson::strict, yyjson::reject_unknown_keys);
+                    if (!read_schema_takes(field)) return std::nullopt;
+                    return text;
+                }
+                catch (const std::exception&)
+                {
+                    return std::nullopt;
+                }
+            }
+        }
+
+        template <typename S>
+        const S* initial_value(registry& names)
+        {
+            if constexpr (std::is_default_constructible_v<S>)
+            {
+                auto& value = names.initial[&type_identity_tag<S>];
+                if (!value) value = std::make_shared<const S>();
+                return static_cast<const S*>(value.get());
+            }
+            else
+                return nullptr;
+        }
+
+        // The `default` of the field K of S: the value of its `yyjson::default_from<f>`, or else the field of `S()`
+        // if it satisfies the keywords of the field as `validate` checks them.  A required field has none.
+        template <typename S, std::size_t K>
+        const std::optional<std::string>& field_default(registry& names)
+        {
+            namespace yd = yyjson::detail;
+            constexpr auto r = yd::struct_declared_index<S, K>;
+            using F = yd::struct_field_type<S, K>;
+            const auto [it, added] = names.defaults.try_emplace(&field_tag<S, K>);
+            if (!added) return it->second;
+            if constexpr (yd::presence_of<S, r>.required)
+                return it->second;
+            else if constexpr (yd::presence_of<S, r>.from.has_value())
+                it->second = default_text<F>(yd::default_field_value<S, r>());
+            else if (const auto* s = initial_value<S>(names); s != nullptr)
+            {
+                it->second = default_text<F>(yd::struct_field<K>(*s));
+                if (it->second)
+                {
+                    try
+                    {
+                        const auto scope = yd::emit_defaults_scope();
+                        yd::validate_object_field<false, S, K>(*s, WriteFlag::NoFlag);
+                    }
+                    catch (const std::exception&)
+                    {
+                        it->second.reset();
+                    }
+                }
+            }
+            return it->second;
+        }
+
+        // The read schema requires the keys that the read requires, and the write schema the keys that every write
+        // gives.  The `default` is the same in both.
         template <typename S, std::size_t K>
         void generator::emit_field(object_ref properties, std::vector<std::string_view>& required)
         {
             namespace yd = yyjson::detail;
-            constexpr auto r = yd::struct_declared_index<S, K>;
             using F = yd::struct_field_type<S, K>;
             constexpr auto key = yd::struct_field_key<S, K>;
             auto p = properties.emplace(key, empty_object);
@@ -511,9 +720,9 @@ namespace yyjson
                 emit<typename F::value_type>(p);
             else
                 emit<F>(p);
-            constexpr bool written =
-                !yd::omits_default<S, r> && !yd::omittable<decltype(yd::writable_field(std::declval<const F&>()))>;
-            if (writing_ ? written : yd::presence_of<S, r>.required) required.push_back(key);
+            if (const auto& d = field_default<S, K>(names_)) p.emplace("default", yyjson::read(*d));
+            if (writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>(policies_))
+                required.push_back(key);
         }
 
         // A range is written as an object when its elements are key-value pairs, and read from the forms that
@@ -691,7 +900,9 @@ namespace yyjson
         class builder
         {
         public:
-            explicit builder(std::string_view ref_prefix) : ref_prefix_(ref_prefix) {}
+            explicit builder(std::string_view ref_prefix, schema_mode mode = {}) : ref_prefix_(ref_prefix), mode_(mode)
+            {
+            }
 
             template <typename T>
             void add(bool writing)
@@ -705,7 +916,7 @@ namespace yyjson
             void emit_root(object_ref out, bool writing)
             {
                 settle();
-                auto g = generator(*names_, writing);
+                auto g = generator(*names_, writing, mode_);
                 generator::emit_root<T>(g, out);
             }
             // Writes the schemas of the named types into `defs`.
@@ -716,7 +927,7 @@ namespace yyjson
                 for (const auto& [i, writing] : order)
                 {
                     if (!names_->split(i) && names_->types[i].used[0] && writing) continue;
-                    auto g = generator(*names_, writing);
+                    auto g = generator(*names_, writing, mode_);
                     names_->types[i].body(g, defs.emplace(names_->name(i, writing), empty_object, copy_string));
                 }
             }
@@ -729,13 +940,14 @@ namespace yyjson
                 registry::body_function emit;
             };
             std::string ref_prefix_;
+            schema_mode mode_;
             std::vector<root> roots_;
             std::optional<registry> names_;
 
             [[nodiscard]] std::string definition_text(std::size_t i, bool writing)
             {
                 auto doc = value(object());
-                auto g = generator(*names_, writing);
+                auto g = generator(*names_, writing, mode_);
                 names_->types[i].body(g, *doc.as_object());
                 return std::string(doc.write());
             }
@@ -760,7 +972,7 @@ namespace yyjson
                 for (const auto& r : roots_)
                 {
                     auto doc = value(object());
-                    auto g = generator(*names_, r.writing);
+                    auto g = generator(*names_, r.writing, mode_);
                     r.emit(g, *doc.as_object());
                 }
                 // The schema of each named type adds the types that it refers to.
@@ -768,7 +980,7 @@ namespace yyjson
                 {
                     const auto [i, writing] = names_->order[k];
                     auto doc = value(object());
-                    auto g = generator(*names_, writing);
+                    auto g = generator(*names_, writing, mode_);
                     names_->types[i].body(g, *doc.as_object());
                 }
                 // A type has one name while its two schemas are the same, where the types that they refer to are the
@@ -816,7 +1028,6 @@ namespace yyjson
                       "schema of yyjson::write_direction");
         static_assert(writing || !defaults,
                       "json_schema: yyjson::emit_defaults applies to the write schema; give yyjson::write_direction");
-        static_assert(!policies && !defaults, "C7b: the read policies and yyjson::emit_defaults are not emitted yet");
         if constexpr (writing)
             static_assert(writable<T>, "json_schema<T>(yyjson::write_direction): yyjson::write does not take T");
         else
@@ -826,7 +1037,7 @@ namespace yyjson
             if constexpr (std::same_as<A, schema_options>) options = a;
         };
         (take(args), ...);
-        auto b = sd::builder(options.ref_prefix);
+        auto b = sd::builder(options.ref_prefix, {yyjson::detail::policies_of<Args...>, defaults});
         b.add<T>(writing);
         auto doc = value(object());
         auto root = *doc.as_object();
