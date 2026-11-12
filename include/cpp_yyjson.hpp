@@ -5983,13 +5983,28 @@ namespace yyjson
                 dst = std::move(src);
         }
 
-        // Reads a C array from a JSON array as `cast<std::array<T, N>>` reads it.
+        // Defined after `object_assignable_range`: whether the C array F of key-value pairs is read from a JSON
+        // object as its `std::array` is, and the assignment of the members of that object.
+        template <typename F, typename Json>
+        consteval bool c_array_from_object();
+        template <typename T, typename Out, typename Json>
+        void assign_key_values(Out out, std::size_t size, const Json& obj, std::string_view type);
+
+        // Reads a C array from a JSON array as `cast<std::array<T, N>>` reads it, and from a JSON object if
+        // `c_array_from_object` holds.
         template <typename F, typename Json>
         void assign_c_array(F& field, const Json& json)
         {
             using element_type = std::remove_extent_t<F>;
             constexpr auto size = std::extent_v<F>;
             const auto arr = json.as_array();
+            if constexpr (c_array_from_object<F, typename decltype(json.as_object())::value_type>())
+                if (const auto obj = json.as_object(); obj.has_value())
+                {
+                    assign_key_values<std::array<std::remove_cv_t<element_type>, size>>(field, size, *obj,
+                                                                                        type_name<F>());
+                    return;
+                }
             if (!arr.has_value())
                 throw_bad_cast_at(target_of(json), "a C array of {} is not constructible from JSON other than array",
                                   type_name<std::remove_all_extents_t<F>>());
@@ -18357,6 +18372,60 @@ namespace yyjson
                                    std::ranges::output_range<T, std::ranges::range_value_t<T>> &&
                                    (!back_insertable<T>) && (!insertable_set<T>) && (!pair_array_map<T>);
 
+        // A range of a fixed size of key-value pairs, such as `std::array<std::pair<std::string, int>, 2>`, is
+        // written as a JSON object, so that it is read from one as well, assigning the members in their order.
+        template <typename T, typename Json>
+        concept object_assignable_range =
+            std::default_initializable<T> && (!visitable<T>) && (!reflected_range_aggregate<T>) &&
+            fixed_size_range<T> && requires {
+                typename std::ranges::range_value_t<T>;
+                requires key_value_like<std::ranges::range_value_t<T>>;
+                requires requires(Json obj) {
+                    requires castable<std::remove_cvref_t<decltype(obj.begin()->second)>, key_value_mapped_t<T>>;
+                };
+                requires key_value_constructible<T, object_key_t<T, Json>> ||
+                             key_value_aggregate_initializable<T, object_key_t<T, Json>>;
+            };
+
+        template <typename F, typename Json>
+        consteval bool c_array_from_object()
+        {
+            if constexpr (std::rank_v<F> != 1)
+                return false;
+            else
+                return object_assignable_range<std::array<std::remove_cv_t<std::remove_extent_t<F>>, std::extent_v<F>>,
+                                               Json>;
+        }
+
+        // An element of the range T made from a key and a value, as `emplace_key_value` makes it.
+        template <typename T, typename Key, typename Value>
+        std::ranges::range_value_t<T> make_key_value(Key&& key, Value&& value)
+        {
+            using pair_type = std::ranges::range_value_t<T>;
+            if constexpr (key_value_constructible<T, Key&&>)
+                return pair_type(std::forward<Key>(key), std::forward<Value>(value));
+            else
+                return pair_type{std::tuple_element_t<0, pair_type>(std::forward<Key>(key)),
+                                 std::forward<Value>(value)};
+        }
+
+        // Assigns the members of `obj` in their order to the `size` elements at `out`, as elements of T.  `type`
+        // names the C++ type in the messages.
+        template <typename T, typename Out, typename Json>
+        void assign_key_values(Out out, std::size_t size, const Json& obj, std::string_view type)
+        {
+            using value_type = key_value_mapped_t<T>;
+            if (obj.size() != size)
+                throw_bad_cast_at(target_of(obj), "the size of JSON object differs from the size of {}", type);
+            check_object_keys_unique(dependent_t<writer::detail::json_value_access, Json>::get(obj), type);
+            for (auto&& kv : obj)
+            {
+                *out = make_key_value<T>(object_key<T>(kv.first, target_of(kv.second)),
+                                         cast_nested<value_type>(kv.second));
+                ++out;
+            }
+        }
+
         // The type that an element of a range is read as from a JSON array: the element of the range, but a pair
         // of a mutable key and value for a `pair_array_map`, whose elements have const keys.
         template <typename T>
@@ -20628,6 +20697,14 @@ namespace yyjson
                 emplace_key_value<true>(result, position, object_key<T>(kv.first, detail::target_of(kv.second)),
                                         detail::cast_nested<value_type>(kv.second));
             }
+            return result;
+        }
+        template <json_object Json>
+        requires object_assignable_range<T, Json>
+        static dependent_t<T, Json> from_json(const Json& obj)
+        {
+            auto result = T();
+            assign_key_values<T>(std::ranges::begin(result), std::ranges::size(result), obj, type_name<T>());
             return result;
         }
         template <json_object Json>
@@ -23697,10 +23774,10 @@ namespace yyjson
             static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;
             static constexpr bool elements =
                 !builtin_cast && !from_json_translator<T>::castable && array_castable_range<T, reader::const_array_ref>;
-            static constexpr bool values =
-                !builtin_cast && !from_json_translator<T>::castable &&
-                (object_emplaceable_range<T, reader::const_object_ref> ||
-                 object_back_emplaceable_range<T, reader::const_object_ref>);
+            static constexpr bool values = !builtin_cast && !from_json_translator<T>::castable &&
+                                           (object_emplaceable_range<T, reader::const_object_ref> ||
+                                            object_back_emplaceable_range<T, reader::const_object_ref> ||
+                                            object_assignable_range<T, reader::const_object_ref>);
             // whether the keys are enumerations, which a key of the object may name none of
             static constexpr bool enum_keys = [] {
                 if constexpr (values)
@@ -30624,7 +30701,8 @@ namespace yyjson
                               })
                     return visitable_fields_part<T, Loop>();
                 else if constexpr (yyjson::detail::object_emplaceable_range<T, json_object> ||
-                                   yyjson::detail::object_back_emplaceable_range<T, json_object>)
+                                   yyjson::detail::object_back_emplaceable_range<T, json_object> ||
+                                   yyjson::detail::object_assignable_range<T, json_object>)
                     return node<false, type_list<value_node<
                                            std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>,
                                            true>>>{};
@@ -33391,7 +33469,7 @@ namespace yyjson
                                                     if (null)
                                                         std::forward<Read>(read)(field);
                                                     else
-                                                        field = read_recorded<field_type>(rec);
+                                                        read_recorded_into(field, rec);
                                                 });
                         if constexpr (yyjson::detail::constrained_field<T, I>)
                         {
@@ -34479,6 +34557,29 @@ namespace yyjson
                     records.push_back(C{R(e), {std::move(rec.doc), std::move(rec.root)}});
             }
 
+            // `field = read_recorded<F>(rec)`.  A C array is read as a `std::array`, whose record holds the same; the
+            // document reads a C array of C arrays.
+            template <typename F>
+            void read_recorded_into(F& field, yyjson::detail::record_t<F>& rec)
+            {
+                if constexpr (!std::is_array_v<F>)
+                    field = read_recorded<F>(rec);
+                else if constexpr (std::rank_v<F> != 1)
+                    fail();
+                else
+                {
+                    using A = std::array<std::remove_cv_t<std::remove_extent_t<F>>, std::extent_v<F>>;
+                    auto r = yyjson::detail::record_t<A>();
+                    auto result = read_recorded<A>(r);
+                    std::ranges::move(result, std::ranges::begin(field));
+                    rec.size = r.size;
+                    if constexpr (requires { rec.members; })
+                        rec.members = std::move(r.members);
+                    else
+                        rec.elements = std::move(r.elements);
+                }
+            }
+
             // Reads the value at `cur_` into a new F as `read_value` does, and keeps in `rec` what the keywords count
             // of the JSON value that F does not keep: the number of the elements or members, and each of them.
             template <typename F>
@@ -34519,17 +34620,27 @@ namespace yyjson
                     auto result = V();
                     auto key_buf = std::string();
                     auto position = d::emplace_position<V>::first(result);
+                    [[maybe_unused]] auto out = std::ranges::begin(result);
                     check_map_keys();
                     read_members([&] {
+                        if constexpr (d::object_assignable_range<V, const_object_ref>)
+                            if (rec.size == std::ranges::size(result)) [[unlikely]]
+                                fail();
                         const auto key = read_key<V>(key_buf);
                         read_colon();
                         auto r = d::record_t<E>();
                         auto value = read_recorded<E>(r);
                         keep_element<E>(rec.members, value, r);
                         ++rec.size;
-                        d::emplace_key_value<!d::object_emplaceable_range<V, const_object_ref>>(result, position, key,
-                                                                                                std::move(value));
+                        if constexpr (d::object_assignable_range<V, const_object_ref>)
+                            *out++ = d::make_key_value<V>(key, std::move(value));
+                        else
+                            d::emplace_key_value<!d::object_emplaceable_range<V, const_object_ref>>(
+                                result, position, key, std::move(value));
                     });
+                    if constexpr (d::object_assignable_range<V, const_object_ref>)
+                        if (rec.size != std::ranges::size(result)) [[unlikely]]
+                            fail();
                     return result;
                 }
                 else
@@ -34620,7 +34731,7 @@ namespace yyjson
                             if (*cur_ == 'n')
                                 read_field(f, d::array_field_replaceable<K>(result));
                             else
-                                f = read_recorded<F>(std::get<K>(rec->positions));
+                                read_recorded_into(f, std::get<K>(rec->positions));
                         }
                         else
                             read_field(f, d::array_field_replaceable<K>(result));
@@ -34990,6 +35101,26 @@ namespace yyjson
                         yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
                             result, position, key, read_value<value_type>());
                     });
+                    return result;
+                }
+                else if constexpr (yyjson::detail::object_assignable_range<T, json_object>)
+                {
+                    using value_type = yyjson::detail::key_value_mapped_t<T>;
+                    auto result = T();
+                    auto key_buf = std::string();
+                    auto out = std::ranges::begin(result);
+                    auto count = std::size_t{0};
+                    check_map_keys();
+                    read_members([&] {
+                        if (count++ == std::ranges::size(result)) [[unlikely]]
+                            fail();
+                        const auto key = read_key<T>(key_buf);
+                        read_colon();
+                        *out = yyjson::detail::make_key_value<T>(key, read_value<value_type>());
+                        ++out;
+                    });
+                    if (count != std::ranges::size(result)) [[unlikely]]
+                        fail();
                     return result;
                 }
                 else if constexpr (yyjson::detail::reflected_object_castable<T, json_object>)
@@ -35845,7 +35976,7 @@ namespace yyjson
                         return input->read;
                     }
                 }();
-                field = read_recorded<F>(rec);
+                read_recorded_into(field, rec);
                 check_recorded_field<S, K>(field, rec);
             }
 
@@ -36316,12 +36447,19 @@ namespace yyjson
                 if (i < size) result.erase(result.begin() + static_cast<std::ptrdiff_t>(i), result.end());
             }
 
-            // Reads the array at `cur_` into a C array as `assign_c_array` reads it from a document.
+            // Reads the array or the object at `cur_` into a C array as `assign_c_array` reads it from a document.
             template <typename F, bool Counted = false>
             void read_c_array(F& field)
             {
                 using element_type = std::remove_extent_t<F>;
                 constexpr auto size = std::extent_v<F>;
+                if constexpr (yyjson::detail::c_array_from_object<F, const_object_ref>())
+                    if (*cur_ == '{')
+                    {
+                        std::ranges::move(read_value<std::array<std::remove_cv_t<element_type>, size>>(),
+                                          std::ranges::begin(field));
+                        return;
+                    }
                 if (*cur_ != '[') [[unlikely]]
                     fail(mismatch::c_array_kind, name<std::remove_all_extents_t<F>>, cur_);
                 if constexpr (!Counted)
@@ -39156,7 +39294,7 @@ namespace yyjson
                 {
                     if constexpr (transparent_struct<T>) read_back_positions(struct_field<0>(v), flag);
                 }
-                else if constexpr (std::is_array_v<T>)
+                else if constexpr (std::is_array_v<T> && !object_written_range<T>)
                 {
                     for (std::size_t i = 0; i < std::extent_v<T>; ++i)
                         validate_at([i] { return std::to_string(i); }, [&] { read_back_positions(v[i], flag); });
@@ -40101,7 +40239,7 @@ namespace yyjson
                 validate_nested<AsNull>(v.value, flag, tag, json);
             else if constexpr (caster_checks_written_object<T>)
                 validate_caster_members(v, flag, tag, json);
-            else if constexpr (std::is_array_v<T>)
+            else if constexpr (std::is_array_v<T> && !object_written_range<T>)
             {
                 if constexpr (needs_written_json<T>)
                     if (json != nullptr) [[unlikely]]

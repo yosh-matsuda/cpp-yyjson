@@ -66,7 +66,7 @@ Each of the following throws `yyjson::bad_cast`:
 *   A JSON number or boolean into a container such as `std::vector<int>`, although C++ constructs the container from an integer as its size.
 *   A JSON array into a string type such as `std::string`. Another range of characters, such as `std::vector<char>`, converts from an array.
 *   A JSON array into a type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, unless it has exactly that many elements. Both `[1]` and `[1, 2, 3]` fail to convert to `std::array<int, 2>`.
-*   A JSON object into a type of a fixed number of elements. The only exception is a `std::tuple` of [key-value pairs](#standard-library-types), which reads an object of exactly that many members. A `std::pair` or a `std::array` does not read a JSON object.
+*   A JSON object into a type of a fixed number of elements. The exceptions are a `std::tuple`, a `std::array` and a C array of [key-value pairs](#standard-library-types), which read an object of exactly that many members. A `std::pair` does not read a JSON object.
 *   A JSON array into a range with a capacity fixed at compile time, such as `std::inplace_vector` or `boost::container::static_vector`, when the array does not fit. The read throws `yyjson::bad_cast`, and not the exception of the range. The library finds the capacity in `T::static_capacity` or in a `static constexpr` function `T::capacity()`.
 *   A JSON value other than an object into a struct that the [reflection](#reflection) or `VISITABLE_STRUCT` converts, although C++20 can initialize the first field of an aggregate from a single value. To read a struct from another JSON value, define a [translator](#translator).
 

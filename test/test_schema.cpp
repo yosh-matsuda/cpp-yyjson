@@ -17,9 +17,15 @@ namespace schema_test
         bool operator==(const Point&) const = default;
     };
 
+    struct PairArrays
+    {
+        std::pair<std::string, int> c[2]{};
+    };
+
     struct Grid
     {
         int g[2][2]{};
+        std::pair<std::string, int> p[2][1]{};
     };
 
     struct Node
@@ -439,7 +445,17 @@ TEST(Schema, Maps)
                                  R"({"03":1})"});
     check<std::map<int, std::string>>({"[]", R"([[1,"a"],[2,"b"]])", R"({"1":"a"})", R"([[1]])"});
     check<std::vector<std::pair<std::string, int>>>({"{}", R"({"a":1})", R"([["a",1]])", R"({"a":"x"})"});
-    check<Grid>({R"({"g":[[1,2],[3,4]]})", R"({"g":[[1,2],[3]]})", R"({"g":[[1,2]]})", R"({"g":[[1,2],[3,"x"]]})"});
+    check<std::array<std::pair<std::string, int>, 2>>({R"({"a":1,"b":2})", R"([["a",1],["b",2]])", R"({"a":1})",
+                                                       R"({"a":1,"b":2,"c":3})", R"([["a",1]])", R"({"a":"x","b":1})"});
+    check<std::array<std::pair<Hue, int>, 1>>({R"({"red":1})", R"({"pink":1})", R"([["red",1]])", "{}"});
+    EXPECT_EQ((schema<std::array<std::pair<std::string, int>, 2>>(yyjson::write_direction)),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","minProperties":2,)"
+              R"("maxProperties":2,"additionalProperties":{"type":"integer","minimum":-2147483648,)"
+              R"("maximum":2147483647}})");
+    check<PairArrays>({R"({"c":{"a":1,"b":2}})", R"({"c":[["a",1],["b",2]]})", R"({"c":{"a":1}})",
+                       R"({"c":{"a":1,"b":2,"c":3}})", R"({"c":[["a",1]]})", R"({"c":{"a":"x","b":1}})"});
+    check<Grid>({R"({"g":[[1,2],[3,4]],"p":[{"a":1},[["b",2]]]})", R"({"g":[[1,2],[3]]})", R"({"g":[[1,2]]})",
+                 R"({"p":[{"a":1},{"b":2,"c":3}]})", R"({"p":[{"a":1}]})", R"({"g":[[1,2],[3,"x"]]})"});
     check<std::map<std::string, Point>>({R"({"p":{"x":1,"y":2}})", R"({"p":{"x":1}})", R"({"p":1})"});
     EXPECT_EQ(to_jsoncons(yyjson::json_schema<std::map<Level, int>>())["propertyNames"]["pattern"].as<std::string>(),
               "^(0|-?[1-9][0-9]{0,1})$");

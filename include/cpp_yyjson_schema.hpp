@@ -235,6 +235,15 @@ namespace yyjson
             }
 
             template <typename T>
+            static consteval std::size_t fixed_size() noexcept
+            {
+                if constexpr (yyjson::detail::c_array<T>)
+                    return std::extent_v<T>;
+                else
+                    return std::tuple_size_v<T>;
+            }
+
+            template <typename T>
             static constexpr std::string_view type_keyword() noexcept
             {
                 if constexpr (std::same_as<T, bool>)
@@ -263,7 +272,7 @@ namespace yyjson
             void emit_range(object_ref out);
             template <typename T, typename E>
             void emit_array_form(object_ref out);
-            template <typename K, typename V>
+            template <typename T, typename K, typename V>
             void emit_object_form(object_ref out);
             template <typename T, std::size_t... Is>
             void emit_tuple(object_ref out, std::index_sequence<Is...>);
@@ -517,7 +526,7 @@ namespace yyjson
             if (writing_)
             {
                 if constexpr (yd::object_written_range<T>)
-                    emit_object_form<std::remove_cv_t<std::tuple_element_t<0, pair>>,
+                    emit_object_form<T, std::remove_cv_t<std::tuple_element_t<0, pair>>,
                                      std::remove_cv_t<std::tuple_element_t<1, pair>>>(out);
                 else
                     emit_array_form<T, pair>(out);
@@ -532,7 +541,7 @@ namespace yyjson
             using n = yd::nested_casts<T>;
             const auto object_form = [&](object_ref o) {
                 if constexpr (n::values)
-                    emit_object_form<std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>,
+                    emit_object_form<T, std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>,
                                      typename n::value_type>(o);
             };
             if constexpr (n::elements && n::values)
@@ -557,24 +566,26 @@ namespace yyjson
             emit<std::remove_cv_t<E>>(out.emplace("items", empty_object));
             if constexpr (yd::c_array<T> || yd::std_array<T>)
             {
-                constexpr std::size_t size = [] {
-                    if constexpr (yd::c_array<T>)
-                        return std::extent_v<T>;
-                    else
-                        return std::tuple_size_v<T>;
-                }();
-                out.emplace("minItems", size);
-                out.emplace("maxItems", size);
+                out.emplace("minItems", fixed_size<T>());
+                out.emplace("maxItems", fixed_size<T>());
             }
             if constexpr (json_unique_set<T>) out.emplace("uniqueItems", true);
         }
 
-        template <typename K, typename V>
+        // A range of a fixed size is written as an object of a member for each of its pairs, and read from an
+        // object of as many members.
+        template <typename T, typename K, typename V>
         void generator::emit_object_form(object_ref out)
         {
+            namespace yd = yyjson::detail;
             out.emplace("type", "object");
+            if constexpr (yd::c_array<T> || yd::std_array<T>)
+            {
+                out.emplace("minProperties", fixed_size<T>());
+                out.emplace("maxProperties", fixed_size<T>());
+            }
             emit<V>(out.emplace("additionalProperties", empty_object));
-            if constexpr (yyjson::detail::enum_key<K>) emit_property_names<K>(out);
+            if constexpr (yd::enum_key<K>) emit_property_names<K>(out);
         }
 
         // Whether the I-th of Vs is the first of its type.

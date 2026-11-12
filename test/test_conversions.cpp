@@ -405,6 +405,188 @@ TEST(Reader, RangesOfFixedSizeRanges)
     EXPECT_TRUE((expect_direct_read<std::set<std::array<std::string, 2>>>(R"({"c":"d","a":"b"})")));
 }
 
+enum class PairSide
+{
+    left,
+    right
+};
+struct FixedPairs
+{
+    std::array<std::pair<std::string, int>, 2> kv{};
+    std::array<std::pair<std::string, std::set<int>>, 2> sets{};
+    bool operator==(const FixedPairs&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<FixedPairs> =
+    yyjson::annotate(yyjson::field("kv", yyjson::property_names(yyjson::max_length(1))),
+                     yyjson::field("sets", yyjson::additional_properties(yyjson::min_items(2))));
+
+TEST(Reader, FixedSizeRangesOfPairs)
+{
+    using namespace yyjson;
+    using pairs = std::array<std::pair<std::string, int>, 2>;
+    const auto ab = pairs{{{"a", 1}, {"b", 2}}};
+
+    // written as a JSON object, and read back from one in its order as well as from an array of pairs
+    EXPECT_EQ(yyjson::write(ab), R"({"a":1,"b":2})");
+    EXPECT_EQ(yyjson::read<pairs>(yyjson::write(ab)), ab);
+    EXPECT_EQ(read(R"({"a":1,"b":2})").cast<pairs>(), ab);
+    EXPECT_EQ(yyjson::read<pairs>(R"([["a",1],["b",2]])"), ab);
+    EXPECT_EQ(yyjson::read<pairs>(R"({"b":2,"a":1})"), (pairs{{{"b", 2}, {"a", 1}}}));
+    for (const auto* json : {R"({"a":1,"b":2})", R"({"a\n":1,"b":2})", R"([["a",1],["b",2]])"})
+        EXPECT_TRUE(expect_direct_read<pairs>(json)) << json;
+
+    // an object of another number of members throws, as an array of another length does
+    for (const auto* json : {R"({"a":1})", "{}", R"({"a":1,"b":2,"c":3})", R"({"a":"x","b":1})", R"([["a",1]])"})
+    {
+        EXPECT_THROW((void)yyjson::read<pairs>(json), bad_cast) << json;
+        expect_direct_read<pairs>(json);
+    }
+    try
+    {
+        (void)read(R"({"a":1})").cast<pairs>();
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_TRUE(std::string_view(e.what()).starts_with("the size of JSON object differs from the size of"))
+            << e.what();
+    }
+
+    // a repeated key is kept, as in a `std::vector` of pairs, unless `yyjson::reject_duplicates` is given
+    EXPECT_EQ(yyjson::read<pairs>(R"({"a":1,"a":2})"), (pairs{{{"a", 1}, {"a", 2}}}));
+    EXPECT_THROW((void)yyjson::read<pairs>(R"({"a":1,"a":2})", reject_duplicates), bad_cast);
+    EXPECT_THROW((void)read(R"({"a":1,"a":2})").cast<pairs>(reject_duplicates), bad_cast);
+
+    // enumeration keys, and nested ranges
+    using sides = std::array<std::pair<PairSide, int>, 2>;
+    EXPECT_EQ(yyjson::read<sides>(R"({"right":1,"left":2})"), (sides{{{PairSide::right, 1}, {PairSide::left, 2}}}));
+    EXPECT_THROW((void)yyjson::read<sides>(R"({"up":1,"left":2})"), bad_cast);
+    EXPECT_TRUE(expect_direct_read<sides>(R"({"right":1,"left":2})"));
+    using nested = std::array<std::pair<std::string, std::array<int, 2>>, 2>;
+    EXPECT_EQ(yyjson::read<nested>(R"({"a":[1,2],"b":[3,4]})"), (nested{{{"a", {1, 2}}, {"b", {3, 4}}}}));
+    EXPECT_THROW((void)yyjson::read<nested>(R"({"a":[1,2],"b":[3]})"), bad_cast);
+    EXPECT_TRUE(expect_direct_read<nested>(R"({"a":[1,2],"b":[3,4]})"));
+    using ranges = std::vector<pairs>;
+    const auto json = R"([{"a":1,"b":2},[["a",1],["b",2]]])";
+    EXPECT_EQ(yyjson::read<ranges>(json), (ranges{ab, ab}));
+    EXPECT_TRUE(expect_direct_read<ranges>(json));
+    EXPECT_TRUE(expect_read_into(ranges(3), json));
+    EXPECT_TRUE(expect_read_into(ab, R"({"c":3,"d":4})"));
+    using string_pairs = std::array<std::array<std::string, 2>, 1>;
+    EXPECT_EQ(yyjson::read<string_pairs>(R"({"a":"b"})"), (string_pairs{{{"a", "b"}}}));
+
+    // a key that is not a string is written as an array of pairs, and is not read from an object
+    using int_pairs = std::array<std::pair<int, int>, 1>;
+    EXPECT_EQ(yyjson::write(int_pairs{{{1, 2}}}), "[[1,2]]");
+    EXPECT_THROW((void)yyjson::read<int_pairs>(R"({"1":2})"), bad_cast);
+
+    // the keywords of objects constrain the members that are read
+    EXPECT_EQ(yyjson::read<FixedPairs>(R"({"kv":{"a":1,"b":2},"sets":{"a":[1,1],"b":[2,3]}})").sets[0].second,
+              (std::set<int>{1}));
+    for (const auto* text : {R"({"kv":{"a":1,"b":2},"sets":{"a":[1,1],"b":[2,3]}})", R"({"kv":{"ab":1,"b":2}})",
+                             R"({"sets":{"a":[1],"b":[2,3]}})", R"({"sets":{"a":[1,2]}})"})
+        expect_direct_read<FixedPairs>(text);
+    EXPECT_THROW((void)yyjson::read<FixedPairs>(R"({"kv":{"ab":1,"b":2}})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<FixedPairs>(R"({"sets":{"a":[1],"b":[2,3]}})"), bad_cast);
+    auto fixed = FixedPairs{{{{"a", 1}, {"b", 2}}}, {{{"a", {1, 2}}, {"b", {3, 4}}}}};
+    EXPECT_NO_THROW(yyjson::validate(fixed));
+    fixed.kv[0].first = "ab";
+    EXPECT_THROW(yyjson::validate(fixed), bad_cast);
+}
+
+struct PairArrays
+{
+    std::pair<std::string, int> kv[2]{};
+    std::pair<std::string, std::set<int>> sets[2]{};
+    std::pair<std::string, int> grid[2][2]{};
+    bool operator==(const PairArrays&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PairArrays> =
+    yyjson::annotate(yyjson::field("kv", yyjson::property_names(yyjson::max_length(1))),
+                     yyjson::field("sets", yyjson::additional_properties(yyjson::min_items(2))));
+struct PairArrayList
+{
+    std::vector<PairArrays> items;
+    bool operator==(const PairArrayList&) const = default;
+};
+
+TEST(Reader, CArraysOfPairs)
+{
+    using namespace yyjson;
+    auto ab =
+        PairArrays{{{"a", 1}, {"b", 2}}, {{"a", {1, 2}}, {"b", {3, 4}}}, {{{"a", 1}, {"b", 2}}, {{"c", 3}, {"d", 4}}}};
+
+    // a C array of pairs is written as a JSON object, and read from one as a `std::array` of pairs is
+    const auto json = std::string(yyjson::write(ab));
+    EXPECT_EQ(json, R"({"kv":{"a":1,"b":2},"sets":{"a":[1,2],"b":[3,4]},"grid":[{"a":1,"b":2},{"c":3,"d":4}]})");
+    EXPECT_EQ(yyjson::read<PairArrays>(json), ab);
+    EXPECT_EQ(read(json).cast<PairArrays>(), ab);
+    EXPECT_EQ(yyjson::read<PairArrays>(R"({"kv":[["a",1],["b",2]],"sets":[["a",[1,2]],["b",[3,4]]],)"
+                                       R"("grid":[[["a",1],["b",2]],{"c":3,"d":4}]})"),
+              ab);
+    EXPECT_TRUE(expect_direct_read<PairArrays>(json));
+    EXPECT_TRUE(expect_read_into(PairArrays(), json));
+    EXPECT_TRUE(expect_read_into(ab, R"({"kv":{"c":3,"d":4}})"));
+    const auto list = PairArrayList{{ab, ab}};
+    EXPECT_EQ(yyjson::read<PairArrayList>(yyjson::write(list)), list);
+    EXPECT_TRUE(expect_direct_read<PairArrayList>(std::string(yyjson::write(list))));
+
+    // an object of another number of members throws, as an array of another length does
+    for (const auto* text :
+         {R"({"kv":{"a":1}})", R"({"kv":{}})", R"({"kv":{"a":1,"b":2,"c":3}})", R"({"grid":[{"a":1,"b":2},{"c":3}]})"})
+    {
+        EXPECT_THROW((void)yyjson::read<PairArrays>(text), bad_cast) << text;
+        EXPECT_THROW((void)yyjson::read<PairArrayList>(std::string(R"({"items":[)") + text + "]}"), bad_cast) << text;
+        expect_direct_read<PairArrays>(text);
+    }
+    try
+    {
+        (void)read(R"({"kv":{"a":1}})").cast<PairArrays>();
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_TRUE(std::string_view(e.what()).starts_with("the size of JSON object differs from the size of"))
+            << e.what();
+    }
+
+    // a repeated key is kept unless `yyjson::reject_duplicates` is given, which validate gives as well
+    EXPECT_EQ(yyjson::read<PairArrays>(R"({"kv":{"a":1,"a":2}})").kv[1], (std::pair<std::string, int>{"a", 2}));
+    EXPECT_THROW((void)yyjson::read<PairArrays>(R"({"kv":{"a":1,"a":2}})", reject_duplicates), bad_cast);
+    EXPECT_THROW((void)read(R"({"kv":{"a":1,"a":2}})").cast<PairArrays>(reject_duplicates), bad_cast);
+
+    // the keywords of objects constrain the members that are read, and the positions are the keys
+    for (const auto* text : {R"({"kv":{"ab":1,"b":2}})", R"({"sets":{"a":[1],"b":[2,3]}})"})
+    {
+        EXPECT_THROW((void)yyjson::read<PairArrays>(text), bad_cast) << text;
+        expect_direct_read<PairArrays>(text);
+    }
+    EXPECT_EQ(yyjson::read<PairArrays>(R"({"sets":{"a":[1,1],"b":[2,3]}})").sets[0].second, (std::set<int>{1}));
+    EXPECT_NO_THROW(yyjson::validate(ab));
+    ab.kv[0].first = "ab";
+    try
+    {
+        yyjson::validate(ab);
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_TRUE(std::string_view(e.what()).find(" at /kv/ab") != std::string_view::npos) << e.what();
+    }
+    ab.kv[0].first = "b";
+    EXPECT_THROW(yyjson::validate(ab), bad_cast);
+
+    // a key that is not a string is written as an array of pairs, and is not read from an object
+    struct IntPairs
+    {
+        std::pair<int, int> c[1]{};
+    };
+    EXPECT_EQ(yyjson::write(IntPairs{{{1, 2}}}), R"({"c":[[1,2]]})");
+    EXPECT_THROW((void)yyjson::read<IntPairs>(R"({"c":{"1":2}})"), bad_cast);
+}
+
 struct SetFields
 {
     std::set<int> s;
