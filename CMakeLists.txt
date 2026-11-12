@@ -322,6 +322,7 @@ if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   else()
     install(FILES ${PROJECT_SOURCE_DIR}/include/cpp_yyjson.hpp
+                  ${PROJECT_SOURCE_DIR}/include/cpp_yyjson_schema.hpp
                   ${PROJECT_SOURCE_DIR}/include/field_reflection.hpp
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   endif()
