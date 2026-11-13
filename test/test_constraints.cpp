@@ -4506,11 +4506,18 @@ TEST(Constraints, Matches)
     expect_rejected<Typed>(R"({"point":{"x":1,"y":2},"small":{"a":256}})",
                            element("small") + "is not read as unsigned char by yyjson::matches", "/small/a");
 
-    // the policies of the read around yyjson::matches do not change it
+    // yyjson::reject_unknown_keys of the read around yyjson::matches closes T; other policies do not change it
     constexpr auto unknown = R"({"events":[{"x":1,"y":2},{"x":1,"y":2,"z":3}],"ids":[],"point":{"x":1,"y":2,"z":3},)"
                              R"("text":null,"small":{}})";
-    EXPECT_NO_THROW((void)yyjson::read<Typed>(unknown, yyjson::reject_unknown_keys));
+    EXPECT_TRUE(message_of(bad_cast_of([&] {
+                    (void)yyjson::read<Typed>(unknown, yyjson::reject_unknown_keys);
+                })).starts_with(value("events") + few));
     EXPECT_NO_THROW((void)yyjson::read<Typed>(unknown, yyjson::strict));
+    constexpr auto point = R"({"point":{"x":1,"y":2,"z":3}})";
+    EXPECT_NO_THROW((void)yyjson::read<Typed>(point));
+    EXPECT_TRUE(message_of(bad_cast_of([&] {
+                    (void)yyjson::read<Typed>(point, yyjson::reject_unknown_keys);
+                })).starts_with(value("point") + "is not read as Point by yyjson::matches"));
 }
 
 TEST(Constraints, MatchesFunction)
@@ -5948,6 +5955,12 @@ struct OneOfMaybeX
     std::optional<int> x;
     bool operator==(const OneOfMaybeX&) const = default;
 };
+struct OneOfMaybeXY
+{
+    std::optional<int> x;
+    int y = 0;
+    bool operator==(const OneOfMaybeXY&) const = default;
+};
 struct OneOfY
 {
     int y = 0;
@@ -6210,11 +6223,11 @@ TEST(Constraints, OneOfReading)
     // the struct that misses a key without a default under yyjson::reject_missing_keys does not match
     using XOrZ = yyjson::one_of_variant<OneOfX, OneOfZ>;
     expect_accepted<XOrZ>(R"({"x":1})", XOrZ(OneOfX{1}));
-    // both match an object of both keys, since each one takes other keys, and the policies of the call do not
-    // change the match
+    // both match an object of both keys, since each one takes other keys, unless yyjson::reject_unknown_keys of
+    // the call closes them
     expect_rejected<XOrZ>(R"({"x":1,"z":2,"w":0})", read_by_two<XOrZ>(0, 1), "");
     expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_two<XOrZ>(0, 1));
-    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_two<XOrZ>(0, 1), yyjson::reject_unknown_keys);
+    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_none<XOrZ>(), yyjson::reject_unknown_keys);
     // an alternative may match with none of its keys
     using MaybeXOrY = yyjson::one_of_variant<OneOfMaybeX, OneOfY>;
     expect_rejected<MaybeXOrY>(R"({"y":1})", read_by_two<MaybeXOrY>(0, 1), "");
@@ -6226,13 +6239,20 @@ TEST(Constraints, OneOfReading)
     expect_accepted<ClosedOrXZ>(R"({"x":1})", ClosedOrXZ(OneOfClosedX{1}));
     expect_rejected<ClosedOrXZ>(R"({"z":1})", read_by_none<ClosedOrXZ>(), "");
 
-    // the policies of the call apply to the alternative that matches
+    // yyjson::reject_unknown_keys of the call closes the struct alternatives
     using XOrText = yyjson::one_of_variant<OneOfX, std::string>;
     expect_alternative<XOrText>(R"({"x":1,"k":2})", 0);
     EXPECT_THROW((void)yyjson::read<XOrText>(R"({"x":1,"k":2})", yyjson::reject_unknown_keys), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read(R"({"x":1,"k":2})").cast<XOrText>(yyjson::reject_unknown_keys), yyjson::bad_cast);
     expect_alternative<XOrText>(R"({"x":1})", 0, yyjson::reject_unknown_keys);
     expect_alternative<XOrText>(R"("a")", 1, yyjson::reject_unknown_keys);
+    // so an object of a key that only one of them declares matches that one
+    using XOrMaybeXY = yyjson::one_of_variant<OneOfX, OneOfMaybeXY>;
+    expect_rejected_under<XOrMaybeXY>(R"({"x":1,"y":2})", read_by_two<XOrMaybeXY>(0, 1));
+    expect_accepted<XOrMaybeXY>(R"({"x":1})", XOrMaybeXY(OneOfX{1}));
+    expect_alternative<XOrMaybeXY>(R"({"x":1,"y":2})", 1, yyjson::reject_unknown_keys);
+    EXPECT_EQ(std::get<1>(yyjson::read<XOrMaybeXY>(R"({"x":1,"y":2})", yyjson::reject_unknown_keys)),
+              (OneOfMaybeXY{1, 2}));
     // a set does not match a repeated element, which `uniqueItems` rejects, under any policies
     using SetOrList = yyjson::one_of_variant<std::set<int>, std::vector<int>>;
     expect_alternative<SetOrList>("[1,1]", 1);
@@ -6397,14 +6417,20 @@ TEST(Constraints, UnionFailureReasons)
         "");
     // the one that matches under those policies and fails under the policies of the call gives its own failure
     using XOrText = yyjson::one_of_variant<OneOfX, std::string>;
-    expect_reasons<XOrText>(R"({"x":1,"k":2})", R"(OneOfX has no field of the key "k")", "/k",
-                            yyjson::reject_unknown_keys);
+    expect_reasons<XOrText>(R"({"x":1,"x":2})", R"(the object read into OneOfX has the key "x" twice)", "/x",
+                            yyjson::reject_duplicates);
     // also a variant within it, which gives the reasons of its alternatives
     using IntOrX = std::variant<int, OneOfX>;
     expect_reasons<UnionReasonNode>(
-        R"({"v":1,"next":{"v":{"x":1,"k":2},"next":null}})",
-        read_by_none_because<IntOrX>({"reads no JSON object", {R"(OneOfX has no field of the key "k")", "/k"}}),
-        "/next/v", yyjson::reject_unknown_keys);
+        R"({"v":1,"next":{"v":{"x":1,"x":2},"next":null}})",
+        read_by_none_because<IntOrX>(
+            {"reads no JSON object", {R"(the object read into OneOfX has the key "x" twice)", "/x"}}),
+        "/next/v", yyjson::reject_duplicates);
+    // yyjson::reject_unknown_keys of the call closes the struct alternatives before the count
+    expect_reasons<XOrText>(
+        R"({"x":1,"k":2})",
+        read_by_none_because<XOrText>({{R"(OneOfX has no field of the key "k")", "/k"}, "reads no JSON object"}), "",
+        yyjson::reject_unknown_keys);
 
     // the path within an alternative goes through its members and elements, and a failure of the whole value has none
     using IntOrLine = std::variant<int, UnionReasonLine>;
@@ -6503,20 +6529,30 @@ TEST(Constraints, OneOfBounds)
     expect_alternative<yyjson::any_of_variant<OtherCodeMap, std::map<std::string, std::string>>>(R"({"a":"x"})", 0);
 
     // a struct reads each object of another one that requires each key that it requires and takes no key that it
-    // does not name, with values that it reads
-    using XAndXZ = yyjson::detail::one_of_relations<yyjson::one_of_variant<OneOfX, OneOfXZ>>;
-    static_assert(XAndXZ::contained.contained == 1 && XAndXZ::contained.container == 0);
-    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfClosedX>>);
+    // does not name, with values that it reads, with and without yyjson::reject_unknown_keys of the call
+    using XAndClosedX = yyjson::detail::one_of_relations<yyjson::one_of_variant<OneOfX, OneOfClosedX>>;
+    static_assert(XAndClosedX::contained.contained == 1 && XAndClosedX::contained.container == 0);
     using ClosedByAlt =
         yyjson::alt<OneOfXZ, yyjson::property("x"), yyjson::property("z"), yyjson::additional_properties(false)>;
     static_assert(one_of_contained<yyjson::one_of_variant<ClosedByAlt, OneOfXZ>>);
-    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, ClosedByAlt>>);
     static_assert(one_of_contained<
                   yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::property("x", yyjson::minimum(0))>, OneOfX>>);
-    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXMaybeY>>);
-    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXRest>>);
-    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfWrapped<OneOfXZ>>>);
-    static_assert(one_of_contained<yyjson::one_of_variant<OneOfWrapped<OneOfX>, OneOfXZ>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfX, OneOfWrapped<OneOfClosedX>>>);
+    static_assert(one_of_contained<yyjson::one_of_variant<OneOfWrapped<OneOfX>, OneOfClosedX>>);
+    // the call's yyjson::reject_unknown_keys closes a struct that names fewer keys, so that it reads no object
+    // with a key that only the other one names
+    static_assert(!one_of_contained<yyjson::one_of_variant<OneOfX, ClosedByAlt>>);
+    static_assert(!one_of_contained<yyjson::one_of_variant<OneOfX, OneOfXMaybeY>>);
+    static_assert(!one_of_contained<yyjson::one_of_variant<OneOfX, OneOfWrapped<OneOfXZ>>>);
+    using XOrXZ = yyjson::one_of_variant<OneOfX, OneOfXZ>;
+    static_assert(!one_of_contained<XOrXZ> && one_of_overlapping<XOrXZ, 0, 1>);
+    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})", read_by_two<XOrXZ>(0, 1));
+    expect_alternative<XOrXZ>(R"({"x":1,"z":2})", 1, yyjson::reject_unknown_keys);
+    expect_alternative<XOrXZ>(R"({"x":1})", 0, yyjson::reject_unknown_keys);
+    // a map of other keys keeps a struct open under the call's yyjson::reject_unknown_keys
+    using XOrRest = yyjson::one_of_variant<OneOfX, OneOfXRest>;
+    static_assert(!one_of_contained<XOrRest>);
+    expect_alternative<XOrRest>(R"({"x":1,"a":2})", 1, yyjson::reject_unknown_keys);
 
     // a struct reads no object of another one that requires a key that it rejects, or a value there that it does
     // not read

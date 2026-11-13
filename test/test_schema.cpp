@@ -150,16 +150,10 @@ namespace schema_test
         Box<1> c;
     };
 
-    // a type whose read and write schemas differ, in one that refers to it, beside one whose two schemas agree
+    // a type whose read and write schemas agree
     struct Maybe
     {
         std::optional<int> v;
-    };
-
-    struct Split
-    {
-        FieldRequired f;
-        Maybe p;
     };
 
     inline int seven() { return 7; }
@@ -223,6 +217,19 @@ namespace schema_test
     {
         int a = 1;
         int b = 2;
+    };
+
+    // a field whose default every write gives, so that only the write schema requires its key
+    struct Emitted
+    {
+        int a = 1;
+    };
+
+    // a type that refers to `Emitted`, beside a type whose two schemas agree
+    struct Split
+    {
+        Emitted f;
+        Maybe p;
     };
 
     struct Called
@@ -300,6 +307,9 @@ inline constexpr auto yyjson::annotations<schema_test::Called> =
 template <>
 inline constexpr auto yyjson::annotations<schema_test::Counted> =
     yyjson::annotate(yyjson::default_, yyjson::min_properties(1));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Emitted> =
+    yyjson::annotate(yyjson::field("a", yyjson::default_, yyjson::emit_defaults));
 template <>
 inline constexpr auto yyjson::annotations<schema_test::StrictInner> = yyjson::annotate(yyjson::strict);
 template <>
@@ -412,20 +422,22 @@ namespace
 
     // The read schema of T under the policies Ps takes only what `read<T>(json, Ps...)` takes, and all of it but
     // where a document is marked: `lenient` and its kinds where the read takes more, and `not_expressible` where it
-    // takes less.
+    // takes less. A read without `yyjson::reject_missing_keys` also takes a document that misses a required key.
     template <typename T, typename... Ps>
     void check_read(std::initializer_list<doc> docs, const Ps&... ps)
     {
         constexpr auto policies = yyjson::detail::policies_of<Ps...>;
         constexpr bool null = (policies & yyjson::detail::null_as_missing_policy) != 0;
         constexpr bool repeat = (policies & yyjson::detail::duplicates_policy) != 0;
+        constexpr bool missing = (policies & yyjson::detail::missing_keys_policy) != 0;
         const auto validator = compile(checked_schema(yyjson::json_schema<T>(ps...)));
         for (const auto& d : docs)
         {
-            const auto more = (d.diff & (lenient | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
+            const auto accepted = reads<T>(d.json, ps...);
+            auto more = (d.diff & (lenient | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
+            if constexpr (!missing) more = more || (accepted && !reads<T>(d.json, ps..., yyjson::reject_missing_keys));
             const auto less = repeat && (d.diff & not_expressible) != 0;
             const auto valid = validator.is_valid(json::parse(d.json));
-            const auto accepted = reads<T>(d.json, ps...);
             const auto policy = yyjson::detail::policies_of<Ps...>;
             EXPECT_EQ(valid && !accepted, less) << "valid, but not read: " << d.json << " under " << +policy;
             EXPECT_EQ(accepted && !valid, more) << "read, but not valid: " << d.json << " under " << +policy;
@@ -727,7 +739,8 @@ TEST(Schema, Structs)
     const auto point = definition<Point>(false);
     EXPECT_EQ(point.to_string(),
               R"({"properties":{"x":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"},)"
-              R"("y":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"type":"object"})");
+              R"("y":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["x","y"],)"
+              R"("type":"object"})");
     EXPECT_EQ(schema<Point>(yyjson::write_direction),
               R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.Point":{"type":)"
               R"("object","properties":{"x":{"type":"integer","minimum":-2147483648,"maximum":2147483647,)"
@@ -760,9 +773,9 @@ TEST(Schema, Structs)
 
 TEST(Schema, Required)
 {
-    EXPECT_EQ(required_keys(definition<Point>(false)), std::set<std::string>{});
-    EXPECT_EQ(required_keys(definition<FieldRequired>(false)), (std::set<std::string>{"a", "c"}));
-    EXPECT_EQ(required_keys(definition<StructRequired>(false)), (std::set<std::string>{"b"}));
+    EXPECT_EQ(required_keys(definition<Point>(false)), (std::set<std::string>{"x", "y"}));
+    EXPECT_EQ(required_keys(definition<FieldRequired>(false)), (std::set<std::string>{"a", "b", "c"}));
+    EXPECT_EQ(required_keys(definition<StructRequired>(false)), (std::set<std::string>{"a", "b"}));
     EXPECT_EQ(required_keys(definition<Optional>(true)), (std::set<std::string>{"a", "n", "u"}));
     EXPECT_EQ(required_keys(definition<FieldRequired>(true)), (std::set<std::string>{"a", "b", "c"}));
     EXPECT_EQ(required_keys(definition<StructRequired>(true)), (std::set<std::string>{"a", "b"}));
@@ -810,13 +823,13 @@ TEST(Schema, SplitNames)
     const auto s = json::parse(std::string(doc.write()));
     auto names = std::set<std::string>();
     for (const auto& m : s["$defs"].object_range()) names.insert(m.key());
-    EXPECT_EQ(names, (std::set<std::string>{"schema_test.FieldRequired-Input", "schema_test.FieldRequired-Output",
-                                            "schema_test.Maybe", "schema_test.Split-Input",
-                                            "schema_test.Split-Output"}));
+    EXPECT_EQ(names,
+              (std::set<std::string>{"schema_test.Emitted-Input", "schema_test.Emitted-Output", "schema_test.Maybe",
+                                     "schema_test.Split-Input", "schema_test.Split-Output"}));
     EXPECT_EQ(s["read"]["$ref"].as<std::string>(), "#/$defs/schema_test.Split-Input");
     EXPECT_EQ(s["write"]["$ref"].as<std::string>(), "#/$defs/schema_test.Split-Output");
     const auto& output = s["$defs"]["schema_test.Split-Output"]["properties"];
-    EXPECT_EQ(output["f"]["$ref"].as<std::string>(), "#/$defs/schema_test.FieldRequired-Output");
+    EXPECT_EQ(output["f"]["$ref"].as<std::string>(), "#/$defs/schema_test.Emitted-Output");
     EXPECT_EQ(output["p"]["$ref"].as<std::string>(), "#/$defs/schema_test.Maybe");
 }
 
@@ -834,7 +847,8 @@ TEST(Schema, Options)
     const auto id = std::string("urn:example:point");
     const auto point = to_jsoncons(yyjson::json_schema<Point>(yyjson::schema_options{.id = id}));
     EXPECT_EQ(point["$id"].as<std::string>(), id);
-    EXPECT_TRUE(compile(point).is_valid(json::parse(R"({"x":1})")));
+    EXPECT_TRUE(compile(point).is_valid(json::parse(R"({"x":1,"y":2})")));
+    EXPECT_FALSE(compile(point).is_valid(json::parse(R"({"x":1})")));
     EXPECT_FALSE(compile(point).is_valid(json::parse(R"({"x":"1"})")));
 }
 
@@ -946,7 +960,7 @@ TEST(Schema, Policies)
     EXPECT_EQ(required_keys(definition_with<Defaults>(yyjson::strict)), (std::set<std::string>{"b", "c"}));
     EXPECT_FALSE(definition_with<StructDefault>(yyjson::strict).contains("required"));
     EXPECT_EQ(required_keys(definition_with<FieldRequired>(yyjson::reject_unknown_keys)),
-              (std::set<std::string>{"a", "c"}));
+              (std::set<std::string>{"a", "b", "c"}));
     EXPECT_FALSE(definition_with<Point>(yyjson::reject_unknown_keys)["additionalProperties"].as<bool>());
     EXPECT_FALSE(definition_with<Point>(yyjson::strict).contains("additionalProperties"));
     EXPECT_EQ(schema<Optional>(yyjson::reject_null_as_missing, yyjson::reject_duplicates), schema<Optional>());
@@ -960,17 +974,22 @@ TEST(Schema, Policies)
     // the policies of a type apply to its own schema
     const auto outer = to_jsoncons(yyjson::json_schema<PolicyOuter>());
     const auto& defs = outer["$defs"];
-    EXPECT_FALSE(defs["schema_test.PolicyOuter"].contains("required"));
+    EXPECT_EQ(required_keys(defs["schema_test.PolicyOuter"]), (std::set<std::string>{"z", "s", "m", "u", "p"}));
     EXPECT_FALSE(defs["schema_test.PolicyOuter"].contains("additionalProperties"));
     EXPECT_EQ(required_keys(defs["schema_test.StrictInner"]), (std::set<std::string>{"a", "c"}));
     EXPECT_FALSE(defs["schema_test.StrictInner"].contains("additionalProperties"));
     EXPECT_EQ(required_keys(defs["schema_test.MissingInner"]), (std::set<std::string>{"a"}));
-    EXPECT_FALSE(defs["schema_test.UnknownInner"].contains("required"));
+    EXPECT_EQ(required_keys(defs["schema_test.UnknownInner"]), (std::set<std::string>{"a"}));
     EXPECT_FALSE(defs["schema_test.UnknownInner"]["additionalProperties"].as<bool>());
     EXPECT_EQ(defs["schema_test.Point"], definition<Point>(false));
     EXPECT_EQ(defs["schema_test.StrictInner"], definition<StrictInner>(false));
     // a default has every member, as the write with `yyjson::emit_defaults` gives it, so every schema takes it
     EXPECT_EQ(defs["schema_test.PolicyOuter"]["properties"]["m"]["default"], json::parse(R"({"a":0,"c":2})"));
+    // yyjson::reject_unknown_keys of the call closes every struct below the root, beside the policies of each type
+    const auto closed = to_jsoncons(yyjson::json_schema<PolicyOuter>(yyjson::reject_unknown_keys));
+    for (const auto& m : closed["$defs"].object_range())
+        EXPECT_FALSE(m.value()["additionalProperties"].as<bool>()) << m.key();
+    EXPECT_EQ(required_keys(closed["$defs"]["schema_test.StrictInner"]), (std::set<std::string>{"a", "c"}));
     // a read policy has no effect on the write schema
     EXPECT_FALSE(definition<UnknownInner>(true).contains("additionalProperties"));
     EXPECT_EQ(required_keys(definition<StrictInner>(true)), (std::set<std::string>{"a", "c"}));

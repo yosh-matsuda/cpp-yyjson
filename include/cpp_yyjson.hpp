@@ -2824,8 +2824,9 @@ namespace yyjson
         }
     }  // namespace detail
 
-    // That a value reads as T under `yyjson::strict`, whatever the policies of the read around it, as a keyword of a
-    // value of the DOM: `yyjson::contains(yyjson::matches<Point>)`.  `yyjson::matches<T>(json)` tells it for `json`.
+    // That a value reads as T under `yyjson::strict`, and the `yyjson::reject_unknown_keys` of the read around it, as a
+    // keyword of a value of the DOM: `yyjson::contains(yyjson::matches<Point>)`.  `matches<T>(json)` tells it for
+    // `json`.
     template <typename T>
     struct matches_t : detail::type_test
     {
@@ -8318,8 +8319,8 @@ namespace yyjson
     };
 
     // A value of one of the types of the alternatives As, as JSON Schema's `oneOf`: a JSON value is read only if
-    // exactly one alternative reads it under the schema of the type, which rejects missing keys and null as missing.
-    // The alternative that reads it is then read under the policies of the call.  The rest is as `any_of_variant`.
+    // exactly one alternative reads it under the schema of the type and the call's `reject_unknown_keys`.  That
+    // alternative is then read under the policies of the call.  The rest is as `any_of_variant`.
     template <typename... As>
     struct one_of_variant : std::variant<detail::alternative_type_t<As>...>
     {
@@ -23667,7 +23668,8 @@ namespace yyjson
             if constexpr (read_by_kind<T> && json_value_of_document<Json>)
                 if (!json.is_raw()) return true;
             {
-                const exact_policy_scope scope(policy_bits<strict_t>);
+                const exact_policy_scope scope(
+                    static_cast<std::uint8_t>(policy_bits<strict_t> | (read_policies & unknown_keys_policy)));
                 try
                 {
                     (void)cast_nested<T>(json);
@@ -24364,12 +24366,14 @@ namespace yyjson
             json_bound value;
         };
         // A struct alternative of a `yyjson::one_of_variant`, or not `keyed` for any other type.  `exact` if its
-        // members and tags tell each object that it reads, and `closed` if it takes no other key.
+        // members and tags tell each object that it reads, `closed` if it takes no other key, and `closable` if
+        // the call's `yyjson::reject_unknown_keys` closes it.
         struct one_of_struct_shape
         {
             bool keyed = false;
             bool exact = false;
             bool closed = false;
+            bool closable = false;
             std::span<const one_of_struct_member> members;
             std::span<const std::string_view> tags;
         };
@@ -24395,8 +24399,12 @@ namespace yyjson
                 using keys = struct_key_list<T>;
                 const bool exact = unannotated_layers<T>() && !has_key_maps<S> && keys::tags.empty() &&
                                    alternative_keeps_objects<V, I, T>();
-                return {true, exact, keys::closed || (keys::closable && union_alternative_closed<V, I, T>()),
-                        one_of_struct_members<V, I, T>, keys::tags};
+                return {true,
+                        exact,
+                        keys::closed || (keys::closable && union_alternative_closed<V, I, T>()),
+                        keys::closable,
+                        one_of_struct_members<V, I, T>,
+                        keys::tags};
             }
         }
 
@@ -24437,16 +24445,22 @@ namespace yyjson
                        (a.members.size() + a.tags.size()) * (b.members.size() + b.tags.size()) <= budget;
             }
 
-            // Whether the alternative b reads each object that a reads.  b names no key that a does not name: a takes
-            // any value there if open, and if closed, still at the key of the tag of an enclosing
-            // `yyjson::internal_tag`, which the object may repeat with any value.
+            // Whether the alternative b reads each object that a reads, with and without the call's
+            // `yyjson::reject_unknown_keys`.  b names no key that a does not name: a takes any value there if open,
+            // and if closed, still at the key of the tag of an enclosing `yyjson::internal_tag`.
             static constexpr bool objects_contain(std::size_t b, std::size_t a) noexcept
             {
                 const auto& x = shapes[a];
                 const auto& y = shapes[b];
-                if (!within_budget(x, y) || !y.exact || !x.tags.empty() || (y.closed && !x.closed)) return false;
+                return objects_contain(x, y, x.closed, y.closed) &&
+                       objects_contain(x, y, x.closed || x.closable, y.closed || y.closable);
+            }
+            static constexpr bool objects_contain(const one_of_struct_shape& x, const one_of_struct_shape& y,
+                                                  bool x_closed, bool y_closed) noexcept
+            {
+                if (!within_budget(x, y) || !y.exact || !x.tags.empty() || (y_closed && !x_closed)) return false;
                 for (const auto& m : x.members)
-                    if (m.taken && y.closed && taking(y, m.key) == nullptr) return false;
+                    if (m.taken && y_closed && taking(y, m.key) == nullptr) return false;
                 for (const auto& n : y.members)
                 {
                     if (!n.taken)
@@ -24804,31 +24818,37 @@ namespace yyjson
             }
 
         private:
-            // The keyed alternatives that reject a key that they do not know under any policies of the call and
-            // have no field that takes other keys, so that such a key proves that they fail.
-            static constexpr auto rejecting_alternatives = [] {
+            // The keyed alternatives that reject a key that they do not know and have no field that takes other
+            // keys, so that such a key proves that they fail: under any policies of the call, and under the call's
+            // `yyjson::reject_unknown_keys`.
+            static constexpr auto rejecting_by(const std::array<bool, n>& by)
+            {
                 auto closed = std::array<bool, n>{key_list<Ts>::closable...};
-                for (std::size_t i = 0; i < n; ++i) closed[i] = closed[i] && alternative_closed[i];
+                for (std::size_t i = 0; i < n; ++i) closed[i] = closed[i] && by[i];
                 return closed_by(closed);
-            }();
+            }
+            static constexpr auto rejecting_alternatives = rejecting_by(alternative_closed);
+            static constexpr auto call_rejecting_alternatives = rejecting_by(alternative_closable);
 
         public:
-            // The keyed alternatives that fail for an object of the keys `seen` under `yyjson::reject_missing_keys`
-            // and their own policies: the object lacks a key that one requires, or has a key that one rejects.
-            static bit_array<size> schema_failures(const seen_keys& seen, const seen_keys& internal_tags) noexcept
+            // The keyed alternatives that fail for an object of the keys `seen` under `yyjson::reject_missing_keys`,
+            // their own policies and the call's `yyjson::reject_unknown_keys` if `call_closed`: the object lacks a
+            // key that one requires, or has a key that one rejects.
+            static bit_array<size> schema_failures(const seen_keys& seen, const seen_keys& internal_tags,
+                                                   bool call_closed) noexcept
             {
+                const auto& rejecting = call_closed ? call_rejecting_alternatives : rejecting_alternatives;
                 auto result = bit_array<size>{};
                 for (std::size_t k = 0; k < size; ++k)
                 {
-                    if (!seen.covers(required[k]) ||
-                        (rejecting_alternatives.test(k) && seen.exceeds(accepted[k], internal_tags)))
+                    if (!seen.covers(required[k]) || (rejecting.test(k) && seen.exceeds(accepted[k], internal_tags)))
                         result.set(k);
                 }
                 return result;
             }
             // `schema_failures` for the JSON object `obj` of a document at `raw`.
             template <typename Object>
-            static bit_array<size> object_schema_failures(const Object& obj, const void* raw)
+            static bit_array<size> object_schema_failures(const Object& obj, const void* raw, bool call_closed)
             {
                 auto seen = seen_keys{};
                 for (auto&& kv : obj)
@@ -24842,7 +24862,7 @@ namespace yyjson
                 auto internal_tags = seen_keys{};
                 const auto note = [&](std::string_view key) { note_internal_tag(internal_tags, key); };
                 internal_tag_key::for_each_key(raw, note);
-                return schema_failures(seen, internal_tags);
+                return schema_failures(seen, internal_tags, call_closed);
             }
         };
 
@@ -25260,8 +25280,8 @@ namespace yyjson
         }
 
         // Reads a `yyjson::one_of_variant` V: counts the alternatives that read the value under the policies of
-        // their schema, `yyjson::reject_missing_keys` and `yyjson::reject_null_as_missing` with their own, and
-        // reads the only one that does under the policies of the call.
+        // their schema and the call's `yyjson::reject_unknown_keys`, and reads the only one that does under the
+        // policies of the call.
         template <typename V, typename Base = variant_base_t<V>>
         struct one_of_variant_cast;
         template <typename V, typename... Ts>
@@ -25286,13 +25306,20 @@ namespace yyjson
             // whether a value read under the counting policies may differ from one read under those of the call
             static constexpr bool sensitive = count_true<policy_sensitive<Ts>...> != 0;
 
-            // The policies under which the alternatives are counted.  A schema does not hold
-            // `yyjson::reject_duplicates`, so it applies only to the alternative that the count selects.
-            static constexpr std::uint8_t counting_policies = missing_keys_policy | null_as_missing_policy | unique_items_policy;
+            // The policies under which the alternatives are counted, besides the call's `yyjson::reject_unknown_keys`,
+            // which closes every struct of the schema.  `uniqueItems` rejects a repeated element of a set, but no
+            // keyword rejects a repeated key, which `yyjson::reject_duplicates` checks on the selected one only.
+            static constexpr std::uint8_t counting_policies =
+                missing_keys_policy | null_as_missing_policy | unique_items_policy;
+            // The counting policies under the call's policies `call`.
+            [[nodiscard]] static constexpr std::uint8_t counting_under(std::uint8_t call) noexcept
+            {
+                return static_cast<std::uint8_t>(counting_policies | (call & unknown_keys_policy));
+            }
 
-            // The alternatives that the keys of the JSON value, an object, prove to fail.
+            // The alternatives that the keys of the JSON value, an object, prove to fail under `counting`.
             template <typename Json>
-            static bit_array<size> failing_alternatives(const Json& json, std::uint16_t kind)
+            static bit_array<size> failing_alternatives(const Json& json, std::uint16_t kind, std::uint8_t counting)
             {
                 auto failing = bit_array<size>{};
                 if constexpr (json_value_of_document<Json> && key_ranking::size != 0)
@@ -25300,7 +25327,8 @@ namespace yyjson
                     if (kind == json_kind_object)
                     {
                         const void* const raw = dependent_t<writer::detail::json_value_access, Json>::get(json);
-                        const auto failures = key_ranking::object_schema_failures(*json.as_object(), raw);
+                        const auto failures = key_ranking::object_schema_failures(
+                            *json.as_object(), raw, (counting & unknown_keys_policy) != 0);
                         for (std::size_t k = 0; k < key_ranking::size; ++k)
                         {
                             if (failures.test(k)) failing.set(key_ranking::alternatives[k]);
@@ -25320,7 +25348,8 @@ namespace yyjson
                 if (nested || collecting_alternative_reasons)
                     throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", variant_name<V>());
                 const auto kind = json_kind_of(json);
-                const auto failing = failing_alternatives(json, kind);
+                const auto counting = counting_under(read_policies);
+                const auto failing = failing_alternatives(json, kind, counting);
                 auto reasons = std::array<alternative_failure, size>{};
                 {
                     const auto collecting = alternative_reasons_scope();
@@ -25331,7 +25360,7 @@ namespace yyjson
                                                 : "reads the value when read again"};
                     };
                     if (selected != size) reasons[selected] = reason(selected);
-                    const auto scope = exact_policy_scope(counting_policies);
+                    const auto scope = exact_policy_scope(counting);
                     for (std::size_t i = 0; i < size; ++i)
                     {
                         if (i == selected) continue;
@@ -25394,10 +25423,10 @@ namespace yyjson
                 constexpr auto kinds = std::array<std::uint16_t, size>{accepted_json_kinds<Ts, Json>()...};
                 const auto kind = json_kind_of(json);
                 const auto call = read_policies;
-                constexpr auto counting = counting_policies;
+                const auto counting = counting_under(call);
                 const bool reuse = !sensitive && (call & ~counting) == 0;
                 const auto rereads = guard<Json>(kind, reuse ? 0 : 1);
-                const auto failing = failing_alternatives(json, kind);
+                const auto failing = failing_alternatives(json, kind, counting);
                 auto pairs = &overlap;
                 if constexpr (tag_sensitive)
                 {
@@ -33802,7 +33831,7 @@ namespace yyjson
                 {
                     const char* const start = cur_;
                     const auto kind = kind_at();
-                    constexpr auto counting = cast::counting_policies;
+                    const auto counting = cast::counting_under(policies_);
                     const bool proven = (policies_ & ~counting) == 0;
                     auto failing = yyjson::detail::bit_array<size>{};
                     if constexpr (ranking::size != 0)
@@ -33811,7 +33840,8 @@ namespace yyjson
                         {
                             const auto seen = scan_members<ranking>();
                             cur_ = start;
-                            const auto failures = ranking::schema_failures(seen, internal_tags_of<ranking>(start));
+                            const auto failures = ranking::schema_failures(seen, internal_tags_of<ranking>(start),
+                                                                           (counting & unknown_keys_policy) != 0);
                             for (std::size_t k = 0; k < ranking::size; ++k)
                             {
                                 if (failures.test(k)) failing.set(ranking::alternatives[k]);

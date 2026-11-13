@@ -1782,7 +1782,7 @@ inline constexpr required_t required{};
 struct required_t
 {
     template <typename... Ss>  // each convertible to std::string_view
-    consteval required_keys<sizeof...(Ss)> operator()(const Ss&... keys) const;
+    consteval auto operator()(const Ss&... keys) const;  // returns a type that the library does not name
 };
 ```
 
@@ -2127,7 +2127,7 @@ struct matches_t
 };
 ```
 
-`yyjson::matches<T>` is a setting of a `yyjson::value`, a `yyjson::array` or a `yyjson::object`, and of the subschemas of such a field. On a field of another type, it is a compile error. A value satisfies it when it reads as `T` under [`yyjson::strict`](#read-policies), whatever the policies of the read around it. `yyjson::matches<T>(json)` tells this for a JSON value. See [Values of the DOM that read as a type](validation.md#values-of-the-dom-that-read-as-a-type).
+`yyjson::matches<T>` is a setting of a `yyjson::value`, a `yyjson::array` or a `yyjson::object`, and of the subschemas of such a field. On a field of another type, it is a compile error. A value satisfies it when it reads as `T` under [`yyjson::strict`](#read-policies). Of the policies of the read around it, only `yyjson::reject_unknown_keys` changes it: every struct that `T` reads then rejects a key that names none of its fields. `yyjson::matches<T>(json)` tells this for a JSON value. In a [user-defined caster](conversions.md#user-defined-casters) that a read calls, it uses `yyjson::reject_unknown_keys` of that read too. See [Values of the DOM that read as a type](validation.md#values-of-the-dom-that-read-as-a-type).
 
 ```cpp
 struct Point
@@ -2831,7 +2831,7 @@ struct one_of_variant : std::variant</* T of each A */...>
 ```
 
 *   The template arguments, `yyjson::alt`, the write and the compile errors are those of [`yyjson::any_of_variant`](#yyjsonany_of_variant-yyjsonalt).
-*   An alternative matches a value if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. The policies of the call do not change the match. Thus a plain read of an alternative alone can accept a value that the variant rejects.
+*   An alternative matches a value if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. Of the policies of the call, only `yyjson::reject_unknown_keys` changes the match: it closes every struct that the alternatives read. Thus a plain read of an alternative alone can accept a value that the variant rejects.
 *   The read gives the only alternative that matches, and applies the policies of the call to it. If no alternative or two alternatives match, the read throws `yyjson::bad_cast`. If no alternative matches, the message gives the reason of each alternative.
 *   An alternative can read only values that another alternative reads. When the library proves it, the alternative is a compile error. The library compares null, booleans, numbers, strings and arrays by their bounds. It compares structs by their keys and the bounds of their fields, and other types by their kinds of JSON values. It does not compare the elements of arrays. The setting `yyjson::one_of` takes such subschemas.
 

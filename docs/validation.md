@@ -290,7 +290,7 @@ A [user-defined caster](conversions.md#user-defined-casters) that casts a value 
 
 ### What the policies check
 
-*   `reject_unknown_keys`: the keys of the fields and the key of a [tag](conversions.md#tagged-variants) are known. The key of a [skipped field](conversions.md#skipped-fields) is unknown. A map accepts every key.
+*   `reject_unknown_keys`: the keys of the fields and the key of a [tag](conversions.md#tagged-variants) are known. The key of a [skipped field](conversions.md#skipped-fields) is unknown. A map accepts every key. The policy of the call applies to every struct of the read. It also applies to the alternatives that a [`yyjson::one_of_variant`](conversions.md#exactly-one-alternative) counts. It applies to the type of a [`yyjson::matches<T>`](#values-of-the-dom-that-read-as-a-type) too. Thus the policy can make a `yyjson::not_`, a `yyjson::if_then_else`, the setting `yyjson::one_of` or a `yyjson::one_of_variant` accept a value that it rejects without the policy. `additionalProperties: false` does the same in JSON Schema.
 *   `reject_missing_keys`: only a field with a default may be left out. These fields have a default: a `std::optional` field, a field with [`yyjson::default_` or `yyjson::default_from<f>`](conversions.md#default-values-and-required-keys), and a field of a struct with `yyjson::default_`. A [transparent](conversions.md#a-struct-as-the-value-of-its-field) struct over a `std::optional` has one too. A pointer, a `std::variant` with `std::monostate`, a `yyjson::nullable` and a [`yyjson::indirect`](reference.md#yyjsonindirect) need their keys. An [untagged `std::variant`](conversions.md#untagged-variants) does not read an object into a struct alternative that lacks one of these keys. It tries the other alternatives, so a map or a `yyjson::value` alternative still reads the object.
 *   `reject_null_as_missing`: `null` in a field of the other rows of the table is still read as before. An element of an array, a value of a map and the root are not affected. A field of a struct with `yyjson::as_array` rejects `null` of the last row also without the policy.
 *   `reject_duplicates`: a struct, a map, a multimap, a tuple of key-value pairs and the object of a tagged variant reject a repeated key. A `std::set` and a `std::unordered_set` reject a repeated element. A `std::multiset` accepts it.
@@ -582,7 +582,7 @@ yyjson::read<Server>(R"({"ratio":2})");
 
 ### Values of the DOM that read as a type
 
-`yyjson::matches<T>` is a constraint of a value of the DOM: a `yyjson::value`, a `yyjson::array` or a `yyjson::object`. It accepts a value that reads as `T` under [`yyjson::strict`](#read-policies). The policies of the read around it do not change it. Use it in a combinator or in `yyjson::contains`, as JSON Schema uses `$ref` there. The message is `is not read as T by yyjson::matches`:
+`yyjson::matches<T>` is a constraint of a value of the DOM: a `yyjson::value`, a `yyjson::array` or a `yyjson::object`. It accepts a value that reads as `T` under [`yyjson::strict`](#read-policies). Of the policies of the read around it, only `yyjson::reject_unknown_keys` changes it: every struct that `T` reads then rejects a key that names none of its fields. Use it in a combinator or in `yyjson::contains`, as JSON Schema uses `$ref` there. The message is `the value does not satisfy matches`:
 
 ```cpp
 struct Point
@@ -612,7 +612,7 @@ bool b = yyjson::matches<Point>(doc);  // -> true
 
 *   `yyjson::matches<T>(json)` tells whether a JSON value reads as `T`.
 *   For `bool`, `std::nullptr_t`, a number, a string and the types of the DOM, the kind of the value decides. For another type, the library reads the value into a `T` under `yyjson::strict`, and then discards it.
-*   `yyjson::strict` does not reject unknown keys. Thus `yyjson::matches<Point>` accepts `{"x":1,"y":2,"z":3}`. Give `Point` the policy `yyjson::reject_unknown_keys` or make `Point` [closed](#closed-structs) to reject it.
+*   `yyjson::strict` does not reject unknown keys. Thus `yyjson::matches<Point>` accepts `{"x":1,"y":2,"z":3}`. Give `Point` the policy `yyjson::reject_unknown_keys`, make `Point` [closed](#closed-structs), or give the read around it `yyjson::reject_unknown_keys` to reject it.
 *   `yyjson::matches<T>` on a field of another type is a compile error.
 
 ### Conditions between fields
@@ -778,7 +778,7 @@ yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
 
 ### How constraints are checked
 
-*   A constraint is checked when the read reads its key into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without the [read policies](#read-policies). The policies do not change the constraints.
+*   A constraint is checked when the read reads its key into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without the [read policies](#read-policies). The policies do not change the constraints, with one exception. `yyjson::reject_unknown_keys` of the call also applies to the type of a `yyjson::matches<T>` and to the alternatives that a `yyjson::one_of_variant` counts.
 *   A field that gets no value from the JSON is not checked. It keeps a value that the constraints can reject:
     *   A key that the object leaves out. Use `yyjson::required` or `yyjson::reject_missing_keys` to require the key.
     *   `null` as the value of a `std::optional` field that is read as a missing key, as in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that is `5` in `T()` keeps `5` under `yyjson::maximum(3)`. Every check takes such a key as missing, also the [conditions between fields](#conditions-between-fields) and `yyjson::required` in them. A field of a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) does not read such a `null`: every read rejects it. Reject such a `null` with `yyjson::reject_null_as_missing`.

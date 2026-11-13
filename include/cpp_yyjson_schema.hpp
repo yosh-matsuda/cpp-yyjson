@@ -561,15 +561,12 @@ namespace yyjson
                 out.emplace("additionalProperties", false);
         }
 
-        // Whether the read of S, under the policies `policies`, requires the key of its field K, as
-        // `check_struct_keys` decides it.
+        // Whether the read schema requires the key of the field K of S: the field declares no default.  The policies
+        // do not change it, so that every read schema of S tells one contract.
         template <typename S, std::size_t K>
-        [[nodiscard]] constexpr bool read_requires(std::uint8_t policies) noexcept
+        [[nodiscard]] constexpr bool read_requires() noexcept
         {
-            namespace yd = yyjson::detail;
-            if (((policies | yd::struct_policies<S>)&yd::missing_keys_policy) != 0)
-                return !yd::struct_field_absence<S>[K];
-            return yd::presence_of<S, yd::struct_declared_index<S, K>>.required;
+            return !yyjson::detail::struct_field_absence<S>[K];
         }
         // Whether every write of S gives the key of its field K: the field is not omitted when empty, nor when equal
         // to its default unless the write takes `yyjson::emit_defaults`.
@@ -721,8 +718,7 @@ namespace yyjson
             else
                 emit<F>(p);
             if (const auto& d = field_default<S, K>(names_)) p.emplace("default", yyjson::read(*d));
-            if (writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>(policies_))
-                required.push_back(key);
+            if (writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>()) required.push_back(key);
         }
 
         // A range is written as an object when its elements are key-value pairs, and read from the forms that
