@@ -1737,7 +1737,7 @@ struct pattern_properties
 
 *   The field is a map with string keys, as for [`yyjson::extra_keys`](#yyjsonextra_keys).
 *   The field has no key of its own. Every read puts a key that no field and no tag names into the map of the first field whose pattern matches the key. The fields are in the order of the members.
-*   The field takes [`yyjson::additional_properties(s...)`](#constraints-of-elements) for the values and `yyjson::property_names(s...)` for the keys. Each pattern that matches a key checks it, also the key of a field or of a tag. A later pattern checks the value without a change to its own map.
+*   The field takes [`yyjson::additional_properties(s...)`](#constraints-of-elements) for the values and `yyjson::property_names(s...)` for the keys. Each pattern that matches a key checks it, also the key of a field or of a tag. A later pattern checks the value without a change to its own map. Such a check reads the value under `yyjson::reject_missing_keys` and `yyjson::reject_null_as_missing`, because no field keeps it.
 *   `read<T>` and `read_into` start from the map of `T()`. `merge_into` adds the members of the patch to the map of the first pattern. A member with `null` removes its key. Each other pattern that matches the key checks the merged value.
 *   A closed struct, `yyjson::reject_unknown_keys` and the settings of the struct accept, count and check the keys of the maps.
 *   Every write puts the members of the maps after the fields and the tags, in the order of the members. The map of `yyjson::extra_keys` comes after them. A write throws `std::invalid_argument` when a map has the key of a field or a tag, or when two maps have the same key.

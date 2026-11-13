@@ -196,9 +196,18 @@ namespace schema_test
         int b;
     };
 
+    // a pattern that checks the keys of an earlier one
+    struct PatternedLevels
+    {
+        std::map<std::string, yyjson::value> any;
+        std::map<std::string, std::map<Level, int>> levels;
+    };
+
     // values in `S()`, which are defaults only where the read schema takes them
     struct Narrowed
     {
+        PatternedLevels checked{{{"p", yyjson::value(yyjson::read(R"({"100":1})"))}}, {}};
+        PatternedLevels checks{{{"p", yyjson::value(yyjson::read(R"({"99":1})"))}}, {}};
         std::map<Level, int> wide{{Level{100}, 1}};
         std::map<Level, int> fits{{Level{99}, 1}, {Level::low, 2}};
         std::vector<std::map<Level, int>> nested{{{Level{-100}, 1}}};
@@ -343,6 +352,65 @@ namespace schema_test
         yyjson::value j;
         std::vector<yyjson::value> w;
     };
+    struct ExtraKeyed
+    {
+        std::string name;
+        std::optional<int> t_x;
+        std::map<std::string, int> counts;
+        std::map<std::string, double> temps;
+    };
+    struct Patterned
+    {
+        int l_a = 0;
+        std::map<std::string, int> lo;
+        std::map<std::string, std::optional<int>> hi;
+        std::map<std::string, yyjson::value> any;
+    };
+    struct PatternedClosed
+    {
+        int l_a = 0;
+        std::map<std::string, int> lo;
+        std::map<std::string, std::optional<int>> hi;
+    };
+    struct PatternedExtra
+    {
+        int l_a = 0;
+        std::map<std::string, int> lo;
+        std::map<std::string, std::optional<int>> hi;
+        std::map<std::string, std::string> rest;
+    };
+    struct Tally
+    {
+        int n = 0;
+    };
+    // the patterns check a key that another field keeps
+    struct PatternedField
+    {
+        yyjson::value p;
+        std::map<std::string, std::vector<std::pair<std::string, int>>> pairs;
+    };
+    struct PatternedStruct
+    {
+        yyjson::value p;
+        std::map<std::string, Tally> tallies;
+    };
+    struct PatternedOverlap
+    {
+        std::map<std::string, yyjson::value> any;
+        std::map<std::string, Tally> tallies;
+    };
+    struct KeyCounted
+    {
+        int a = 0;
+        std::optional<int> b;
+        std::map<std::string, int> p;
+    };
+    struct KeyCountedExtra
+    {
+        int a = 0;
+        std::map<std::string, int> p;
+        std::map<std::string, std::optional<int>> rest;
+    };
 }  // namespace schema_test
 
 template <>
@@ -459,6 +527,50 @@ template <>
 inline constexpr auto yyjson::annotations<schema_test::Matching> =
     yyjson::annotate(yyjson::field("j", yyjson::matches<schema_test::Point>),
                      yyjson::field("w", yyjson::items(yyjson::matches<std::uint8_t>)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::ExtraKeyed> = yyjson::annotate(
+    yyjson::field("counts", yyjson::extra_keys, yyjson::additional_properties(yyjson::minimum(0)),
+                  yyjson::property_names(yyjson::max_length(3))),
+    yyjson::field("temps", yyjson::pattern_properties("^t_"), yyjson::additional_properties(yyjson::minimum(-50))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Patterned> = yyjson::annotate(
+    yyjson::field("lo", yyjson::pattern_properties("^l_"), yyjson::property_names(yyjson::max_length(4))),
+    yyjson::field("hi", yyjson::pattern_properties("^l_"), yyjson::additional_properties(yyjson::maximum(5))),
+    yyjson::field("any", yyjson::pattern_properties("^a")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::PatternedClosed> = yyjson::annotate(
+    yyjson::additional_properties(false),
+    yyjson::field("lo", yyjson::pattern_properties("^l_"), yyjson::property_names(yyjson::max_length(4))),
+    yyjson::field("hi", yyjson::pattern_properties("^h_"), yyjson::additional_properties(yyjson::maximum(5))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::PatternedExtra> = yyjson::annotate(
+    yyjson::field("lo", yyjson::pattern_properties("^l_"), yyjson::property_names(yyjson::max_length(4))),
+    yyjson::field("hi", yyjson::pattern_properties("^l_b")),
+    yyjson::field("rest", yyjson::extra_keys, yyjson::property_names(yyjson::pattern("^[a-z]+$"))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::PatternedLevels> = yyjson::annotate(
+    yyjson::field("any", yyjson::pattern_properties("^p")), yyjson::field("levels", yyjson::pattern_properties("^p$")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::PatternedField> =
+    yyjson::annotate(yyjson::field("pairs", yyjson::pattern_properties("^p$")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::PatternedStruct> =
+    yyjson::annotate(yyjson::field("tallies", yyjson::pattern_properties("^p$")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::PatternedOverlap> =
+    yyjson::annotate(yyjson::field("any", yyjson::pattern_properties("^p")),
+                     yyjson::field("tallies", yyjson::pattern_properties("^pq")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::KeyCounted> = yyjson::annotate(
+    yyjson::min_properties(2), yyjson::max_properties(3),
+    yyjson::property_names(yyjson::pattern("^[a-z_]+$"), yyjson::max_length(3)),
+    yyjson::any_of({yyjson::additional_properties(false), yyjson::property("a"), yyjson::property("b")},
+                   {yyjson::min_properties(3)}),
+    yyjson::field("p", yyjson::pattern_properties("^p_")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::KeyCountedExtra> = yyjson::annotate(
+    yyjson::min_properties(2), yyjson::max_properties(3), yyjson::property_names(yyjson::max_length(3)),
+    yyjson::field("p", yyjson::pattern_properties("^p_")), yyjson::field("rest", yyjson::extra_keys));
 
 namespace
 {
@@ -1064,6 +1176,8 @@ TEST(Schema, Defaults)
     EXPECT_EQ(narrowed["nested"]["default"], json::parse(R"([{"-100":1}])"));
     EXPECT_FALSE(narrowed["mixed"].contains("default"));
     EXPECT_EQ(narrowed["same"]["default"], json::parse(R"({"a":1,"b":2})"));
+    EXPECT_EQ(narrowed["checked"]["default"], json::parse(R"({"p":{"100":1}})"));
+    EXPECT_EQ(narrowed["checks"]["default"], json::parse(R"({"p":{"99":1}})"));
     check<Narrowed>({"{}"});
 }
 
@@ -1267,6 +1381,74 @@ TEST(Schema, Matches)
 {
     check<Matching>({R"({"j":{"x":1,"y":2},"w":[0,255]})", R"({"j":1})", R"({"j":{"x":1}})", R"({"w":[256]})",
                      R"({"w":[-1]})", R"({"w":["a"]})"});
+}
+
+TEST(Schema, ExtraKeys)
+{
+    check<ExtraKeyed>({R"({"name":"x","ab":1,"t_y":2.5})",
+                       R"({"ab":1})",
+                       R"({"name":"x","ab":-1})",
+                       R"({"name":"x","abcd":1})",
+                       R"({"name":"x","t_long":1})",
+                       R"({"name":"x","t_y":-60})",
+                       R"({"name":"x","t_x":-60})",
+                       R"({"name":"x","t_x":3})",
+                       {R"({"name":"x","t_x":null})", lenient_null},
+                       R"({"name":"x","ab":null})",
+                       R"({"name":"x","ab":"s"})",
+                       R"({"name":1})",
+                       R"({"name":"x","t_":null})"});
+}
+
+TEST(Schema, PatternKeys)
+{
+    const std::initializer_list<doc> docs = {R"({"l_b":3})",
+                                             R"({"l_b":6})",
+                                             R"({"l_bcd":1})",
+                                             R"({"l_b":null})",
+                                             R"({"l_a":null})",
+                                             R"({"l_a":7})",
+                                             R"({"l_a":3})",
+                                             R"({"ab":null})",
+                                             R"({"ab":[1]})",
+                                             R"({"h_a":5})",
+                                             R"({"h_a":null})",
+                                             R"({"h_a":6})",
+                                             R"({"x":1})",
+                                             R"({"x":"s"})",
+                                             R"({"X":"s"})",
+                                             R"({"l_b":1,"ab":2,"x":"y"})",
+                                             "{}"};
+    check<Patterned>(docs);
+    check<PatternedClosed>(docs);
+    check<PatternedExtra>(docs);
+    check<PatternedField>({R"({"p":[["a",1]]})", R"({"p":{"a":1}})", R"({"p":[["a","b"]]})", R"({"p":1})"});
+    check<PatternedStruct>({R"({"p":{"n":1}})", R"({"p":{}})", R"({"p":{"n":null}})", R"({"p":1})"});
+    check<PatternedOverlap>({R"({"pq":{"n":1}})", R"({"pq":{}})", R"({"pq":{"n":null}})", R"({"pr":{}})", "{}"});
+    EXPECT_THROW((void)yyjson::read<PatternedStruct>(R"({"p":{}})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<PatternedOverlap>(R"({"pq":{"n":null}})"), yyjson::bad_cast);
+}
+
+TEST(Schema, KeyCounts)
+{
+    check<KeyCounted>({R"({"a":1,"b":2})", R"({"a":1,"c":2})", R"({"a":1,"p_x":2})", R"({"a":1,"b":2,"c":3})",
+                       R"({"a":1,"b":2,"p_x":3})", R"({"a":1})", R"({"a":1,"b":2,"c":3,"d":4})",
+                       R"({"a":1,"bcde":1,"c":1})", R"({"a":1,"B":1,"c":1})", R"({"a":1,"p_xy":1,"c":1})", "{}"});
+    check<KeyCountedExtra>({R"({"a":1})", R"({"a":1,"b":null})", R"({"a":1,"p_x":2})", R"({"a":1,"b":1,"p_x":2})",
+                            R"({"a":1,"b":1,"c":2,"p_x":3})", R"({"a":1,"bcde":1})", R"({"a":1,"p_xyz":1})", "{}"});
+    EXPECT_EQ(definition<KeyCounted>(true)["minProperties"].as<int>(), 2);
+}
+
+TEST(Schema, KeyMapForm)
+{
+    EXPECT_EQ(schema<ExtraKeyed>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.ExtraKeyed":)"
+              R"({"type":"object","properties":{"name":{"type":"string","default":""},)"
+              R"("t_x":{"type":"integer","minimum":-2147483648,"maximum":2147483647}},"required":["name"],)"
+              R"("patternProperties":{"^t_":{"type":"number","minimum":-50,"maximum":1.7976931348623157e308}},)"
+              R"("additionalProperties":{"type":"integer","minimum":0,"maximum":2147483647},)"
+              R"("propertyNames":{"anyOf":[{"enum":["name","t_x"]},{"pattern":"^t_"},{"maxLength":3}]}}},)"
+              R"("$ref":"#/$defs/schema_test.ExtraKeyed"})");
 }
 
 // NOLINTEND

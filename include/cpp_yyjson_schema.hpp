@@ -480,6 +480,12 @@ namespace yyjson
             void emit_struct(object_ref out);
             template <typename S, std::size_t K>
             void emit_field(object_ref properties, std::vector<std::string_view>& required);
+            template <typename S, std::size_t R>
+            void emit_map_values(object_ref out);
+            template <typename S, std::size_t P>
+            void emit_pattern_values(object_ref out);
+            template <typename S>
+            void emit_key_names(object_ref out);
             template <typename T>
             void emit_range(object_ref out);
             template <typename T, typename E>
@@ -737,10 +743,6 @@ namespace yyjson
         void generator::emit_struct(object_ref out)
         {
             namespace yd = yyjson::detail;
-            static_assert(!yd::has_key_maps<S>,
-                          "C7d: yyjson::extra_keys and yyjson::pattern_properties are not emitted yet");
-            static_assert(!yd::struct_property_counts<S> && !yd::struct_property_names<S>,
-                          "C7d: the keywords of the keys of a struct are not emitted yet");
             static_assert(!yd::has_adjacent_fields<S>, "C7f: yyjson::adjacent_tag is not emitted yet");
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
@@ -753,12 +755,160 @@ namespace yyjson
                 auto keys = out.emplace("required", empty_array);
                 for (const auto key : required) keys.emplace_back(key);
             }
-            // the read rejects an unknown key as `struct_key_list::closed` decides it, and a read policy has no effect
-            // on the write
-            if (yd::struct_closed<S> ||
-                (!writing_ && ((policies_ | yd::struct_policies<S>)&yd::unknown_keys_policy) != 0))
+            if constexpr (yd::has_pattern_fields<S>)
+            {
+                auto patterns = out.emplace("patternProperties", empty_object);
+                [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                    (
+                        [&] {
+                            // both fields check the value of a key that their pattern matches
+                            constexpr auto pattern = yd::pattern_of<S, Ps>;
+                            auto target = [&] {
+                                if (auto it = patterns.find(pattern); it != patterns.end())
+                                {
+                                    auto v = it->second;
+                                    return conjunct(*v.as_object());
+                                }
+                                return patterns.emplace(pattern, empty_object, copy_string);
+                            }();
+                            emit_pattern_values<S, Ps>(target);
+                        }(),
+                        ...);
+                }(std::make_index_sequence<yd::pattern_count<S>>{});
+            }
+            // the map of `yyjson::extra_keys` takes the unknown keys under every policy; else the read rejects them as
+            // `struct_key_list::closed` decides it, and a read policy has no effect on the write
+            if constexpr (yd::has_extra_keys<S>)
+                emit_map_values<S, yd::extra_keys_index<S>>(out.emplace("additionalProperties", empty_object));
+            else if (yd::struct_closed<S> ||
+                     (!writing_ && ((policies_ | yd::struct_policies<S>)&yd::unknown_keys_policy) != 0))
                 out.emplace("additionalProperties", false);
+            emit_key_names<S>(out);
+            if constexpr (yd::struct_property_counts<S>)
+            {
+                constexpr const auto& c = yd::struct_count_schema<S>::constraints;
+                if constexpr (c.template has<yyjson::min_properties>())
+                    tighten(out, "minProperties", c.min_properties, true);
+                if constexpr (c.template has<yyjson::max_properties>())
+                    tighten(out, "maxProperties", c.max_properties, false);
+            }
             if constexpr (yd::has_struct_conditions<S>) emit_node<yd::node_schema<yd::struct_tree<S>, 0>, S, S>(out);
+        }
+
+        // The values of the map of the field R of S, by its index among all the fields, that receives keys of no
+        // field: of its mapped type, with its `yyjson::additional_properties`.
+        template <typename S, std::size_t R>
+        void generator::emit_map_values(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using schema = yd::extra_keys_schema<S, R>;
+            using E = typename yd::key_map_type<S, R>::mapped_type;
+            emit<E>(out);
+            if constexpr (schema::node.properties != 0)
+                emit_node<typename schema::template at<schema::node.properties>, E, S>(out);
+        }
+
+        // The values that the pattern P of S checks.  The pattern reads a value that it does not keep as `read` does,
+        // and a write gives such values from a field, a tag or an earlier pattern of another type that matches.
+        template <typename S, std::size_t P>
+        void generator::emit_pattern_values(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using E = typename yd::pattern_type<S, P>::mapped_type;
+            constexpr auto r = yd::pattern_field_indices<S>[P];
+            constexpr bool after_other = []<std::size_t... Qs>(std::index_sequence<Qs...>) {
+                return (!std::same_as<typename yd::pattern_type<S, Qs>::mapped_type, E> || ...);
+            }(std::make_index_sequence<P>{});
+            const auto checks_others = [] {
+                const auto& patterns = yd::key_patterns_of<S>();
+                const auto has = [](const auto& masks) {
+                    return std::ranges::any_of(masks, [](std::uint64_t m) { return (m >> P & 1) != 0; });
+                };
+                return after_other || has(patterns.fields) || has(patterns.tags);
+            };
+            if (!writing_ || !checks_others())
+            {
+                emit_map_values<S, r>(out);
+                return;
+            }
+            auto written = value(object());
+            emit_map_values<S, r>(*written.as_object());
+            auto read = value(object());
+            writing_ = false;
+            emit_map_values<S, r>(*read.as_object());
+            writing_ = true;
+            if (written.write() == read.write())
+                emit_map_values<S, r>(out);
+            else
+            {
+                auto any = out.emplace("anyOf", empty_array);
+                any.emplace_back(written);
+                any.emplace_back(read);
+            }
+        }
+
+        // The keys of S: its `yyjson::property_names` checks every key, that of the field of `yyjson::extra_keys` the
+        // keys that no field names and no pattern matches, and that of a field of `yyjson::pattern_properties` the
+        // keys that its pattern matches.
+        template <typename S>
+        void generator::emit_key_names(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            constexpr auto names_of = []<std::size_t R>(std::integral_constant<std::size_t, R>) {
+                return yd::extra_keys_schema<S, R>::node.keys != 0;
+            };
+            constexpr bool extra_names = [&] {
+                if constexpr (yd::has_extra_keys<S>)
+                    return names_of(std::integral_constant<std::size_t, yd::extra_keys_index<S>>());
+                else
+                    return false;
+            }();
+            constexpr bool pattern_names = [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                return (names_of(std::integral_constant<std::size_t, yd::pattern_field_indices<S>[Ps]>()) || ...);
+            }(std::make_index_sequence<yd::pattern_count<S>>{});
+            if constexpr (yd::struct_property_names<S> || extra_names || pattern_names)
+            {
+                const auto emit_keys = [&]<std::size_t R>(std::integral_constant<std::size_t, R>, object_ref o) {
+                    using schema = yd::extra_keys_schema<S, R>;
+                    emit_node<typename schema::template at<schema::node.keys>,
+                              typename yd::key_map_type<S, R>::key_type, S>(o);
+                };
+                auto names = out.emplace("propertyNames", empty_object);
+                if constexpr (yd::struct_property_names<S>)
+                    emit_node<yd::struct_names_schema<S>, std::string, S>(names);
+                if constexpr (extra_names)
+                {
+                    // a key passes if it does not go into the map
+                    auto any = place(names, "anyOf").emplace("anyOf", empty_array);
+                    if constexpr (yd::struct_field_count<S> != 0)
+                    {
+                        auto keys = any.emplace_back(empty_object).emplace("enum", empty_array);
+                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                            (keys.emplace_back(yd::struct_field_key<S, Ks>), ...);
+                        }(std::make_index_sequence<yd::struct_field_count<S>>{});
+                    }
+                    [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                        (any.emplace_back(empty_object).emplace("pattern", yd::pattern_of<S, Ps>, copy_string), ...);
+                    }(std::make_index_sequence<yd::pattern_count<S>>{});
+                    emit_keys(std::integral_constant<std::size_t, yd::extra_keys_index<S>>(),
+                              any.emplace_back(empty_object));
+                }
+                [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                    (
+                        [&] {
+                            constexpr auto r = yd::pattern_field_indices<S>[Ps];
+                            if constexpr (names_of(std::integral_constant<std::size_t, r>()))
+                            {
+                                auto holder = place(names, "if");
+                                holder.emplace("if", empty_object)
+                                    .emplace("pattern", yd::pattern_of<S, Ps>, copy_string);
+                                emit_keys(std::integral_constant<std::size_t, r>(),
+                                          holder.emplace("then", empty_object));
+                            }
+                        }(),
+                        ...);
+                }(std::make_index_sequence<yd::pattern_count<S>>{});
+            }
         }
 
         // Whether the read schema requires the key of the field K of S: the field declares no default.  The policies
@@ -787,6 +937,64 @@ namespace yyjson
         // Whether the read schema takes the written value `v` where it is narrower than the read: a tuple of pairs
         // whose values differ in type.
         template <typename T>
+        bool read_schema_takes(const T& v);
+        // Whether the read schema of E, the type of a pattern that does not keep the value, takes the written `v`.
+        template <typename E, typename V>
+        bool pattern_value_takes(const V& v)
+        {
+            namespace yd = yyjson::detail;
+            if constexpr (std::same_as<std::remove_cvref_t<decltype(yd::writable_field(v))>, E>)
+                return true;
+            else
+            {
+                try
+                {
+                    const auto json = yyjson::value(yd::writable_field(v));
+                    return read_schema_takes(
+                        json.template cast<E>(yyjson::reject_missing_keys, yyjson::reject_null_as_missing));
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
+                catch (const std::exception&)
+                {
+                    return false;
+                }
+            }
+        }
+        // Whether the read schema of each pattern of S takes the written values of the keys that it matches and that
+        // a field or an earlier pattern keeps.
+        template <typename S>
+        bool patterns_take(const S& s)
+        {
+            namespace yd = yyjson::detail;
+            const auto check = [&]<typename V>(std::uint64_t mask, const V& v) {
+                return [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                    return ((((mask >> Ps & 1) == 0) ||
+                             pattern_value_takes<typename yd::pattern_type<S, Ps>::mapped_type>(v)) &&
+                            ...);
+                }(std::make_index_sequence<yd::pattern_count<S>>{});
+            };
+            const auto& fields = yd::key_patterns_of<S>().fields;
+            const bool fields_taken = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return ([&] {
+                    decltype(auto) field = yd::writable_field(yd::struct_field<Ks>(s));
+                    if constexpr (yd::omittable<decltype(field)>)
+                        if (yd::should_omit_field(field)) return true;
+                    return check(fields[Ks], yd::struct_field<Ks>(s));
+                }() && ...);
+            }(std::make_index_sequence<yd::struct_field_count<S>>{});
+            return fields_taken && [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                return ([&] {
+                    for (const auto& kv : yd::pattern_field<Ps>(s))
+                        if (!check(yd::pattern_mask<S>(std::string_view(std::get<0>(kv)), Ps + 1), std::get<1>(kv)))
+                            return false;
+                    return true;
+                }() && ...);
+            }(std::make_index_sequence<yd::pattern_count<S>>{});
+        }
+        template <typename T>
         bool read_schema_takes(const T& v)
         {
             namespace yd = yyjson::detail;
@@ -795,9 +1003,24 @@ namespace yyjson
             else if constexpr (yd::indirect_value<T>)
                 return v.valueless_after_move() || read_schema_takes(*v);
             else if constexpr (struct_type<T>)
+            {
+                const auto map_takes = [](const auto& map) {
+                    for (const auto& kv : map)
+                        if (!read_schema_takes(std::get<1>(kv))) return false;
+                    return true;
+                };
+                const bool patterns = [&] {
+                    if constexpr (yd::has_pattern_fields<T>)
+                        return patterns_take(v);
+                    else
+                        return true;
+                }();
                 return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return (read_schema_takes(yd::struct_field<Ks>(v)) && ...);
-                }(std::make_index_sequence<yd::struct_field_count<T>>{});
+                }(std::make_index_sequence<yd::struct_field_count<T>>{}) &&
+                       std::apply([&](const auto&... maps) { return (map_takes(maps) && ...); }, yd::key_maps_of(v)) &&
+                       patterns;
+            }
             else if constexpr (primitive_type<T> || std::is_enum_v<T> || std::same_as<T, std::vector<bool>>)
                 return true;
             else if constexpr (std::ranges::range<T>)

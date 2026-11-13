@@ -20117,7 +20117,11 @@ namespace yyjson
             check_extra_key<S, r>(key, json);
             if constexpr (dom_kind_of<E> != dom_kind::value || extra_keys_schema<S, r>::node.properties != 0)
             {
-                const auto e = cast_nested<E>(json);
+                const auto e = [&] {
+                    // no field keeps the value, so a missing key or a null has nothing to leave unset
+                    const auto scope = read_policy_scope(missing_keys_policy | null_as_missing_policy);
+                    return cast_nested<E>(json);
+                }();
                 check_extra_value<S, r>(e, key, json);
             }
         }
@@ -25282,6 +25286,20 @@ namespace yyjson
         };
         template <typename T>
         constexpr bool policy_sensitive = graph_search(&graph_node<policy_read_type_node<std::remove_cv_t<T>>>);
+        // Whether a value of T may read otherwise under `missing_keys_policy` and `null_as_missing_policy`: it may
+        // hold a struct, or a value that `reads_by_policies`.
+        template <typename T>
+        struct absence_read_type_node;
+        template <typename... Us>
+        auto absence_read_type_nodes(type_list<read_type_node<Us>...>) -> type_list<absence_read_type_node<Us>...>;
+        template <typename T>
+        struct absence_read_type_node
+        {
+            using edges = decltype(absence_read_type_nodes(typename read_type_node<T>::edges{}));
+            static constexpr bool marked = reflectable<T> || visitable<T> || reads_by_policies<T>;
+        };
+        template <typename T>
+        constexpr bool absence_sensitive = graph_search(&graph_node<absence_read_type_node<std::remove_cv_t<T>>>);
 
         template <typename V>
         [[noreturn]] CPPYYJSON_COLD void throw_one_of_matches(cast_target at, std::size_t i, std::size_t j)
@@ -29317,6 +29335,7 @@ namespace yyjson
             const auto e = [&] {
                 try
                 {
+                    const auto scope = d::read_policy_scope(d::missing_keys_policy | d::null_as_missing_policy);
                     return d::cast_nested<E>(json);
                 }
                 catch (const bad_cast& x)
@@ -37251,12 +37270,16 @@ namespace yyjson
                 }
             }
             template <typename T, std::size_t P, typename E>
-            static bool pattern_takes_value(std::string_view key, const E& e)
+            bool pattern_takes_value(std::string_view key, const E& e)
             {
                 namespace d = yyjson::detail;
                 constexpr auto r = d::pattern_field_indices<T>[P];
+                constexpr auto counting = d::missing_keys_policy | d::null_as_missing_policy;
                 if constexpr (!std::same_as<E, typename d::pattern_type<T, P>::mapped_type> ||
                               d::extra_values_count_input<T, r>())
+                    return false;
+                else if (d::absence_sensitive<E> && (policies_ & counting) != counting)
+                    // the pattern reads its value under both policies, which `e` may not have taken
                     return false;
                 else
                     return d::extra_key_violation<T, r>(key) == d::constraint_kind::none &&

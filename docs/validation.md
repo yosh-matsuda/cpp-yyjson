@@ -124,6 +124,7 @@ yyjson::read<Sensor>(R"({"name":"s1","t_out":-60})");
 
 *   A key that no field and no tag names goes into the map of the first field whose pattern matches it. The fields are in the order of the members. The field of `yyjson::extra_keys` receives a key that no pattern matches. Without that field, the key is unknown.
 *   Each pattern that matches a key checks it, as in JSON Schema. A later pattern checks the value of the key, and its `yyjson::property_names` checks the key. The key does not go into its map.
+*   A pattern reads a value that it does not keep under `yyjson::reject_missing_keys` and `yyjson::reject_null_as_missing`, as an alternative of `yyjson::one_of` does. Thus a struct in the value must have each key of a field without a default. The map that keeps the value reads it under the policies of the read.
 *   A pattern can match the key of a field or of a tag. The field reads the value, and the pattern checks the value too. When the value is `null` and the field reads it as missing, no pattern checks it.
 *   The patterns that match the key of each field are found once for each type. A read matches only the other keys.
 *   A `null` in the object is a value of the map, as for `yyjson::extra_keys`. A map of `int` rejects it.

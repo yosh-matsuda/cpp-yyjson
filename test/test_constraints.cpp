@@ -2532,6 +2532,23 @@ struct PatternRest
 template <>
 inline constexpr auto yyjson::annotations<PatternRest> =
     yyjson::annotate(yyjson::field("a", yyjson::pattern_properties("^a")), yyjson::field("rest", yyjson::extra_keys));
+// a pattern reads a value that it does not keep under reject_missing_keys and reject_null_as_missing
+struct PatternPoint
+{
+    int x = 0;
+    bool operator==(const PatternPoint&) const = default;
+};
+struct PatternStrict
+{
+    std::map<std::string, PatternPoint> a;
+    std::map<std::string, PatternPoint> b;
+    std::map<std::string, yyjson::value> v;
+    bool operator==(const PatternStrict&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternStrict> = yyjson::annotate(
+    yyjson::field("a", yyjson::pattern_properties("^a")), yyjson::field("b", yyjson::pattern_properties("b$")),
+    yyjson::field("v", yyjson::pattern_properties("^v")));
 struct PatternClosed
 {
     std::map<std::string, yyjson::value> x;
@@ -5602,6 +5619,16 @@ TEST(Constraints, PatternProperties)
     expect_rejected<PatternTaggedShared>(R"({"kind":"i","x":1})", "int is not constructible from JSON string", "/kind");
     for (const auto json : {R"({"kind":"i","data":1})", R"({"data":1,"kind":"i"})"})
         expect_rejected<PatternAdjacent>(json, "int is not constructible from JSON string", "/kind");
+
+    // a pattern that does not keep the value reads it under reject_missing_keys and reject_null_as_missing
+    expect_accepted<PatternStrict>(R"({"ax":{}})", {{{"ax", {}}}, {}, {}});
+    expect_accepted<PatternStrict>(R"({"ab":{"x":1}})", {{{"ab", {1}}}, {}, {}}, false);
+    expect_rejected<PatternStrict>(R"({"ab":{}})", R"(PatternPoint is not constructible from JSON without the key "x")",
+                                   "/ab", false);
+    expect_rejected<PatternStrict>(R"({"vb":{"x":null}})", "int is not constructible from JSON null", "/vb/x", false);
+    EXPECT_EQ(
+        yyjson::read<PatternStrict>(R"({"ab":{"x":1}})", yyjson::reject_missing_keys, yyjson::reject_null_as_missing),
+        (PatternStrict{{{"ab", {1}}}, {}, {}}));
 
     // the struct inside other types
     expect_accepted<PatternHolder>(
