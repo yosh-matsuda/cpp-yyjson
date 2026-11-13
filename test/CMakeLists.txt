@@ -85,6 +85,28 @@ target_link_libraries(
 target_compile_options("${PROJECT_NAME}_test_schema"
                        PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
+# a unit that reads a check of yyjson::matches without the schema header, linked before and after one that has it
+add_library("${PROJECT_NAME}_schema_units_read" OBJECT
+            test_schema_units_read.cpp)
+add_library("${PROJECT_NAME}_schema_units" OBJECT test_schema_units.cpp)
+foreach(target IN ITEMS "${PROJECT_NAME}_schema_units_read"
+                        "${PROJECT_NAME}_schema_units")
+  target_link_libraries("${target}" PRIVATE ${PROJECT_NAME} GTest::gtest)
+endforeach()
+add_executable(
+  "${PROJECT_NAME}_test_schema_units"
+  $<TARGET_OBJECTS:${PROJECT_NAME}_schema_units_read>
+  $<TARGET_OBJECTS:${PROJECT_NAME}_schema_units>)
+add_executable(
+  "${PROJECT_NAME}_test_schema_units_reversed"
+  $<TARGET_OBJECTS:${PROJECT_NAME}_schema_units>
+  $<TARGET_OBJECTS:${PROJECT_NAME}_schema_units_read>)
+foreach(target IN ITEMS "${PROJECT_NAME}_test_schema_units"
+                        "${PROJECT_NAME}_test_schema_units_reversed")
+  target_link_libraries("${target}" PRIVATE ${PROJECT_NAME} GTest::gtest
+                                            GTest::gtest_main)
+endforeach()
+
 # JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule
 add_executable("${PROJECT_NAME}_test_conformance" test_conformance.cpp)
 target_link_libraries("${PROJECT_NAME}_test_conformance"
@@ -115,6 +137,9 @@ include(GoogleTest)
 gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_schema" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_schema_units" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_schema_units_reversed" DISCOVERY_MODE
+                     PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_conformance" DISCOVERY_MODE PRE_TEST)
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   gtest_discover_tests("${PROJECT_NAME}_test_depth_limit" DISCOVERY_MODE

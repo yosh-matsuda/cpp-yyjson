@@ -2329,6 +2329,188 @@ namespace yyjson
     format_assertion(const char (&)[N]) -> format_assertion<N>;
 #endif
 
+    // The title and the description of a field, a type or an alternative of `yyjson::alt` in the JSON Schema that
+    // `yyjson::json_schema` of cpp_yyjson_schema.hpp generates: `yyjson::field("member", yyjson::title("..."))` or
+    // `yyjson::annotate(yyjson::description("..."))`.  They do not change how the value is read or written.
+    template <std::size_t N = 0>
+    struct title
+    {
+        detail::setting_string<N> text_string;
+
+        consteval explicit title(std::string_view text)
+        requires (N == 0)
+            : text_string(text)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit title(const char (&text)[K]) : text_string(text)
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return text_string.view(); }
+    };
+    title(std::string_view) -> title<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    title(const char (&)[N]) -> title<N>;
+#endif
+    template <std::size_t N = 0>
+    struct description
+    {
+        detail::setting_string<N> text_string;
+
+        consteval explicit description(std::string_view text)
+        requires (N == 0)
+            : text_string(text)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit description(const char (&text)[K]) : text_string(text)
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return text_string.view(); }
+    };
+    description(std::string_view) -> description<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    description(const char (&)[N]) -> description<N>;
+#endif
+
+    // JSON Schema's `deprecated`, `readOnly` and `writeOnly` of a field, a type or an alternative.  They do not
+    // change how the value is read or written.
+    struct deprecated_t
+    {
+    };
+    inline constexpr deprecated_t deprecated{};
+    struct read_only_t
+    {
+    };
+    inline constexpr read_only_t read_only{};
+    struct write_only_t
+    {
+    };
+    inline constexpr write_only_t write_only{};
+
+    // Examples of the value of a field, a type or an alternative, each in JSON text, as JSON Schema's `examples`:
+    // `yyjson::examples(R"({"x":1})", "42")`.  `yyjson::json_schema` checks that `read<T>` reads each of them.  Before
+    // C++26 it holds the L characters of the texts that are string literals, as `detail::setting_string` tells.
+    template <std::size_t N, std::size_t L = 0>
+    struct examples_t
+    {
+        std::array<detail::tree_string, N> texts = {};
+        detail::char_pool<L> chars = {};
+
+        [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
+        [[nodiscard]] constexpr std::string_view text(std::size_t i) const noexcept { return chars.view(texts[i]); }
+    };
+    template <typename... Ss>
+    requires (sizeof...(Ss) != 0) && (std::convertible_to<const Ss&, std::string_view> && ...)
+    consteval examples_t<sizeof...(Ss), detail::literal_sizes<Ss...>> examples(const Ss&... texts)
+    {
+        auto result = examples_t<sizeof...(Ss), detail::literal_sizes<Ss...>>{};
+        std::size_t i = 0;
+        (
+            [&]<typename S>(const S& text) consteval {
+                if constexpr (detail::literal_size<S> != 0)
+                    result.texts[i++] = result.chars.add(detail::setting_string(text).view());
+                else
+                {
+                    const auto view = std::string_view(text);
+                    result.texts[i++] = {detail::static_string(view), view.size()};
+                }
+            }(texts),
+            ...);
+        return result;
+    }
+
+    // A JSON Schema text that replaces the derived schema of a field, a type or an alternative, in both directions or
+    // in each one by `{.read = "...", .write = "..."}`, where a direction left out is derived.  No read or write
+    // checks the text.  `yyjson::alt` takes it by a pointer to a constexpr variable.
+    struct schema
+    {
+        struct directions
+        {
+            std::string_view read = {};
+            std::string_view write = {};
+        };
+
+        const char* read_data = nullptr;
+        std::size_t read_size = 0;
+        const char* write_data = nullptr;
+        std::size_t write_size = 0;
+
+        consteval explicit schema(std::string_view text) : schema(directions{text, text}) {}
+        consteval explicit schema(directions d)
+            : read_data(d.read.empty() ? nullptr : detail::static_string(d.read)),
+              read_size(d.read.size()),
+              write_data(d.write.empty() ? nullptr : detail::static_string(d.write)),
+              write_size(d.write.size())
+        {
+            if (d.read.empty() && d.write.empty()) throw "yyjson::schema has no schema";
+        }
+
+        // Whether the direction has a text, or is derived.
+        [[nodiscard]] constexpr bool has(bool writing) const noexcept
+        {
+            return (writing ? write_data : read_data) != nullptr;
+        }
+        [[nodiscard]] constexpr std::string_view text(bool writing) const noexcept
+        {
+            return writing ? std::string_view(write_data, write_size) : std::string_view(read_data, read_size);
+        }
+    };
+
+    // An object in JSON text whose members `yyjson::json_schema` adds to the schema that it derives for a field, a
+    // type or an alternative, in both directions: `yyjson::schema_extend(R"({"x-unit":"m"})")`.  A member replaces
+    // the keyword of the same key, so the schema can then disagree with the read.
+    template <std::size_t N = 0>
+    struct schema_extend
+    {
+        detail::setting_string<N> text_string;
+
+        consteval explicit schema_extend(std::string_view text)
+        requires (N == 0)
+            : text_string(text)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit schema_extend(const char (&text)[K]) : text_string(text)
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return text_string.view(); }
+    };
+    schema_extend(std::string_view) -> schema_extend<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    schema_extend(const char (&)[N]) -> schema_extend<N>;
+#endif
+
+    // The name of a struct, an enumeration, a variant or a type with a caster in `$defs` of the JSON Schema:
+    // `yyjson::annotate(yyjson::schema_name("Person"))`.  It has only the characters `[A-Za-z0-9._-]`, which OpenAPI
+    // takes.  A variant or a type with a caster that has it goes to `$defs`.  It does not change the read or the write.
+    struct schema_name
+    {
+        const char* text_data = nullptr;
+        std::size_t text_size = 0;
+
+        consteval explicit schema_name(std::string_view text)
+            : text_data(detail::static_string(text)), text_size(text.size())
+        {
+            if (text.empty()) throw "yyjson::schema_name is empty";
+            for (const auto c : text)
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+                      c == '_' || c == '-'))
+                    throw "yyjson::schema_name has a character other than [A-Za-z0-9._-]";
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return {text_data, text_size}; }
+    };
+
     // The checker of the formats that the library does not check, which the program specializes: constructible
     // from the name of the format, and callable with a `std::string_view` to tell whether the string has the format.
     template <typename = void>
@@ -2714,10 +2896,51 @@ namespace yyjson
         {
             using type = enum_<0>;
         };
+        template <std::size_t N>
+        struct setting_type<title<N>>
+        {
+            using type = title<>;
+        };
+        template <std::size_t N>
+        struct setting_type<description<N>>
+        {
+            using type = description<>;
+        };
+        template <std::size_t N>
+        struct setting_type<schema_extend<N>>
+        {
+            using type = schema_extend<>;
+        };
+        template <std::size_t N, std::size_t L>
+        struct setting_type<examples_t<N, L>>
+        {
+            using type = examples_t<0>;
+        };
         template <typename A>
         using setting_type_t = typename setting_type<A>::type;
         template <typename A, typename B>
         concept setting_of = std::same_as<setting_type_t<A>, B>;
+
+        // The settings that only describe a value in the JSON Schema, which the read and the write ignore.
+        template <typename A>
+        concept metadata_setting =
+            setting_of<A, title<>> || setting_of<A, description<>> || std::same_as<A, deprecated_t> ||
+            std::same_as<A, read_only_t> || std::same_as<A, write_only_t> || setting_of<A, examples_t<0>> ||
+            std::same_as<A, schema> || setting_of<A, schema_extend<>>;
+        // The settings that describe a type in the JSON Schema: its metadata and its name.
+        template <typename A>
+        concept type_metadata_setting = metadata_setting<A> || std::same_as<A, schema_name>;
+        // Whether the settings As give each kind of metadata at most once.
+        template <typename... As>
+        inline constexpr bool metadata_once = ((setting_of<As, title<>> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((setting_of<As, description<>> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((std::same_as<As, deprecated_t> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((std::same_as<As, read_only_t> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((std::same_as<As, write_only_t> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((setting_of<As, examples_t<0>> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((std::same_as<As, schema> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((setting_of<As, schema_extend<>> ? 1 : 0) + ... + 0) <= 1 &&
+                                              ((std::same_as<As, schema_name> ? 1 : 0) + ... + 0) <= 1;
 
         // The constraints of the value of a field, one bit each.
         template <typename A>
@@ -2896,7 +3119,7 @@ namespace yyjson
         // Fails to compile if the settings As of a subschema hold the tag `yyjson::required` or `yyjson::field`,
         // which only `yyjson::annotate` takes.
         template <typename... As>
-        consteval bool check_subschema_settings()
+        consteval bool check_subschema_forms()
         {
             static_assert(!(std::same_as<As, required_t> || ...),
                           "the tag yyjson::required marks a field only in yyjson::field(\"member\", ...) and on a "
@@ -2908,10 +3131,20 @@ namespace yyjson
                           "yyjson::required(\"key\") tells that an object has the key");
             return true;
         }
+        template <typename... As>
+        consteval bool check_subschema_settings()
+        {
+            static_assert(check_subschema_forms<As...>());
+            static_assert(!(type_metadata_setting<As> || ...),
+                          "yyjson::title, description, deprecated, read_only, write_only, examples, schema and "
+                          "schema_extend describe a field, a type or an alternative of yyjson::alt, not an element, a "
+                          "key or a subschema; yyjson::schema_name names a type in yyjson::annotate");
+            return true;
+        }
         // The settings that a subschema takes, or that `check_subschema_settings` rejects with its own message.
         template <typename A>
-        concept subschema_argument =
-            subschema_setting<A> || std::same_as<A, required_t> || is_field_annotation<A>::value;
+        concept subschema_argument = subschema_setting<A> || std::same_as<A, required_t> ||
+                                     is_field_annotation<A>::value || type_metadata_setting<A>;
     }  // namespace detail
 
     // The settings that a value must not satisfy all together, as JSON Schema's `not`:
@@ -3578,7 +3811,7 @@ namespace yyjson
             std::same_as<A, required_t> || std::same_as<A, default_t> || std::same_as<A, emit_defaults_t> ||
             std::same_as<A, default_from_t> || std::same_as<A, extra_items_t> || std::same_as<A, extra_keys_t> ||
             std::same_as<A, pattern_properties> || constraint_setting<A> || object_subschema_setting<A> ||
-            member_annotation<A>;
+            member_annotation<A> || metadata_setting<A>;
 
         template <std::size_t I, typename A>
         struct annotation_leaf
@@ -3619,11 +3852,19 @@ namespace yyjson
                           "yyjson::field names a member only directly in yyjson::annotate: in it, "
                           "yyjson::property(\"key\", ...) gives the keywords of the value of a key of the field, and "
                           "yyjson::required(\"key\") tells that its object has the key");
-            static_assert(((field_setting<As> || is_field_annotation<As>::value) && ...),
-                          "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::adjacent_tag, yyjson::required, "
-                          "yyjson::default_, yyjson::default_from, yyjson::emit_defaults, yyjson::extra_items, "
-                          "yyjson::extra_keys, yyjson::pattern_properties and the keywords of the value, such as "
-                          "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::property(\"key\", ...)");
+            static_assert(!(std::same_as<As, schema_name> || ...),
+                          "yyjson::schema_name names a type in yyjson::annotate, not a field");
+            static_assert(
+                ((field_setting<As> || is_field_annotation<As>::value || std::same_as<As, schema_name>) && ...),
+                "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::adjacent_tag, yyjson::required, "
+                "yyjson::default_, yyjson::default_from, yyjson::emit_defaults, yyjson::extra_items, "
+                "yyjson::extra_keys, yyjson::pattern_properties, the keywords of the value, such as "
+                "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::property(\"key\", ...), and "
+                "the metadata yyjson::title, description, deprecated, read_only, write_only, examples, "
+                "schema and schema_extend");
+            static_assert(!(std::same_as<As, schema> || ...) || !(setting_of<As, schema_extend<>> || ...),
+                          "yyjson::schema replaces the schema that yyjson::schema_extend extends: give one of them");
+            static_assert(metadata_once<As...>, "a field takes each of its metadata once");
             return true;
         }
     }  // namespace detail
@@ -3811,12 +4052,71 @@ namespace yyjson
                         std::same_as<As, additional_properties<bool>> || struct_count_setting<As> ||
                         setting_of<As, property_names<>> || read_policy<As> || combinator_setting<As> ||
                         presence_setting<As> || member_annotation<As> || required_keys_setting<As> ||
-                        array_struct_setting<As> || internal_tag_annotation<As> || enum_annotation<As>)...> ==
-            sizeof...(As);
+                        array_struct_setting<As> || internal_tag_annotation<As> || enum_annotation<As> ||
+                        type_metadata_setting<As>)...> == sizeof...(As);
+
+        template <typename A>
+        inline constexpr bool holds_metadata = type_metadata_setting<A>;
+        template <std::size_t N, typename... As>
+        inline constexpr bool holds_metadata<field_annotation<N, As...>> = (metadata_setting<As> || ...);
+        template <typename A>
+        inline constexpr bool holds_kept = !type_metadata_setting<A>;
+        template <std::size_t N, typename... As>
+        inline constexpr bool holds_kept<field_annotation<N, As...>> =
+            sizeof...(As) == 0 || (!metadata_setting<As> || ...);
+
+        // The settings of a `yyjson::field` that are metadata if `Metadata`, or else the others.
+        template <bool Metadata, std::size_t N, typename... As, std::size_t... Is>
+        consteval auto field_part(const field_annotation<N, As...>& f, std::index_sequence<Is...>)
+        {
+            const auto parts = std::tuple_cat([&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                using A = std::tuple_element_t<I, std::tuple<As...>>;
+                if constexpr (metadata_setting<A> == Metadata)
+                    return std::tuple<A>(annotation_at<I>(f.values));
+                else
+                    return std::tuple<>();
+            }(std::integral_constant<std::size_t, Is>())...);
+            return std::apply(
+                [&]<typename... Ps>(const Ps&... ps) {
+                    return field_annotation<N, Ps...>{f.member_string,
+                                                      annotation_values<std::index_sequence_for<Ps...>, Ps...>(ps...)};
+                },
+                parts);
+        }
+        // The settings of `annotate(a)` that the read and the write take if not `Metadata`, or else its metadata.
+        template <bool Metadata, typename A>
+        consteval auto annotation_part(const A& a)
+        {
+            if constexpr (!(Metadata ? holds_metadata<A> : holds_kept<A>))
+                return std::tuple<>();
+            else if constexpr (is_field_annotation<A>::value && holds_metadata<A>)
+                return std::tuple(
+                    field_part<Metadata>(a, std::make_index_sequence<std::tuple_size_v<typename A::value_types>>()));
+            else
+                return std::tuple<A>(a);
+        }
+        template <typename Tuple>
+        consteval auto make_annotation_values(const Tuple& t)
+        {
+            return std::apply(
+                []<typename... Ps>(const Ps&... ps) {
+                    return annotation_values<std::index_sequence_for<Ps...>, Ps...>(ps...);
+                },
+                t);
+        }
+        template <typename Values, typename Kept>
+        struct described_annotations;
+        // The settings of `annotate(...)` that has metadata, which the read and the write never see: they take the
+        // base, which has the other settings, and cpp_yyjson_schema.hpp reads `metadata`.
+        template <typename Values, typename... Kept>
+        struct described_annotations<Values, std::tuple<Kept...>> : annotation_list<Kept...>
+        {
+            Values metadata;
+        };
     }  // namespace detail
 
     template <typename... As>
-    consteval detail::annotation_list<As...> annotate(As... values)
+    consteval auto annotate(As... values)
     {
         static_assert(detail::count_true<std::same_as<detail::setting_type_t<As>, additional_properties<>>...> == 0,
                       "yyjson::additional_properties takes only false for a struct: with the keywords of the "
@@ -3835,10 +4135,24 @@ namespace yyjson
                       "all_of, any_of and one_of for a struct, "
                       "yyjson::min_items, max_items, unique_items, contains, min_contains and max_contains for a "
                       "struct annotated with yyjson::as_array, "
-                      "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
-                      "enumeration");
-        return detail::annotation_list<As...>{
-            detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
+                      "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
+                      "enumeration, and the metadata yyjson::title, description, deprecated, read_only, write_only, "
+                      "examples, schema, schema_extend and schema_name");
+        static_assert(detail::count_true<std::same_as<As, schema>...> == 0 ||
+                          detail::count_true<detail::setting_of<As, schema_extend<>>...> == 0,
+                      "yyjson::schema replaces the schema that yyjson::schema_extend extends: give one of them");
+        static_assert(detail::metadata_once<As...>, "yyjson::annotate takes each metadata of the type once");
+        if constexpr (!(detail::holds_metadata<As> || ...))
+            return detail::annotation_list<As...>{
+                detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
+        else
+        {
+            const auto kept = std::tuple_cat(detail::annotation_part<false>(values)...);
+            const auto metadata = std::tuple_cat(detail::annotation_part<true>(values)...);
+            using result = detail::described_annotations<decltype(detail::make_annotation_values(metadata)),
+                                                         std::remove_cvref_t<decltype(kept)>>;
+            return result{{detail::make_annotation_values(kept)}, detail::make_annotation_values(metadata)};
+        }
     }
 
     // The settings of the conversion of T.  A specialization, which comes before the first use of T, is
@@ -8253,9 +8567,9 @@ namespace yyjson
         template <auto S>
         using alternative_setting_t = std::remove_cvref_t<decltype(alternative_setting_value<S>())>;
 
-        // The settings that `yyjson::alt` takes: those of the value of a field.
+        // The settings that `yyjson::alt` takes: those of the value of a field, and the metadata.
         template <typename A>
-        concept alternative_setting = subschema_setting<A>;
+        concept alternative_setting = subschema_setting<A> || metadata_setting<A>;
 
         template <typename A>
         inline constexpr bool is_alt = false;
@@ -8274,7 +8588,8 @@ namespace yyjson
         struct alternative_traits<alt<T, Settings...>>
         {
             using type = T;
-            static constexpr bool constrained = sizeof...(Settings) != 0;
+            // the metadata does not change the read
+            static constexpr bool constrained = count_true<!metadata_setting<alternative_setting_t<Settings>>...> != 0;
         };
         template <typename A>
         using alternative_type_t = typename alternative_traits<A>::type;
@@ -8285,7 +8600,15 @@ namespace yyjson
         {
             auto b = tree_builder{};
             build_schema_node(
-                b, [](const auto& f) { (f(alternative_setting_value<Settings>()), ...); },
+                b,
+                [](const auto& f) {
+                    (
+                        [&] {
+                            if constexpr (!metadata_setting<alternative_setting_t<Settings>>)
+                                f(alternative_setting_value<Settings>());
+                        }(),
+                        ...);
+                },
                 [](std::string_view s) { return tree_string{s.data(), s.size()}; });
             return b;
         }
@@ -9900,14 +10223,23 @@ namespace yyjson
                                   "yyjson::alt takes settings, or pointers to constexpr variables that hold them");
                     if constexpr (std::ranges::all_of(arguments, std::identity{}))
                     {
-                        static_assert(check_subschema_settings<alternative_setting_t<Settings>...>());
+                        static_assert(check_subschema_forms<alternative_setting_t<Settings>...>());
+                        static_assert(!(std::same_as<alternative_setting_t<Settings>, schema_name> || ...),
+                                      "yyjson::schema_name names a type in yyjson::annotate, not an alternative");
+                        static_assert(
+                            count_true<std::same_as<alternative_setting_t<Settings>, schema>...> == 0 ||
+                                count_true<setting_of<alternative_setting_t<Settings>, schema_extend<>>...> == 0,
+                            "yyjson::schema replaces the schema that yyjson::schema_extend extends: give "
+                            "one of them");
+                        static_assert(metadata_once<alternative_setting_t<Settings>...>,
+                                      "yyjson::alt takes each of its metadata once");
                         constexpr bool settings[] = {true, subschema_argument<alternative_setting_t<Settings>>...};
                         static_assert(std::ranges::all_of(settings, std::identity{}),
                                       "yyjson::alt takes the settings of the value of a field, "
                                       "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...), but no "
                                       "setting of a member, such as yyjson::rename or yyjson::default_");
                         constexpr bool taken[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
-                        if constexpr (sizeof...(Settings) != 0 && std::ranges::all_of(taken, std::identity{}))
+                        if constexpr (alternative_traits<A>::constrained && std::ranges::all_of(taken, std::identity{}))
                             (void)checked_tree<&build_alternative_tree<Settings...>>::tree;
                     }
                     return true;

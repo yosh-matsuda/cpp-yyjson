@@ -118,7 +118,7 @@ The output:
 *   Each struct and each enumeration is a definition in `$defs`. The root refers to the definition of `T` with `$ref`.
 *   A field takes the keywords of its type and of its [constraints](validation.md#constraints). The keyword names are in [JSON Schema keywords](validation.md#json-schema-keywords).
 *   A number type gives the bounds of its type, such as the `maximum` of `double`.
-*   A field that has a value in `T()` gives that value as `default`. See [Required keys and defaults](#required-keys-and-defaults).
+*   A field that has a value in `T()` gives that value as `default`. A member initializer, such as `double price = 0`, is not a declared default, so the key of `price` is still required. See [Required keys and defaults](#required-keys-and-defaults).
 *   `json_schema<T>(yyjson::write_direction)` gives the write schema. For `shop::Item`, it is the same as the read schema.
 
 To get the text of one definition, read it from `$defs`:
@@ -169,6 +169,8 @@ yyjson::json_schema<Account>(yyjson::write_direction, yyjson::emit_defaults);
 
 The two directions also differ where the conversion is not symmetric. A [translator](conversions.md#translator) reads one type and writes another. Its read schema gives the type that `from_json` takes. Its write schema gives the type that `to_json` returns.
 
+*   An object read into a tuple or a `std::array` of key-value pairs whose value types differ. The read schema requires each value to satisfy every value type. For example, `std::tuple<std::pair<std::string, int>, std::pair<std::string, std::string>>` reads `{"a":1,"b":"x"}`, and its read schema rejects it.
+*   A [caster](#casters) that rejects some values of the type that its `from_json` takes. The schema describes that type. For example, a `from_json(const std::string&)` that throws for `"abc"` gives `{"type":"string"}`, and the read rejects `"abc"`. Give the rest of the schema with [`yyjson::schema_extend`](#declared-schemas).
 ## Required keys and defaults
 
 A field has a declared default when it has `yyjson::default_` or `yyjson::default_from<f>`, or when it is a `std::optional`. See [Default values and required keys](conversions.md#default-values-and-required-keys). A default member initializer, such as `double price = 0`, is not a declared default.
@@ -183,6 +185,131 @@ Each schema gives `default` for each field, also for a required key. The value i
 *   The field is a `std::optional` that is empty in `T()`.
 *   The field has `yyjson::required`.
 *   The value violates a constraint of the field, such as an empty string with `yyjson::min_length(1)`.
+*   The declared default is a [sentinel](conversions.md#default-values-and-required-keys). The key is then not required either.
+*   The value cannot be written, such as infinity, or a read under `yyjson::strict` and `yyjson::reject_unknown_keys` rejects its written text. The type of the field cannot be written, such as a `std::chrono` duration.
+*   `T` has no default constructor, and the field has no declared default.
+*   The field has a text of `yyjson::schema(...)` for the direction of the schema. The text replaces the whole schema of the field, and it can give its own `default`.
+
+## Names of types
+
+The schema puts each struct and each enumeration in `$defs`. The name of the definition comes from the name of the C++ type. Each `::` becomes `.`, and each other character outside `[A-Za-z0-9._-]` becomes `_`. For example, `ns::Box<int>` gives `ns.Box_int_`.
+
+Give a name with `yyjson::schema_name("Name")` in the [annotations](conversions.md#annotations) of a struct, an enumeration, a variant or a type with a caster. Only a variant or a type with a caster that has a name goes to `$defs`. The name can hold only the characters `[A-Za-z0-9._-]`. Another character or an empty name is a compile error. Two types with the same name make `json_schema` throw `std::invalid_argument`.
+
+The schema can give one type more than one definition:
+
+*   A struct whose keywords see the key of an [internal tag](conversions.md#internal-tag) takes the definition `Name-key`, where `key` is the key of the tag. For example, an alternative with `yyjson::additional_properties(false)` must accept the key of the tag.
+*   A [caster](#casters) with two `from_json` forms can read a field in another way than an element. The field takes the definition `Name-field`.
+*   A [collection](#openapi-and-schema-collections) gives `Name-Input` and `Name-Output` when the read and write schemas of a type differ.
+
+A name from `yyjson::schema_name` has priority over a name that the schema makes, such as `Name-field`. When the two names are equal, the made name takes a suffix such as `_2`.
+
+## Metadata
+
+These settings give the annotation keywords of JSON Schema. They change no read and no write.
+
+| Setting | Keyword |
+| --- | --- |
+| `yyjson::title("text")` | `title` |
+| `yyjson::description("text")` | `description` |
+| `yyjson::deprecated` | `"deprecated": true` |
+| `yyjson::read_only` | `"readOnly": true` |
+| `yyjson::write_only` | `"writeOnly": true` |
+| `yyjson::examples("json", ...)` | `examples` |
+
+Give them to a struct, an enumeration, a variant or a type with a caster in its annotations. Give them to a field in `yyjson::field`, or to an alternative of a `yyjson::alt`. The metadata comes before the generated keywords. The metadata of a field goes into the schema of the field. For a type in `$defs`, it comes beside the `$ref` to the definition. A [`yyjson::transparent`](reference.md#yyjsontransparent) struct gives the schema of its field. When the struct and the field give the same keyword, the schema uses the value of the struct.
+
+`yyjson::examples` takes the JSON text of each example. The schema reads each example as the field reads it, and checks the constraints of the field. The read schema gives each example as it is written. The write schema gives the JSON that a write of the read value makes. When the read rejects an example, `json_schema` throws `std::invalid_argument`.
+
+```cpp
+struct Price
+{
+    double amount = 0;
+    std::string currency = "USD";
+    int legacy_code = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Price> = yyjson::annotate(
+    yyjson::schema_name("Price"), yyjson::title("Price"), yyjson::examples(R"({"amount":2,"currency":"EUR","legacy_code":0})"),
+    yyjson::field("amount", yyjson::minimum(0), yyjson::description("The amount in the currency")),
+    yyjson::field("currency", yyjson::min_length(3), yyjson::max_length(3), yyjson::examples(R"("USD")", R"("EUR")")),
+    yyjson::field("legacy_code", yyjson::deprecated, yyjson::read_only));
+
+auto out = yyjson::json_schema<Price>(yyjson::write_direction);
+(*out["$defs"].as_object())["Price"].write();
+// -> {"title":"Price","examples":[{"amount":2.0,"currency":"EUR","legacy_code":0}],"type":"object",
+//     "properties":{"amount":{"description":"The amount in the currency","type":"number","minimum":0,
+//     "maximum":1.7976931348623157e308,"default":0.0},"currency":{"examples":["USD","EUR"],"type":"string",
+//     "minLength":3,"maxLength":3,"default":"USD"},"legacy_code":{"deprecated":true,"readOnly":true,
+//     "type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},
+//     "required":["amount","currency","legacy_code"]}
+```
+
+The read schema gives the example as `{"amount":2,...}`. The write schema gives `2.0`, because `write` writes a `double` in that form.
+
+Metadata on these positions is a compile error:
+
+*   A field of `yyjson::extra_keys`, `yyjson::pattern_properties` or `yyjson::extra_items`
+*   A subschema, such as in `yyjson::items` or `yyjson::not_`.
+
+## Declared schemas
+
+The library cannot derive the schema of some types, such as a caster that reads a JSON value. Give the schema by hand with these settings:
+
+*   `yyjson::schema(R"({...})")` replaces the generated schema. `yyjson::schema({.read = "...", .write = "..."})` gives one text for each direction. A direction without a text keeps the generated schema.
+*   `yyjson::schema_extend(R"({...})")` adds keywords to the generated schema. A keyword of the same name replaces the generated keyword. The added keywords come at the end. On a field, the generated `default` stays, and a `default` in the text replaces it.
+
+Give them to a type in its annotations, or to a field in `yyjson::field`. A type or a field takes only one of the two settings. The text of `yyjson::schema` must be a JSON object or a boolean. `true` gives no keyword, and `false` gives `"not": {}`. The text of `yyjson::schema_extend` must be a JSON object.
+
+```cpp
+struct Rgb
+{
+    unsigned char r = 0, g = 0, b = 0;
+};
+
+template <>
+struct yyjson::caster<Rgb>
+{
+    static std::string to_json(const Rgb& c)
+    {
+        char text[8];
+        std::snprintf(text, sizeof(text), "#%02x%02x%02x", c.r, c.g, c.b);
+        return text;
+    }
+    static Rgb from_json(const std::string& s)
+    {
+        unsigned r = 0, g = 0, b = 0;
+        if (s.size() != 7 || std::sscanf(s.c_str(), "#%2x%2x%2x", &r, &g, &b) != 3) throw std::invalid_argument("not #rrggbb");
+        return {static_cast<unsigned char>(r), static_cast<unsigned char>(g), static_cast<unsigned char>(b)};
+    }
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Rgb> = yyjson::annotate(
+    yyjson::schema_name("Rgb"), yyjson::schema(R"({"type":"string","pattern":"^#[0-9a-f]{6}$"})"));
+
+struct Theme
+{
+    Rgb background;
+    int width = 80;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Theme> = yyjson::annotate(
+    yyjson::field("background", yyjson::description("The color behind the text")),
+    yyjson::field("width", yyjson::schema_extend(R"({"$comment":"columns","maximum":200})")));
+
+yyjson::json_schema<Theme>().write();
+// -> {"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"Theme":{"type":"object",
+//     "properties":{"background":{"description":"The color behind the text","$ref":"#/$defs/Rgb","default":"#000000"},
+//     "width":{"type":"integer","minimum":-2147483648,"default":80,"$comment":"columns","maximum":200}},
+//     "required":["background","width"]},"Rgb":{"type":"string","pattern":"^#[0-9a-f]{6}$"}},"$ref":"#/$defs/Theme"}
+```
+
+*   The library does not check the keywords of a declared text against the type. A declared schema that accepts more than the read is an [exception](#exceptions) to the guarantees.
+*   The library copies the text as it is. It does not change a `$ref` in the text. Write each `$ref` for the place where the schema is.
+*   `json_schema` throws `std::invalid_argument` when a text is not JSON. It also throws it when the text of `yyjson::schema` is not a JSON object or a boolean. A text of `yyjson::schema_extend` that is not a JSON object makes it throw too.
 
 ## Variants
 
@@ -209,3 +336,7 @@ The schema of a type with a [user-defined caster](conversions.md#user-defined-ca
 
 In a subschema of `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of` or `yyjson::prefix_items`, the schema can find `T` only in two cases. `T` is a kind of JSON, such as `bool`, `double`, `std::string` or a DOM type. Or another setting of the same type has `yyjson::matches<T>` outside such a subschema. In other cases, `json_schema` is a compile error.
 
+*   The text of `yyjson::schema_extend` is not a JSON object. The message is like `json_schema: the yyjson::schema_extend of X1::a is not an object`.
+*   The text of a declared schema is not JSON. The message is like `json_schema: the yyjson::schema of X3::a is not JSON: Read JSON error: unexpected end of data at line 1, column 2, pos 1`.
+*   A field with `yyjson::adjacent_tag` has `yyjson::examples`. The message is like `json_schema: the example 1 of AT::v is not read: a field with yyjson::adjacent_tag reads its tag beside the value`.
+*   A [caster](#casters) converts a value that holds its own type again. The message is like `json_schema: the caster of T converts a value that holds the type again, which has no name in $defs`.

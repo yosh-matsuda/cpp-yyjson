@@ -2141,6 +2141,7 @@ auto doc = yyjson::read(R"({"x":1,"y":2})");
 bool b = yyjson::matches<Point>(doc);  // -> true
 ```
 
+*   On a field, `yyjson::schema` also replaces the generated `default`. `yyjson::schema_extend` keeps it, unless the text has a `default`.
 ### `yyjson::pattern_matcher<>`, `yyjson::format_checker<>`
 
 The engines that the program gives to `yyjson::pattern` and `yyjson::format_assertion`.

@@ -2881,4 +2881,423 @@ TEST(Schema, Unconverted)
     EXPECT_FALSE(definition<casters::Unlisted>(true)["properties"].contains("p"));
 }
 
+namespace schema_test::described
+{
+    struct Item
+    {
+        int id;
+        double price;
+    };
+    struct Holder
+    {
+        Item item;
+        std::optional<int> count;
+    };
+    struct Note
+    {
+        int v;
+    };
+    enum class Mode
+    {
+        on,
+        off
+    };
+    using Choice = std::variant<std::int16_t, std::string>;
+    using Pick =
+        yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1), yyjson::title("count")>,
+                               yyjson::alt<std::string, yyjson::description("a name"), yyjson::examples(R"("a")")>>;
+    using Bare = yyjson::any_of_variant<yyjson::alt<int, yyjson::title("n")>, yyjson::alt<std::string>>;
+    struct Code
+    {
+        int v;
+        bool operator==(const Code&) const = default;
+    };
+    struct Uses
+    {
+        Mode mode;
+        Choice choice;
+        Pick pick;
+        Bare bare;
+        Code code;
+        std::vector<Code> codes;
+    };
+    struct Declared
+    {
+        int any;
+        int none;
+        int object;
+        int directed;
+        int plain;
+    };
+    struct Fixed
+    {
+        int v;
+    };
+    struct Extended
+    {
+        int v;
+        std::string s;
+    };
+    struct ExtendDefault
+    {
+        int v = 3;
+    };
+    struct Matched
+    {
+        yyjson::value all;
+        yyjson::value any;
+        yyjson::value one;
+        std::vector<yyjson::value> prefix;
+        yyjson::value no;
+        yyjson::value note;
+    };
+    struct Twin1
+    {
+        int v;
+    };
+    struct Twin2
+    {
+        int v;
+    };
+    struct Twins
+    {
+        Twin1 a;
+        Twin2 b;
+    };
+    struct WrongExample
+    {
+        int v;
+    };
+    struct WrongTypeExample
+    {
+        int v;
+    };
+    struct BadText
+    {
+        int v;
+    };
+    struct BadKind
+    {
+        int v;
+    };
+    struct BadExtend
+    {
+        int v;
+    };
+    struct Wrapper
+    {
+        int v;
+    };
+    struct FieldExamples
+    {
+        Code code;
+        int pair[2];
+    };
+    struct ReturningExample
+    {
+        Code code;
+    };
+    struct NamedLikeField
+    {
+        int v;
+    };
+    struct Clash
+    {
+        Code code;
+        NamedLikeField other;
+    };
+    class Opaque
+    {
+    public:
+        Opaque() = default;
+    };
+}  // namespace schema_test::described
+
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Item> = yyjson::annotate(
+    yyjson::title("Item"), yyjson::description("A thing to sell"), yyjson::examples(R"({"id":1,"price":2})"),
+    yyjson::field("id", yyjson::minimum(1), yyjson::title("Id"), yyjson::examples("1", "2"), yyjson::read_only),
+    yyjson::field("price", yyjson::examples("1"), yyjson::deprecated, yyjson::write_only));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Holder> =
+    yyjson::annotate(yyjson::field("item", yyjson::title("The item"), yyjson::description("Overrides")),
+                     yyjson::field("count", yyjson::description("How many")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Note> =
+    yyjson::annotate(yyjson::title("Note"), yyjson::field("v", yyjson::description("The value")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Mode> =
+    yyjson::annotate(yyjson::schema_name("mode.v1"), yyjson::description("A mode"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Choice> =
+    yyjson::annotate(yyjson::schema_name("Choice-v1"), yyjson::title("A choice"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Code> =
+    yyjson::annotate(yyjson::schema_name("Code"), yyjson::description("A code"), yyjson::examples("7"));
+template <>
+struct yyjson::caster<schema_test::described::Code>
+{
+    static schema_test::described::Code from_json(int v) { return {v}; }
+    static void from_json(schema_test::described::Code& c, const std::string& s) { c.v = static_cast<int>(s.size()); }
+    static int to_json(const schema_test::described::Code& c) { return c.v; }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Uses> =
+    yyjson::annotate(yyjson::field("choice", yyjson::description("Picked")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Declared> = yyjson::annotate(
+    yyjson::field("any", yyjson::schema("true")), yyjson::field("none", yyjson::schema("false")),
+    yyjson::field("object", yyjson::schema(R"({"type":"integer","multipleOf":2})"), yyjson::title("Even")),
+    yyjson::field("directed", yyjson::schema({.read = R"({"type":"integer"})"})),
+    yyjson::field("plain", yyjson::maximum(9)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Fixed> =
+    yyjson::annotate(yyjson::schema({.read = R"({"type":"integer"})", .write = "false"}), yyjson::title("Fixed"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Extended> =
+    yyjson::annotate(yyjson::description("Generated"), yyjson::schema_extend(R"({"x-a":1,"description":"Over"})"),
+                     yyjson::field("s", yyjson::max_length(3), yyjson::schema_extend(R"({"$comment":"short"})")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::ExtendDefault> =
+    yyjson::annotate(yyjson::field("v", yyjson::schema_extend(R"({"default":5})")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Matched> = yyjson::annotate(
+    yyjson::field("all", yyjson::all_of(yyjson::matches<schema_test::described::Note>, yyjson::min_properties(1))),
+    yyjson::field("any", yyjson::any_of(yyjson::matches<bool>, yyjson::matches<std::string>)),
+    yyjson::field("one", yyjson::one_of(yyjson::matches<std::string>, yyjson::const_(1))),
+    yyjson::field("prefix", yyjson::prefix_items(yyjson::matches<schema_test::described::Code>)),
+    yyjson::field("no", yyjson::not_(yyjson::matches<schema_test::described::Code>)),
+    yyjson::field("note", yyjson::matches<schema_test::described::Note>));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Twin1> =
+    yyjson::annotate(yyjson::schema_name("Twin"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Twin2> =
+    yyjson::annotate(yyjson::schema_name("Twin"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::WrongExample> =
+    yyjson::annotate(yyjson::field("v", yyjson::minimum(1), yyjson::examples("0")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::WrongTypeExample> =
+    yyjson::annotate(yyjson::examples(R"({"v":"x"})"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::BadText> = yyjson::annotate(yyjson::schema("{"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::BadKind> = yyjson::annotate(yyjson::schema("[1]"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::BadExtend> =
+    yyjson::annotate(yyjson::schema_extend("true"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Wrapper> =
+    yyjson::annotate(yyjson::transparent, yyjson::title("Wrapper"),
+                     yyjson::field("v", yyjson::title("Field"), yyjson::description("Inner"), yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::FieldExamples> = yyjson::annotate(
+    yyjson::field("code", yyjson::examples(R"("ab")")), yyjson::field("pair", yyjson::examples("[1,2]")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::ReturningExample> =
+    yyjson::annotate(yyjson::field("code", yyjson::examples("7")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::NamedLikeField> =
+    yyjson::annotate(yyjson::schema_name("Code-field"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::described::Opaque> =
+    yyjson::annotate(yyjson::schema_name("Opaque"));
+template <>
+struct yyjson::caster<schema_test::described::Opaque>
+{
+    static schema_test::described::Opaque from_json(int) { return {}; }
+    static int to_json(const schema_test::described::Opaque&) { return 1; }
+};
+
+TEST(Schema, Metadata)
+{
+    namespace described = schema_test::described;
+    // a field gives its keywords before those of its type, and a write schema gives each example as `write` does
+    EXPECT_EQ(schema<described::Item>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Item":{"title":"Item","description":"A thing to sell","examples":[{"id":1,"price":)"
+              R"(2}],"type":"object","properties":{"id":{"title":"Id","readOnly":true,"examples":[1,2],)"
+              R"("type":"integer","minimum":1,"maximum":2147483647},"price":{"deprecated":true,"writeOn)"
+              R"(ly":true,"examples":[1],"type":"number","minimum":-1.7976931348623157e308,"maximum":1.)"
+              R"(7976931348623157e308,"default":0.0}},"required":["id","price"]}},"$ref":"#/$defs/schem)"
+              R"(a_test.described.Item"})");
+    EXPECT_EQ(schema<described::Item>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Item":{"title":"Item","description":"A thing to sell","examples":[{"id":1,"price":)"
+              R"(2.0}],"type":"object","properties":{"id":{"title":"Id","readOnly":true,"examples":[1,2)"
+              R"(],"type":"integer","minimum":1,"maximum":2147483647},"price":{"deprecated":true,"write)"
+              R"(Only":true,"examples":[1.0],"type":"number","minimum":-1.7976931348623157e308,"maximum)"
+              R"(":1.7976931348623157e308,"default":0.0}},"required":["id","price"]}},"$ref":"#/$defs/s)"
+              R"(chema_test.described.Item"})");
+    // a keyword of a field beside a reference overrides the keyword of the type
+    EXPECT_EQ(schema<described::Holder>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Holder":{"type":"object","properties":{"item":{"title":"The item","description":"O)"
+              R"(verrides","$ref":"#/$defs/schema_test.described.Item"},"count":{"description":"How man)"
+              R"(y","type":"integer","minimum":-2147483648,"maximum":2147483647}},"required":["item"]},)"
+              R"("schema_test.described.Item":{"title":"Item","description":"A thing to sell","examples)"
+              R"(":[{"id":1,"price":2}],"type":"object","properties":{"id":{"title":"Id","readOnly":tru)"
+              R"(e,"examples":[1,2],"type":"integer","minimum":1,"maximum":2147483647},"price":{"deprec)"
+              R"(ated":true,"writeOnly":true,"examples":[1],"type":"number","minimum":-1.79769313486231)"
+              R"(57e308,"maximum":1.7976931348623157e308,"default":0.0}},"required":["id","price"]}},"$)"
+              R"(ref":"#/$defs/schema_test.described.Holder"})");
+    EXPECT_EQ(schema<described::Note>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Note":{"title":"Note","type":"object","properties":{"v":{"description":"The value")"
+              R"(,"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},"required":)"
+              R"(["v"]}},"$ref":"#/$defs/schema_test.described.Note"})");
+    // a transparent struct takes the metadata of its field where it has none of its own
+    EXPECT_EQ(schema<described::Wrapper>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Wrapper":{"title":"Wrapper","description":"Inner","type":"integer","minimum":0,"ma)"
+              R"(ximum":2147483647}},"$ref":"#/$defs/schema_test.described.Wrapper"})");
+    // metadata changes neither the read nor the write
+    static_assert(std::tuple_size_v<yyjson::detail::annotation_values_of<described::Note>> == 0);
+    check<described::Item>({R"({"id":1,"price":2})", R"({"id":0,"price":2})", R"({"id":1})", "1"});
+    check<described::Holder>({R"({"item":{"id":1,"price":2}})", R"({"item":{"id":1,"price":2},"count":1})", "{}"});
+    check<described::Note>({R"({"v":1})", R"({"v":"1"})"});
+    check<described::Wrapper>({"1", "-1", "null"});
+    // a field reads its examples as the read of the struct reads the field
+    EXPECT_EQ(schema<described::FieldExamples>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.FieldExamples":{"type":"object","properties":{"code":{"examples":["ab"],"$ref":"#/)"
+              R"($defs/Code-field"},"pair":{"examples":[[1,2]],"type":"array","items":{"type":"integer")"
+              R"(,"minimum":-2147483648,"maximum":2147483647},"minItems":2,"maxItems":2,"default":[0,0])"
+              R"(}},"required":["code","pair"]},"Code-field":{"description":"A code","type":"string"}},)"
+              R"("$ref":"#/$defs/schema_test.described.FieldExamples"})");
+    EXPECT_EQ(schema<described::FieldExamples>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.FieldExamples":{"type":"object","properties":{"code":{"examples":[2],"$ref":"#/$de)"
+              R"(fs/Code"},"pair":{"examples":[[1,2]],"type":"array","items":{"type":"integer","minimum)"
+              R"(":-2147483648,"maximum":2147483647},"minItems":2,"maxItems":2,"default":[0,0]}},"requi)"
+              R"(red":["code","pair"]},"Code":{"description":"A code","examples":[7],"type":"integer",")"
+              R"(minimum":-2147483648,"maximum":2147483647}},"$ref":"#/$defs/schema_test.described.Fiel)"
+              R"(dExamples"})");
+    check<described::FieldExamples>({R"({"code":"ab","pair":[1,2]})", R"({"code":7,"pair":[1,2]})"});
+    // an example that the read of the field or of the type does not take
+    EXPECT_THROW((void)yyjson::json_schema<described::WrongExample>(), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::json_schema<described::ReturningExample>(), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::json_schema<described::WrongTypeExample>(yyjson::write_direction),
+                 std::invalid_argument);
+}
+
+TEST(Schema, SchemaNames)
+{
+    namespace described = schema_test::described;
+    // a field reads a type with two forms of `from_json` by the in-place form, which has a name of its own
+    EXPECT_EQ(schema<described::Uses>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Uses":{"type":"object","properties":{"mode":{"$ref":"#/$defs/mode.v1","default":"o)"
+              R"(n"},"choice":{"description":"Picked","$ref":"#/$defs/Choice-v1","default":0},"pick":{")"
+              R"(anyOf":[{"title":"count","type":"integer","minimum":1,"maximum":2147483647},{"descript)"
+              R"(ion":"a name","examples":["a"],"type":"string"}]},"bare":{"anyOf":[{"title":"n","type")"
+              R"(:"integer","minimum":-2147483648,"maximum":2147483647},{"type":"string"}],"default":0})"
+              R"(,"code":{"$ref":"#/$defs/Code-field"},"codes":{"type":"array","items":{"$ref":"#/$defs)"
+              R"(/Code"},"default":[]}},"required":["mode","choice","pick","bare","code","codes"]},"mod)"
+              R"(e.v1":{"description":"A mode","type":"string","enum":["on","off"]},"Choice-v1":{"title)"
+              R"(":"A choice","type":["integer","string"],"minimum":-32768,"maximum":32767},"Code-field)"
+              R"(":{"description":"A code","type":"string"},"Code":{"description":"A code","examples":[)"
+              R"(7],"type":"integer","minimum":-2147483648,"maximum":2147483647}},"$ref":"#/$defs/schem)"
+              R"(a_test.described.Uses"})");
+    EXPECT_EQ(schema<described::Uses>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Uses":{"type":"object","properties":{"mode":{"$ref":"#/$defs/mode.v1","default":"o)"
+              R"(n"},"choice":{"description":"Picked","$ref":"#/$defs/Choice-v1","default":0},"pick":{")"
+              R"(anyOf":[{"title":"count","type":"integer","minimum":1,"maximum":2147483647},{"descript)"
+              R"(ion":"a name","examples":["a"],"type":"string"}]},"bare":{"anyOf":[{"title":"n","type")"
+              R"(:"integer","minimum":-2147483648,"maximum":2147483647},{"type":"string"}],"default":0})"
+              R"(,"code":{"$ref":"#/$defs/Code"},"codes":{"type":"array","items":{"$ref":"#/$defs/Code")"
+              R"(},"default":[]}},"required":["mode","choice","pick","bare","code","codes"]},"mode.v1":)"
+              R"({"description":"A mode","type":"string","enum":["on","off"]},"Choice-v1":{"title":"A c)"
+              R"(hoice","type":["integer","string"],"minimum":-32768,"maximum":32767},"Code":{"descript)"
+              R"(ion":"A code","examples":[7],"type":"integer","minimum":-2147483648,"maximum":21474836)"
+              R"(47}},"$ref":"#/$defs/schema_test.described.Uses"})");
+    check<described::Uses>({R"({"mode":"on","choice":1,"pick":1,"bare":"a","code":"ab","codes":[1]})",
+                            R"({"mode":"no","choice":1,"pick":1,"bare":"a","code":"ab","codes":[1]})",
+                            R"({"mode":"on","choice":1,"pick":0,"bare":"a","code":"ab","codes":[1]})",
+                            R"({"mode":"on","choice":1,"pick":1,"bare":"a","code":1,"codes":["ab"]})"});
+    // a name that `yyjson::schema_name` gives as it is goes before a name that it gives only the start of
+    EXPECT_EQ(schema<described::Clash>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Clash":{"type":"object","properties":{"code":{"$ref":"#/$defs/Code-field_2"},"othe)"
+              R"(r":{"$ref":"#/$defs/Code-field","default":{"v":0}}},"required":["code","other"]},"Code)"
+              R"(-field_2":{"description":"A code","type":"string"},"Code-field":{"type":"object","prop)"
+              R"(erties":{"v":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0})"
+              R"(},"required":["v"]}},"$ref":"#/$defs/schema_test.described.Clash"})");
+    // a caster type that the library does not reflect
+    EXPECT_EQ(schema<described::Opaque>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"Opaque":{"type":"i)"
+              R"(nteger","minimum":-2147483648,"maximum":2147483647}},"$ref":"#/$defs/Opaque"})");
+    EXPECT_THROW((void)yyjson::json_schema<described::Twins>(), std::invalid_argument);
+}
+
+TEST(Schema, DeclaredSchemas)
+{
+    namespace described = schema_test::described;
+    // a declared schema replaces the generated one and its default, and keeps the metadata
+    EXPECT_EQ(schema<described::Declared>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.describe)"
+              R"(d.Declared":{"type":"object","properties":{"any":{},"none":{"not":{}},"object":{"title":)"
+              R"("Even","type":"integer","multipleOf":2},"directed":{"type":"integer"},"plain":{"type":"i)"
+              R"(nteger","minimum":-2147483648,"maximum":9,"default":0}},"required":["any","none","object)"
+              R"(","directed","plain"]}},"$ref":"#/$defs/schema_test.described.Declared"})");
+    EXPECT_EQ(schema<described::Declared>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.describe)"
+              R"(d.Declared":{"type":"object","properties":{"any":{},"none":{"not":{}},"object":{"title":)"
+              R"("Even","type":"integer","multipleOf":2},"directed":{"type":"integer","minimum":-21474836)"
+              R"(48,"maximum":2147483647,"default":0},"plain":{"type":"integer","minimum":-2147483648,"ma)"
+              R"(ximum":9,"default":0}},"required":["any","none","object","directed","plain"]}},"$ref":"#)"
+              R"(/$defs/schema_test.described.Declared"})");
+    EXPECT_EQ(schema<described::Fixed>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.described.Fixed":)"
+              R"({"title":"Fixed","type":"integer"}},"$ref":"#/$defs/schema_test.described.Fixed"})");
+    EXPECT_EQ(schema<described::Fixed>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.described.Fixed":)"
+              R"({"title":"Fixed","not":{}}},"$ref":"#/$defs/schema_test.described.Fixed"})");
+    EXPECT_THROW((void)yyjson::json_schema<described::BadText>(), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::json_schema<described::BadKind>(), std::invalid_argument);
+    // a member of `schema_extend` adds a keyword or replaces the generated one
+    EXPECT_EQ(schema<described::Extended>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Extended":{"type":"object","properties":{"v":{"type":"integer","minimum":-21474836)"
+              R"(48,"maximum":2147483647,"default":0},"s":{"type":"string","maxLength":3,"default":"",")"
+              R"($comment":"short"}},"required":["v","s"],"x-a":1,"description":"Over"}},"$ref":"#/$def)"
+              R"(s/schema_test.described.Extended"})");
+    check<described::Extended>({R"({"v":1,"s":"abc"})", R"({"v":1,"s":"abcd"})"});
+    // a "default" in the text of `schema_extend` replaces the generated one
+    for (const auto& text :
+         {schema<described::ExtendDefault>(), schema<described::ExtendDefault>(yyjson::write_direction)})
+    {
+        EXPECT_NE(text.find(R"("default":5)"), std::string::npos) << text;
+        EXPECT_EQ(text.find(R"("default":3)"), std::string::npos) << text;
+    }
+    EXPECT_THROW((void)yyjson::json_schema<described::BadExtend>(), std::invalid_argument);
+}
+
+TEST(Schema, NestedMatches)
+{
+    namespace described = schema_test::described;
+    EXPECT_EQ(schema<described::Matched>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.descri)"
+              R"(bed.Matched":{"type":"object","properties":{"all":{"allOf":[{"$ref":"#/$defs/schema_te)"
+              R"(st.described.Note"},{"minProperties":1}]},"any":{"anyOf":[{"type":"boolean"},{"type":")"
+              R"(string"}]},"one":{"oneOf":[{"type":"string"},{"const":1}]},"prefix":{"type":"array","i)"
+              R"(tems":{},"allOf":[{"prefixItems":[{"$ref":"#/$defs/Code"}]}],"default":[]},"no":{"not")"
+              R"(:{"$ref":"#/$defs/Code"},"default":null},"note":{"$ref":"#/$defs/schema_test.described)"
+              R"(.Note"}},"required":["all","any","one","prefix","no","note"]},"schema_test.described.N)"
+              R"(ote":{"title":"Note","type":"object","properties":{"v":{"description":"The value","typ)"
+              R"(e":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},"required":["v"])"
+              R"(},"Code":{"description":"A code","examples":[7],"type":"integer","minimum":-2147483648)"
+              R"(,"maximum":2147483647}},"$ref":"#/$defs/schema_test.described.Matched"})");
+    // a subschema keeps no type, so its yyjson::matches<T> takes a kind of JSON or a T that another field names
+    check<described::Matched>({R"({"all":{"v":1},"any":true,"one":"on","prefix":[1],"no":true,"note":{"v":1}})",
+                               R"({"all":{},"any":true,"one":"on","prefix":[1],"no":true,"note":{"v":1}})",
+                               R"({"all":{"v":1},"any":1,"one":"on","prefix":[1],"no":true,"note":{"v":1}})",
+                               R"({"all":{"v":1},"any":true,"one":2,"prefix":[1],"no":true,"note":{"v":1}})",
+                               R"({"all":{"v":1},"any":true,"one":"on","prefix":["a"],"no":true,"note":{"v":1}})",
+                               R"({"all":{"v":1},"any":true,"one":"on","prefix":[1],"no":1,"note":{"v":1}})",
+                               R"({"all":{"v":1},"any":true,"one":"on","prefix":[1],"no":true,"note":{}})"});
+}
+
 // NOLINTEND
