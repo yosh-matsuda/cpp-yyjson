@@ -5,6 +5,7 @@
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
 #include "cpp_yyjson_schema.hpp"
 #include "test_common.hpp"
+#include "test_pattern_matcher.hpp"
 
 // NOLINTBEGIN
 
@@ -277,6 +278,71 @@ namespace schema_test
         UnknownInner u;
         Point p;
     };
+
+    struct Numbers
+    {
+        int i;
+        float f;
+        double d;
+        unsigned u;
+        Level l;
+    };
+    struct Texts
+    {
+        std::string s;
+        std::string mail = "a@example.com";
+        std::string day = "2024-01-01";
+        int odd;
+    };
+    struct Listed
+    {
+        int c;
+        std::string e;
+        Hue h;
+        std::vector<int> j;
+        Point p;
+        float f;
+    };
+    struct NullKeys
+    {
+        std::optional<int> o;
+        yyjson::nullable<int> n;
+        std::unique_ptr<int> p;
+        std::vector<std::optional<int>> v;
+    };
+    struct Elements
+    {
+        std::vector<int> v;
+        std::tuple<int, int, int> t;
+        std::array<int, 3> a;
+        std::vector<std::string> s;
+    };
+    struct Keyed
+    {
+        std::map<std::string, int> m;
+        std::map<Hue, int> h;
+    };
+    struct Combined
+    {
+        int n;
+        int m;
+        std::string s;
+        std::vector<int> v;
+        int deep;
+    };
+    struct Conditional
+    {
+        int a;
+        std::optional<int> b;
+        std::optional<int> c;
+        std::optional<int> d;
+        Point p;
+    };
+    struct Matching
+    {
+        yyjson::value j;
+        std::vector<yyjson::value> w;
+    };
 }  // namespace schema_test
 
 template <>
@@ -334,6 +400,65 @@ inline constexpr auto yyjson::annotations<schema_test::MissingInner> =
 template <>
 inline constexpr auto yyjson::annotations<schema_test::UnknownInner> = yyjson::annotate(yyjson::reject_unknown_keys);
 VISITABLE_STRUCT(schema_test::Visited, b, a);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Numbers> = yyjson::annotate(
+    yyjson::field("i", yyjson::minimum(-2), yyjson::exclusive_maximum(10), yyjson::multiple_of(2)),
+    yyjson::field("f", yyjson::minimum(0.1), yyjson::exclusive_maximum(1.5)),
+    yyjson::field("d", yyjson::exclusive_minimum(-0.5), yyjson::maximum(2.5), yyjson::multiple_of(0.5)),
+    yyjson::field("u", yyjson::maximum(7)), yyjson::field("l", yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Texts> = yyjson::annotate(
+    yyjson::field("s", yyjson::min_length(2), yyjson::max_length(4), yyjson::pattern("^a"), yyjson::pattern("b$")),
+    yyjson::field("mail", yyjson::format("email")), yyjson::field("day", yyjson::format_assertion("date")),
+    yyjson::field("odd", yyjson::satisfies<[](const int& v) noexcept { return v % 2 != 0; }>));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Listed> = yyjson::annotate(
+    yyjson::field("c", yyjson::const_(3)), yyjson::field("e", yyjson::enum_("x", "y")),
+    yyjson::field("h", yyjson::enum_("green", "blue")), yyjson::field("j", yyjson::const_(yyjson::json_text("[1, 2]"))),
+    yyjson::field("p",
+                  yyjson::enum_(yyjson::json_text(R"({ "y": 0, "x": 0 })"), yyjson::json_text(R"({"x":1,"y":1})"))),
+    yyjson::field("f", yyjson::enum_(0.1000000001, 2)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::NullKeys> = yyjson::annotate(
+    yyjson::field("o", yyjson::minimum(1), yyjson::enum_(1, 2)), yyjson::field("n", yyjson::enum_(1, nullptr)),
+    yyjson::field("p", yyjson::minimum(3)), yyjson::field("v", yyjson::items(yyjson::enum_(1))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Elements> = yyjson::annotate(
+    yyjson::field("v", yyjson::items(yyjson::minimum(0)), yyjson::contains(yyjson::const_(3)), yyjson::min_contains(1),
+                  yyjson::max_contains(2), yyjson::min_items(1), yyjson::max_items(4)),
+    yyjson::field("t", yyjson::prefix_items(yyjson::minimum(1)), yyjson::items(yyjson::maximum(5))),
+    yyjson::field("a", yyjson::prefix_items({yyjson::minimum(1)}, {yyjson::maximum(0)}), yyjson::max_items(5)),
+    yyjson::field("s", yyjson::unique_items, yyjson::items(yyjson::max_length(2))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Keyed> = yyjson::annotate(
+    yyjson::field("m", yyjson::additional_properties(yyjson::minimum(0)), yyjson::property_names(yyjson::pattern("^k")),
+                  yyjson::min_properties(1), yyjson::max_properties(2)),
+    yyjson::field("h", yyjson::property_names(yyjson::enum_("red", "blue")),
+                  yyjson::additional_properties(yyjson::maximum(5))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Combined> = yyjson::annotate(
+    yyjson::field("n", yyjson::not_(yyjson::minimum(5), yyjson::maximum(7))),
+    yyjson::field("m", yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)),
+                                            yyjson::else_(yyjson::maximum(3)))),
+    yyjson::field("s", yyjson::one_of({yyjson::min_length(2)}, {yyjson::pattern("^a")})),
+    yyjson::field("v", yyjson::any_of({yyjson::min_items(2)}, {yyjson::max_items(0)}),
+                  yyjson::all_of({yyjson::items(yyjson::minimum(0))}, {yyjson::max_items(3)})),
+    yyjson::field("deep", yyjson::all_of({yyjson::any_of({yyjson::minimum(10)}, {yyjson::maximum(-10)})},
+                                         {yyjson::not_(yyjson::const_(20))})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Conditional> = yyjson::annotate(
+    yyjson::field("a", yyjson::minimum(0)), yyjson::property("a", yyjson::maximum(9)),
+    yyjson::dependent_required("b", {"c"}), yyjson::one_of(yyjson::required("c"), yyjson::required("d")),
+    yyjson::any_of({yyjson::property("a", yyjson::const_(1))},
+                   {yyjson::property("a", yyjson::const_(2)), yyjson::required("b")},
+                   {yyjson::property("a", yyjson::minimum(5))}),
+    yyjson::if_then_else(yyjson::if_(yyjson::property("a", yyjson::minimum(7))), yyjson::then(yyjson::required("d"))),
+    yyjson::field("p", yyjson::property("x", yyjson::minimum(0)),
+                  yyjson::not_(yyjson::property("y", yyjson::const_(0)))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Matching> =
+    yyjson::annotate(yyjson::field("j", yyjson::matches<schema_test::Point>),
+                     yyjson::field("w", yyjson::items(yyjson::matches<std::uint8_t>)));
 
 namespace
 {
@@ -353,6 +478,11 @@ namespace
         lenient_repeat = 4,
         // the read with `yyjson::reject_duplicates` rejects a repeated key, which no schema can describe
         not_expressible = 8,
+        // the read takes a string that `yyjson::format` does not describe, as the format is an annotation which the
+        // validator of the tests asserts
+        format = 16,
+        // the read rejects a value that `yyjson::satisfies` rejects, which no schema can describe
+        unchecked = 32,
     };
 
     struct doc
@@ -364,9 +494,9 @@ namespace
 
     json to_jsoncons(const yyjson::object& schema) { return json::parse(std::string(schema.write())); }
 
-    jss::json_schema<json> compile(const json& schema)
+    jss::json_schema<json> compile(const json& schema, bool formats = true)
     {
-        return jss::make_json_schema(schema, jss::evaluation_options{}.require_format_validation(true));
+        return jss::make_json_schema(schema, jss::evaluation_options{}.require_format_validation(formats));
     }
 
     const jss::json_schema<json>& meta_schema()
@@ -436,9 +566,9 @@ namespace
         return s;
     }
 
-    // The read schema of T under the policies Ps takes only what `read<T>(json, Ps...)` takes, and all of it but
-    // where a document is marked: `lenient` and its kinds where the read takes more, and `not_expressible` where it
-    // takes less. A read without `yyjson::reject_missing_keys` also takes a document that misses a required key.
+    // The read schema under Ps takes what `read<T>(json, Ps...)` takes, but where a mark says that the read takes
+    // more (`lenient` and its kinds, `format`) or less (`not_expressible`, `unchecked`). A read without
+    // `yyjson::reject_missing_keys` also takes a document that misses a required key.
     template <typename T, typename... Ps>
     void check_read(std::initializer_list<doc> docs, const Ps&... ps)
     {
@@ -450,9 +580,10 @@ namespace
         for (const auto& d : docs)
         {
             const auto accepted = reads<T>(d.json, ps...);
-            auto more = (d.diff & (lenient | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
+            auto more =
+                (d.diff & (lenient | format | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
             if constexpr (!missing) more = more || (accepted && !reads<T>(d.json, ps..., yyjson::reject_missing_keys));
-            const auto less = repeat && (d.diff & not_expressible) != 0;
+            const auto less = (repeat && (d.diff & not_expressible) != 0) || (d.diff & unchecked) != 0;
             const auto valid = validator.is_valid(json::parse(d.json));
             const auto policy = yyjson::detail::policies_of<Ps...>;
             EXPECT_EQ(valid && !accepted, less) << "valid, but not read: " << d.json << " under " << +policy;
@@ -460,9 +591,8 @@ namespace
         }
     }
 
-    // The schemas of T are valid 2020-12 schemas, and each read schema takes what the read under its policies takes.
-    // What `write` writes of a document that T reads is valid against the write schema, with `yyjson::emit_defaults`
-    // as well.
+    // Each read schema takes what the read under its policies takes, and each write schema takes what `write` writes
+    // of a document that T reads. `write` checks no `yyjson::format`, so a `format` document is judged without them.
     template <typename T>
     void check(std::initializer_list<doc> docs)
     {
@@ -473,22 +603,25 @@ namespace
         check_read<T>(docs, yyjson::reject_duplicates);
         check_read<T>(docs, yyjson::strict);
         check_read<T>(docs, yyjson::strict, yyjson::reject_unknown_keys);
-        const auto validators =
-            std::array{compile(checked_schema(yyjson::json_schema<T>(yyjson::write_direction))),
-                       compile(checked_schema(yyjson::json_schema<T>(yyjson::write_direction, yyjson::emit_defaults)))};
+        const auto plain = checked_schema(yyjson::json_schema<T>(yyjson::write_direction));
+        const auto with_defaults =
+            checked_schema(yyjson::json_schema<T>(yyjson::write_direction, yyjson::emit_defaults));
+        const auto validators = std::array{std::array{compile(plain), compile(with_defaults)},
+                                           std::array{compile(plain, false), compile(with_defaults, false)}};
         for (const auto& d : docs)
         {
             if (!reads<T>(d.json)) continue;
+            const auto& [validator, validator_with_defaults] = validators[(d.diff & format) != 0 ? 1 : 0];
             const auto t = yyjson::read<T>(d.json);
             if (meets_constraints(t))
             {
                 const auto written = std::string(yyjson::write(t));
-                EXPECT_TRUE(validators[0].is_valid(json::parse(written))) << "write: " << written << " of " << d.json;
+                EXPECT_TRUE(validator.is_valid(json::parse(written))) << "write: " << written << " of " << d.json;
             }
             if (meets_constraints(t, yyjson::emit_defaults))
             {
                 const auto written = std::string(yyjson::write(t, yyjson::emit_defaults));
-                EXPECT_TRUE(validators[1].is_valid(json::parse(written)))
+                EXPECT_TRUE(validator_with_defaults.is_valid(json::parse(written)))
                     << "write with emit_defaults: " << written << " of " << d.json;
             }
         }
@@ -1033,6 +1166,107 @@ TEST(Schema, Policies)
          R"({"u":{}})",
          R"({"p":{"x":1,"q":2}})",
          {R"({"z":1,"s":{"a":1,"c":2},"m":{"a":1},"u":{"a":1,"a":2},"p":{"x":1,"y":2}})", not_expressible}});
+}
+
+TEST(Schema, NumberKeywords)
+{
+    check<Numbers>({R"({"i":-2,"f":0.1,"d":-0.0,"u":7,"l":0})", R"({"i":8})", R"({"i":-4})", R"({"i":10})",
+                    R"({"i":3})", R"({"f":1.4999999})", R"({"f":1.5})", R"({"f":0.09})", R"({"d":-0.5})",
+                    R"({"d":2.5})", R"({"d":2.6})", R"({"d":0.25})", R"({"u":8})", R"({"l":-1})", R"({"l":1})"});
+    // a bound of a float is the float nearest to it inside, as the read compares the value as a float
+    EXPECT_NE(schema<Numbers>().find(R"("f":{"type":"number","minimum":0.1,"maximum":1.4999999})"), std::string::npos);
+    EXPECT_NE(schema<Numbers>().find(R"("i":{"type":"integer","minimum":-2,"maximum":2147483647,"exclusiveMaximum":10,)"
+                                     R"("multipleOf":2,"default":0})"),
+              std::string::npos);
+}
+
+TEST(Schema, TextKeywords)
+{
+    check<Texts>({R"({"s":"ab","mail":"a@example.com","day":"2024-01-31","odd":1})",
+                  R"({"s":"a"})",
+                  R"({"s":"abcab"})",
+                  R"({"s":"bab"})",
+                  R"({"s":"aba"})",
+                  R"({"s":"axb"})",
+                  {R"({"s":"ab","mail":"none","day":"2024-01-31","odd":1})", format},
+                  R"({"day":"2024-13-01"})",
+                  R"({"day":"x"})",
+                  {R"({"s":"ab","mail":"a@example.com","day":"2024-01-31","odd":2})", unchecked}});
+    EXPECT_NE(schema<Texts>().find(R"("s":{"type":"string","minLength":2,"maxLength":4,"pattern":"^a",)"
+                                   R"("allOf":[{"pattern":"b$"}]})"),
+              std::string::npos);
+    EXPECT_EQ(definition<Texts>(false)["properties"]["mail"]["format"].as<std::string>(), "email");
+    EXPECT_NE(schema<Texts>().find(R"("odd":{"type":"integer","minimum":-2147483648,"maximum":2147483647})"),
+              std::string::npos);
+}
+
+TEST(Schema, ListedValues)
+{
+    check<Listed>({R"({"c":3,"e":"x","h":"green","j":[1,2],"p":{"x":1,"y":1},"f":2})", R"({"c":4})", R"({"e":"z"})",
+                   R"({"h":"red"})", R"({"j":[2,1]})", R"({"p":{"x":0,"y":0}})", R"({"p":{"x":0,"y":1}})",
+                   R"({"f":0.1})", R"({"f":0.2})", R"({"f":2.0})"});
+    EXPECT_NE(schema<Listed>().find(R"("enum":[0.1000000001,2]})"), std::string::npos);
+    // `write` writes the float that the read keeps, and the keys of a struct in their order
+    EXPECT_NE(schema<Listed>(yyjson::write_direction).find(R"("enum":[0.1,2.0]})"), std::string::npos);
+    EXPECT_NE(schema<Listed>(yyjson::write_direction).find(R"("enum":[{"x":0,"y":0},{"x":1,"y":1}])"),
+              std::string::npos);
+    EXPECT_EQ(definition<Listed>(false)["properties"]["c"]["const"].as<int>(), 3);
+}
+
+TEST(Schema, NullableKeywords)
+{
+    check<NullKeys>({R"({"o":null,"n":null,"p":null,"v":[null,1]})", R"({"o":1,"n":1,"p":3})", R"({"o":0})",
+                     R"({"o":3})", R"({"n":2})", R"({"p":2})", R"({"v":[2]})", R"({"v":[null]})"});
+}
+
+TEST(Schema, ElementKeywords)
+{
+    check<Elements>({R"({"v":[3],"t":[1,1,5],"a":[1,0,9],"s":["a","b"]})", R"({"v":[]})", R"({"v":[1]})",
+                     R"({"v":[3,3,3]})", R"({"v":[3,3]})", R"({"v":[3,-1]})", R"({"v":[3,1,2,4,5]})",
+                     R"({"t":[0,1,5]})", R"({"t":[1,6,5]})", R"({"t":[1,1,6]})", R"({"a":[0,0,0]})", R"({"a":[1,1,0]})",
+                     R"({"s":["a","a"]})", R"({"s":["abc"]})"});
+    const auto elements = definition<Elements>(false);
+    EXPECT_EQ(elements["properties"]["t"]["prefixItems"][0]["minimum"].as<int>(), 1);
+    EXPECT_EQ(elements["properties"]["t"]["prefixItems"][2]["maximum"].as<int>(), 5);
+}
+
+TEST(Schema, KeyKeywords)
+{
+    check<Keyed>({R"({"m":{"k":0},"h":{"red":5}})", R"({"m":{}})", R"({"m":{"k":1,"ka":2,"kb":3}})", R"({"m":{"x":1}})",
+                  R"({"m":{"k":-1}})", R"({"h":{"green":1}})", R"({"h":{"red":6}})", R"({"m":[["k",1]]})",
+                  R"({"m":[["x",1]]})", R"({"h":[["blue",1]]})", R"({"h":[["green",1]]})"});
+}
+
+TEST(Schema, Combinators)
+{
+    check<Combined>({R"({"n":4,"m":12,"s":"ab","v":[1,2],"deep":10})", R"({"n":5})", R"({"n":8})", R"({"m":11})",
+                     R"({"m":3})", R"({"m":4})", R"({"s":"a"})", R"({"s":"ab"})", R"({"s":"b"})", R"({"v":[]})",
+                     R"({"v":[1]})", R"({"v":[1,-1]})", R"({"v":[1,2,3,4]})", R"({"deep":20})", R"({"deep":0})",
+                     R"({"deep":-10})"});
+    const auto combined = definition<Combined>(false);
+    EXPECT_TRUE(combined["properties"]["n"].contains("not"));
+    EXPECT_TRUE(combined["properties"]["m"].contains("else"));
+    EXPECT_EQ(combined["properties"]["s"]["oneOf"].size(), 2U);
+}
+
+TEST(Schema, StructConditions)
+{
+    check<Conditional>({R"({"a":1,"c":1,"p":{"x":0,"y":1}})", R"({"a":1,"d":1})", R"({"a":1,"c":1,"d":1})",
+                        R"({"a":1})", R"({"a":2,"b":1,"c":1})", R"({"a":2,"c":1})", R"({"a":1,"b":1,"d":1})",
+                        R"({"a":5,"c":1})", R"({"a":7,"c":1})", R"({"a":7,"d":1})", R"({"a":10,"c":1})",
+                        R"({"a":-1,"c":1})", R"({"a":1,"c":1,"p":{"x":-1,"y":1}})",
+                        R"({"a":1,"c":1,"p":{"x":0,"y":0}})"});
+    const auto conditional = definition<Conditional>(false);
+    EXPECT_NE(schema<Conditional>().find(R"("dependentRequired":{"b":["c"]},"oneOf":[{"required":["c"]},)"
+                                         R"({"required":["d"]}])"),
+              std::string::npos);
+    EXPECT_EQ(conditional["properties"]["a"]["maximum"].as<int>(), 9);
+}
+
+TEST(Schema, Matches)
+{
+    check<Matching>({R"({"j":{"x":1,"y":2},"w":[0,255]})", R"({"j":1})", R"({"j":{"x":1}})", R"({"w":[256]})",
+                     R"({"w":[-1]})", R"({"w":["a"]})"});
 }
 
 // NOLINTEND

@@ -18,6 +18,116 @@ This page describes:
 *   [Variants](#variants), [casters](#casters) and [`yyjson::matches<T>`](#yyjsonmatchest)
 *   [OpenAPI and schema collections](#openapi-and-schema-collections), the [options](#options), the [formats](#formats), the [limits](#limits) and the [errors](#errors)
 
+## Generating a schema
+
+Include `cpp_yyjson_schema.hpp` and call `yyjson::json_schema<T>()`:
+
+```cpp
+#include <cpp_yyjson_schema.hpp>
+#include <iostream>
+
+namespace shop
+{
+    enum class Status
+    {
+        active,
+        retired
+    };
+
+    struct Item
+    {
+        std::string name;
+        double price = 0;
+        std::vector<std::string> tags;
+        std::optional<std::string> note;
+        Status status = Status::active;
+    };
+}
+
+template <>
+inline constexpr auto yyjson::annotations<shop::Item> =
+    yyjson::annotate(yyjson::schema_name("Item"), yyjson::description("An item in the catalog"),
+                     yyjson::field("name", yyjson::required, yyjson::min_length(1)),
+                     yyjson::field("price", yyjson::minimum(0)),
+                     yyjson::field("tags", yyjson::items(yyjson::max_length(16)), yyjson::unique_items));
+template <>
+inline constexpr auto yyjson::annotations<shop::Status> = yyjson::annotate(yyjson::schema_name("Status"));
+
+int main()
+{
+    std::cout << yyjson::json_schema<shop::Item>().write(yyjson::WriteFlag::PrettyTwoSpaces) << std::endl;
+}
+```
+
+The output:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Item": {
+      "description": "An item in the catalog",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "price": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1.7976931348623157e308,
+          "default": 0.0
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "note": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status",
+          "default": "active"
+        }
+      },
+      "required": [
+        "name",
+        "price",
+        "tags",
+        "status"
+      ]
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "retired"
+      ]
+    }
+  },
+  "$ref": "#/$defs/Item"
+}
+```
+
+*   Each struct and each enumeration is a definition in `$defs`. The root refers to the definition of `T` with `$ref`.
+*   A field takes the keywords of its type and of its [constraints](validation.md#constraints). The keyword names are in [JSON Schema keywords](validation.md#json-schema-keywords).
+*   A number type gives the bounds of its type, such as the `maximum` of `double`.
+*   A field that has a value in `T()` gives that value as `default`. See [Required keys and defaults](#required-keys-and-defaults).
+*   `json_schema<T>(yyjson::write_direction)` gives the write schema. For `shop::Item`, it is the same as the read schema.
+
+To get the text of one definition, read it from `$defs`:
+
+```cpp
+auto schema = yyjson::json_schema<shop::Item>();
+auto item = (*schema["$defs"].as_object())["Item"].write();
+```
+
 ## Read and write schemas
 
 `json_schema<T>` takes tags, as `read` and `write` do. The tags select the direction, the read policies and the dialect:
@@ -73,4 +183,10 @@ Each schema gives `default` for each field, also for a required key. The value i
 *   The field is a `std::optional` that is empty in `T()`.
 *   The field has `yyjson::required`.
 *   The value violates a constraint of the field, such as an empty string with `yyjson::min_length(1)`.
+
+## `yyjson::matches<T>`
+
+[`yyjson::matches<T>`](validation.md#values-of-the-dom-that-read-as-a-type) in a combinator gives the schema of `T`. A named type gives a `$ref` to its definition. For example, `yyjson::not_(yyjson::matches<Circle>)` on a `yyjson::value` field gives `{"not":{"$ref":"#/$defs/Circle"},"default":null}`.
+
+In a subschema of `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of` or `yyjson::prefix_items`, the schema can find `T` only in two cases. `T` is a kind of JSON, such as `bool`, `double`, `std::string` or a DOM type. Or another setting of the same type has `yyjson::matches<T>` outside such a subschema. In other cases, `json_schema` is a compile error.
 

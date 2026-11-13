@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -136,6 +137,189 @@ namespace yyjson
         {
             std::uint8_t policies = 0;
             bool emit_defaults = false;
+        };
+
+        // A new subschema in `allOf` of `out`, for a keyword that `out` already has with another value.
+        inline object_ref conjunct(object_ref out)
+        {
+            if (auto it = out.find("allOf"); it != out.end())
+            {
+                auto all = it->second;
+                return all.as_array()->emplace_back(empty_object);
+            }
+            return out.emplace("allOf", empty_array).emplace_back(empty_object);
+        }
+        // `out`, or a conjunct of it if it has `key`.
+        inline object_ref place(object_ref out, std::string_view key)
+        {
+            return out.contains(key) ? conjunct(out) : out;
+        }
+        // The object at `key` of `out`, which a conjunct holds if `key` has another value, such as `false`.
+        inline object_ref sub(object_ref out, std::string_view key)
+        {
+            if (auto it = out.find(key); it != out.end())
+            {
+                auto v = it->second;
+                if (auto o = v.as_object(); o.has_value()) return *o;
+                return conjunct(out).emplace(key, empty_object, copy_string);
+            }
+            return out.emplace(key, empty_object, copy_string);
+        }
+        // The object I of the array at `key` of `out`, which has one.
+        inline object_ref sub_at(object_ref out, std::string_view key, std::size_t i)
+        {
+            auto array = out.find(key)->second;
+            auto element = (*array.as_array())[i];
+            return *element.as_object();
+        }
+
+        inline void emplace_bound(object_ref out, std::string_view key, const yyjson::detail::bound_number& b)
+        {
+            using kind = yyjson::detail::bound_number::kind_t;
+            if (b.kind == kind::sint)
+                out.emplace(key, b.sint);
+            else if (b.kind == kind::uint)
+                out.emplace(key, b.uint);
+            else
+                out.emplace(key, b.real);
+        }
+        // Adds the bound `b` at `key` of `out`, or keeps the tighter of it and the one there, which both hold: the
+        // greater for a lower bound.
+        inline void tighten(object_ref out, std::string_view key, const yyjson::detail::bound_number& b, bool lower)
+        {
+            namespace yd = yyjson::detail;
+            const auto it = out.find(key);
+            if (it == out.end())
+            {
+                emplace_bound(out, key, b);
+                return;
+            }
+            auto v = it->second;
+            auto held = yd::bound_number();
+            if (v.is_sint())
+                held.sint = *v.as_sint();
+            else if (v.is_uint())
+            {
+                held.kind = yd::bound_number::kind_t::uint;
+                held.uint = *v.as_uint();
+            }
+            else
+            {
+                held.kind = yd::bound_number::kind_t::real;
+                held.real = *v.as_real();
+            }
+            const auto order = yd::compare_bounds(b, held);
+            if (!(lower ? std::is_gt(order) : std::is_lt(order))) return;
+            if (b.kind == yd::bound_number::kind_t::sint)
+                v = b.sint;
+            else if (b.kind == yd::bound_number::kind_t::uint)
+                v = b.uint;
+            else
+                v = b.real;
+        }
+        inline void tighten(object_ref out, std::string_view key, std::size_t n, bool lower)
+        {
+            auto b = yyjson::detail::bound_number();
+            b.kind = yyjson::detail::bound_number::kind_t::uint;
+            b.uint = n;
+            tighten(out, key, b, lower);
+        }
+        inline yyjson::detail::bound_number real_bound(double d)
+        {
+            auto b = yyjson::detail::bound_number();
+            b.kind = yyjson::detail::bound_number::kind_t::real;
+            b.real = d;
+            return b;
+        }
+
+        // The types T of `yyjson::matches<T>` in the settings A.
+        template <typename A>
+        struct matched_types
+        {
+            using type = std::tuple<>;
+        };
+        template <typename T>
+        struct matched_types<matches_t<T>>
+        {
+            using type = std::tuple<T>;
+        };
+        template <template <typename...> class X, typename... As>
+        struct matched_types<X<As...>>
+        {
+            using type = decltype(std::tuple_cat(std::declval<typename matched_types<As>::type>()...));
+        };
+        template <template <std::size_t, typename...> class X, std::size_t N, typename... As>
+        struct matched_types<X<N, As...>>
+        {
+            using type = decltype(std::tuple_cat(std::declval<typename matched_types<As>::type>()...));
+        };
+        // The index in the tuple Ts of the type whose name is `name`, or the size of Ts.
+        template <typename Ts>
+        struct matched_index;
+        template <typename... Ts>
+        struct matched_index<std::tuple<Ts...>>
+        {
+            static consteval std::size_t of(std::string_view name)
+            {
+                constexpr auto names = std::array<std::string_view, sizeof...(Ts)>{yyjson::detail::type_name<Ts>()...};
+                for (std::size_t i = 0; i < names.size(); ++i)
+                    if (names[i] == name) return i;
+                return sizeof...(Ts);
+            }
+        };
+
+        // Whether the node holds nothing, as an omitted `yyjson::then` or `yyjson::else_` does.
+        constexpr bool empty_node(const yyjson::detail::schema_node& n) noexcept
+        {
+            return n.constraints.bits == 0 && n.values_count == 0 && n.patterns_count == 0 && n.items == 0 &&
+                   n.properties == 0 && n.keys == 0 && n.contains == 0 && n.prefix_count == 0 && n.combinators == 0 &&
+                   n.members == 0 && !n.closed;
+        }
+
+        // The I-th element type of the tuple E, or D if it has none.
+        template <typename E, std::size_t I, typename D>
+        struct element_or
+        {
+            using type = D;
+        };
+        template <typename E, std::size_t I, typename D>
+        requires yyjson::detail::tuple_like<E> && (std::tuple_size_v<E> > I)
+        struct element_or<E, I, D>
+        {
+            using type = std::remove_cv_t<std::tuple_element_t<I, E>>;
+        };
+
+        // The C++ types of the subschemas of a value of V: of its elements, its J-th element, the keys and the values
+        // of its members.  A value of the DOM has those of the DOM.
+        template <typename V>
+        struct position_types
+        {
+            using element = writer::value;
+            template <std::size_t J>
+            using prefix = writer::value;
+            using key = std::string;
+            using value = writer::value;
+        };
+        template <typename V>
+        requires std::ranges::range<V> && (!std::same_as<V, writer::value>) && (!std::same_as<V, writer::array>) &&
+                 (!std::same_as<V, writer::object>) && (!std::same_as<V, json_view>)
+        struct position_types<V>
+        {
+            using element = std::remove_cv_t<std::ranges::range_value_t<const V>>;
+            template <std::size_t J>
+            using prefix = element;
+            using key = typename element_or<element, 0, std::string>::type;
+            using value = typename element_or<element, 1, writer::value>::type;
+        };
+        template <typename V>
+        requires yyjson::detail::tuple_like<V> && (!std::ranges::range<V>)
+        struct position_types<V>
+        {
+            using element = typename element_or<V, 0, writer::value>::type;
+            template <std::size_t J>
+            using prefix = typename element_or<V, J, writer::value>::type;
+            using key = std::string;
+            using value = writer::value;
         };
 
         // The named types that the schemas refer to.  A type has one schema per direction, or one for both
@@ -308,6 +492,23 @@ namespace yyjson
             void emit_pair_object(object_ref out);
             template <typename... Vs>
             void emit_values(object_ref out, std::string_view combinator);
+            // Adds the keywords of the node N, at a value of V of a field of S, to `out`.
+            template <typename N, typename V, typename S>
+            void emit_node(object_ref out);
+            template <typename N, typename C>
+            void emit_listed(object_ref out);
+            template <typename N, typename C>
+            static void emit_bounds(object_ref out);
+            template <typename N, typename C, typename S>
+            void emit_array_keywords(object_ref out);
+            template <typename N, typename C, typename S>
+            void emit_object_keywords(object_ref out);
+            template <typename N, std::size_t M, typename C, typename S>
+            void emit_members(object_ref properties, object_ref out);
+            template <typename N, std::size_t R, typename V, typename S>
+            void emit_combinators(object_ref out);
+            template <typename N, typename S>
+            void emit_matched(object_ref out);
         };
 
         template <typename T>
@@ -536,8 +737,6 @@ namespace yyjson
         void generator::emit_struct(object_ref out)
         {
             namespace yd = yyjson::detail;
-            static_assert(!yd::has_constraints<S>, "C7c: the keywords of the fields are not emitted yet");
-            static_assert(!yd::has_struct_conditions<S>, "C7c: the conditions of a struct are not emitted yet");
             static_assert(!yd::has_key_maps<S>,
                           "C7d: yyjson::extra_keys and yyjson::pattern_properties are not emitted yet");
             static_assert(!yd::struct_property_counts<S> && !yd::struct_property_names<S>,
@@ -559,6 +758,7 @@ namespace yyjson
             if (yd::struct_closed<S> ||
                 (!writing_ && ((policies_ | yd::struct_policies<S>)&yd::unknown_keys_policy) != 0))
                 out.emplace("additionalProperties", false);
+            if constexpr (yd::has_struct_conditions<S>) emit_node<yd::node_schema<yd::struct_tree<S>, 0>, S, S>(out);
         }
 
         // Whether the read schema requires the key of the field K of S: the field declares no default.  The policies
@@ -703,6 +903,8 @@ namespace yyjson
                 emit<typename F::value_type>(p);
             else
                 emit<F>(p);
+            if constexpr (yd::has_constraints<S>)
+                emit_node<yd::field_schema<S, yd::struct_declared_index<S, K>>, F, S>(p);
             if (const auto& d = field_default<S, K>(names_)) p.emplace("default", yyjson::read(*d));
             if (writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>()) required.push_back(key);
         }
@@ -874,6 +1076,410 @@ namespace yyjson
                     array_form(out);
                 else
                     out.emplace("not", empty_object);
+            }
+        }
+
+        // The JSON text of the value I of `yyjson::const_` and `yyjson::enum_` of N.
+        template <typename N>
+        std::string listed_text(std::size_t i)
+        {
+            using kind = yyjson::detail::json_scalar::kind_t;
+            using number = yyjson::detail::bound_number::kind_t;
+            const auto& s = N::values[i];
+            auto text = std::string();
+            switch (s.kind)
+            {
+                case kind::string:
+                    yyjson::write(std::string(s.string()), text);
+                    break;
+                case kind::number:
+                    if (s.number.kind == number::sint)
+                        text = std::to_string(s.number.sint);
+                    else if (s.number.kind == number::uint)
+                        text = std::to_string(s.number.uint);
+                    else
+                        yyjson::write(s.number.real, text);
+                    break;
+                case kind::boolean:
+                    text = s.boolean ? "true" : "false";
+                    break;
+                case kind::null:
+                    text = "null";
+                    break;
+                case kind::json:
+                    text = s.string();
+                    break;
+            }
+            return text;
+        }
+
+        // The write schema takes a value as `write` gives what `read` takes of it, such as the shortest text of a
+        // float.  A value that a read of C rejects is kept as declared.
+        template <typename N, typename C>
+        void generator::emit_listed(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using R = std::conditional_t<yd::constraint_string<C>, std::string, C>;
+            const auto value = [this](std::size_t i) {
+                auto text = listed_text<N>(i);
+                if constexpr (!yd::dom_checked<C> && requires { yyjson::read<R>(std::string_view()); })
+                {
+                    if (writing_ && N::values[i].kind != yd::json_scalar::kind_t::null)
+                    {
+                        try
+                        {
+                            auto written = std::string();
+                            yyjson::write(yyjson::read<R>(text), written);
+                            text = std::move(written);
+                        }
+                        catch (const std::bad_alloc&)
+                        {
+                            throw;
+                        }
+                        catch (const std::exception&)
+                        {
+                        }
+                    }
+                }
+                return yyjson::read(text);
+            };
+            constexpr bool constant = N::constraints.template has<yyjson::const_<>>();
+            if constexpr (constant) place(out, "const").emplace("const", value(0));
+            if constexpr (N::node.values_count > (constant ? 1 : 0))
+            {
+                auto values = place(out, "enum").emplace("enum", empty_array);
+                for (std::size_t i = constant ? 1 : 0; i < N::node.values_count; ++i) values.emplace_back(value(i));
+            }
+        }
+
+        // The bound `b` of a float F as the checker compares it, rounded to F, and an exclusive one as the adjacent
+        // float inside, both written as their shortest text; none if F cannot hold it.
+        template <typename F>
+        std::optional<double> float_bound(const yyjson::detail::bound_number& b, bool lower, bool exclusive)
+        {
+            using kind = yyjson::detail::bound_number::kind_t;
+            auto f = b.kind == kind::sint   ? static_cast<F>(b.sint)
+                     : b.kind == kind::uint ? static_cast<F>(b.uint)
+                                            : static_cast<F>(b.real);
+            if (!std::isfinite(f)) return std::nullopt;
+            if (exclusive)
+                f = std::nextafter(f, lower ? std::numeric_limits<F>::infinity() : -std::numeric_limits<F>::infinity());
+            if (!std::isfinite(f)) return std::nullopt;
+            return yyjson::read(yyjson::write(f)).template cast<double>();
+        }
+
+        template <typename N, typename C>
+        void generator::emit_bounds(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            constexpr const auto& c = N::constraints;
+            using Num = typename std::conditional_t<yd::enum_integer_only<C>, std::underlying_type<C>,
+                                                    std::type_identity<C>>::type;
+            const auto bound = [&](std::string_view key, const yd::bound_number& b, bool lower, bool exclusive) {
+                if constexpr (std::floating_point<Num> && yd::narrower_than_double<Num>)
+                {
+                    if (const auto f = float_bound<Num>(b, lower, exclusive); f.has_value())
+                    {
+                        tighten(out, lower ? "minimum" : "maximum", real_bound(*f), lower);
+                        return;
+                    }
+                }
+                tighten(out, key, b, lower);
+            };
+            if constexpr (c.template has<yyjson::minimum>()) bound("minimum", c.minimum, true, false);
+            if constexpr (c.template has<yyjson::exclusive_minimum>())
+                bound("exclusiveMinimum", c.exclusive_minimum, true, true);
+            if constexpr (c.template has<yyjson::maximum>()) bound("maximum", c.maximum, false, false);
+            if constexpr (c.template has<yyjson::exclusive_maximum>())
+                bound("exclusiveMaximum", c.exclusive_maximum, false, true);
+            if constexpr (c.template has<yyjson::multiple_of>())
+                emplace_bound(place(out, "multipleOf"), "multipleOf", c.multiple_of);
+        }
+
+        // Appends `key` to the `required` of `out`, unless it is there.
+        inline void add_required(object_ref out, std::string_view key)
+        {
+            if (auto it = out.find("required"); it != out.end())
+            {
+                auto keys = *it->second.as_array();
+                for (const auto k : keys)
+                    if (k.as_string() == key) return;
+                keys.emplace_back(key, copy_string);
+                return;
+            }
+            out.emplace("required", empty_array).emplace_back(key, copy_string);
+        }
+
+        // The keywords of a node go into the schema that the type already gives, as the checker applies them to the
+        // same value.  The schemas of the subschemas get keywords alone, besides the type of their position.
+        template <typename N, typename V, typename S>
+        void generator::emit_node(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using C = yd::constrained_value_t<std::remove_cv_t<V>>;
+            constexpr const auto& n = N::node;
+            constexpr const auto& c = N::constraints;
+            if constexpr (c.template has<yyjson::matches_t<void>>())
+                emit_matched<N, S>(out.empty() ? out : conjunct(out));
+            if constexpr (n.values_count != 0) emit_listed<N, C>(out);
+            if constexpr ((c.bits & yd::numeric_constraints) != 0) emit_bounds<N, C>(out);
+            if constexpr (c.template has<yyjson::min_length>()) tighten(out, "minLength", c.min_length, true);
+            if constexpr (c.template has<yyjson::max_length>()) tighten(out, "maxLength", c.max_length, false);
+            for (std::size_t i = 0; i < N::patterns.size(); ++i)
+                (i == 0 ? place(out, "pattern") : conjunct(out)).emplace("pattern", N::patterns[i], copy_string);
+            if constexpr (c.template has<yyjson::format<>>())
+                place(out, "format").emplace("format", c.format_name.view(), copy_string);
+            if constexpr (c.template has<yyjson::format_assertion<>>())
+                place(out, "format").emplace("format", c.assertion_name.view(), copy_string);
+            constexpr auto array_bits = yd::constraint_bit<yyjson::min_items> | yd::constraint_bit<yyjson::max_items> |
+                                        yd::constraint_bit<yyjson::unique_items_t>;
+            if constexpr ((c.bits & array_bits) != 0 || n.items != 0 || n.prefix_count != 0 || n.contains != 0)
+                emit_array_keywords<N, C, S>(out);
+            constexpr auto object_bits =
+                yd::constraint_bit<yyjson::min_properties> | yd::constraint_bit<yyjson::max_properties>;
+            if constexpr ((c.bits & object_bits) != 0 || n.properties != 0 || n.keys != 0)
+                emit_object_keywords<N, C, S>(out);
+            if constexpr (n.members != 0 || n.closed)
+            {
+                // `additionalProperties: false` sees only the `properties` of its own object, which must name only the
+                // members of `yyjson::property`
+                const bool own = n.closed && (out.contains("properties") || out.contains("additionalProperties") ||
+                                              out.contains("patternProperties"));
+                auto holder = own ? conjunct(out) : out;
+                if constexpr (n.members != 0) emit_members<N, n.members, C, S>(holder, out);
+                if constexpr (n.closed) holder.emplace("additionalProperties", false);
+            }
+            if constexpr (n.combinators != 0) emit_combinators<N, n.combinators, V, S>(out);
+        }
+
+        template <typename N, typename C, typename S>
+        void generator::emit_array_keywords(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            constexpr const auto& n = N::node;
+            constexpr const auto& c = N::constraints;
+            using P = position_types<C>;
+            if constexpr (c.template has<yyjson::min_items>()) tighten(out, "minItems", c.min_items, true);
+            if constexpr (c.template has<yyjson::max_items>()) tighten(out, "maxItems", c.max_items, false);
+            if constexpr (c.template has<yyjson::unique_items_t>())
+                if (!out.contains("uniqueItems")) out.emplace("uniqueItems", true);
+            if constexpr (n.prefix_count != 0 || n.items != 0)
+            {
+                constexpr bool tuple = yd::tuple_like<C> && !std::ranges::range<C>;
+                bool done = false;
+                if constexpr (tuple)
+                {
+                    // the array form of a tuple has a subschema at each position and no `items`
+                    if (out.contains("prefixItems"))
+                    {
+                        [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                            (
+                                [&] {
+                                    auto at = sub_at(out, "prefixItems", Js);
+                                    if constexpr (Js < n.prefix_count)
+                                        emit_node<typename N::template at<n.prefix_first + Js>,
+                                                  typename P::template prefix<Js>, S>(at);
+                                    else if constexpr (n.items != 0)
+                                        emit_node<typename N::template at<n.items>, typename P::template prefix<Js>, S>(
+                                            at);
+                                }(),
+                                ...);
+                        }(std::make_index_sequence<std::tuple_size_v<C>>{});
+                        done = true;
+                    }
+                }
+                if (!done)
+                {
+                    if constexpr (n.prefix_count != 0)
+                    {
+                        // `prefixItems` beside `items` would exempt its positions from the `items` of the type
+                        auto target = out.contains("items") || out.contains("prefixItems") ? conjunct(out) : out;
+                        auto prefix = target.emplace("prefixItems", empty_array);
+                        [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                            (emit_node<typename N::template at<n.prefix_first + Js>, typename P::template prefix<Js>,
+                                       S>(prefix.emplace_back(empty_object)),
+                             ...);
+                        }(std::make_index_sequence<n.prefix_count>{});
+                        if constexpr (n.items != 0)
+                            emit_node<typename N::template at<n.items>, typename P::element, S>(
+                                target.emplace("items", empty_object));
+                    }
+                    else
+                        emit_node<typename N::template at<n.items>, typename P::element, S>(sub(out, "items"));
+                }
+            }
+            if constexpr (n.contains != 0)
+            {
+                auto target = place(out, "contains");
+                auto contained = target.emplace("contains", empty_object);
+                if constexpr (!(yd::tuple_like<C> && !std::ranges::range<C>)) emit<typename P::element>(contained);
+                emit_node<typename N::template at<n.contains>, typename P::element, S>(contained);
+                if constexpr (c.template has<yyjson::min_contains>()) target.emplace("minContains", c.min_contains);
+                if constexpr (c.template has<yyjson::max_contains>()) target.emplace("maxContains", c.max_contains);
+            }
+        }
+
+        template <typename N, typename C, typename S>
+        void generator::emit_object_keywords(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            constexpr const auto& n = N::node;
+            constexpr const auto& c = N::constraints;
+            using P = position_types<C>;
+            if constexpr (c.template has<yyjson::min_properties>())
+                tighten(out, "minProperties", c.min_properties, true);
+            if constexpr (c.template has<yyjson::max_properties>())
+                tighten(out, "maxProperties", c.max_properties, false);
+            if constexpr (n.properties != 0)
+                emit_node<typename N::template at<n.properties>, typename P::value, S>(
+                    sub(out, "additionalProperties"));
+            if constexpr (n.keys != 0)
+                emit_node<typename N::template at<n.keys>, typename P::key, S>(sub(out, "propertyNames"));
+            // a map read from an array of its pairs is checked as the object of those pairs
+            if constexpr (yd::object_written_range<C>)
+                if constexpr (yd::nested_casts<C>::elements)
+                    if (!writing_)
+                    {
+                        if constexpr (c.template has<yyjson::min_properties>())
+                            tighten(out, "minItems", c.min_properties, true);
+                        if constexpr (c.template has<yyjson::max_properties>())
+                            tighten(out, "maxItems", c.max_properties, false);
+                        if constexpr (n.properties != 0 || n.keys != 0)
+                        {
+                            auto pair = sub(out, "items");
+                            if (!pair.contains("prefixItems"))
+                            {
+                                auto prefix = pair.emplace("prefixItems", empty_array);
+                                prefix.emplace_back(empty_object);
+                                prefix.emplace_back(empty_object);
+                            }
+                            if constexpr (n.keys != 0)
+                                emit_node<typename N::template at<n.keys>, typename P::key, S>(
+                                    sub_at(pair, "prefixItems", 0));
+                            if constexpr (n.properties != 0)
+                                emit_node<typename N::template at<n.properties>, typename P::value, S>(
+                                    sub_at(pair, "prefixItems", 1));
+                        }
+                    }
+        }
+
+        // The type of the value of the key `key` of a value of C.
+        template <typename C, std::size_t K>
+        struct member_type
+        {
+            using type = typename position_types<C>::value;
+        };
+        template <typename C, std::size_t K>
+        requires (yyjson::detail::object_struct_value<C>())
+        struct member_type<C, K>
+        {
+            using type = yyjson::detail::struct_field_type<C, K>;
+        };
+
+        template <typename N, std::size_t M, typename C, typename S>
+        void generator::emit_members(object_ref holder, object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using Mn = typename N::template at<M>;
+            constexpr auto key = Mn::node.key.view();
+            constexpr auto k = [] {
+                if constexpr (yd::object_struct_value<C>())
+                    return yd::struct_field_of_key<C>(Mn::node.key.view());
+                else
+                    return std::size_t{0};
+            }();
+            using F = typename member_type<C, k>::type;
+            if constexpr (Mn::node.named || !empty_node(Mn::node))
+            {
+                // a key of `yyjson::required` alone is not one that `additionalProperties: false` allows
+                auto at = Mn::node.named || !N::node.closed ? holder : conjunct(out);
+                emit_node<Mn, F, S>(sub(sub(at, "properties"), key));
+            }
+            if constexpr (Mn::node.required) add_required(holder, key);
+            if constexpr (Mn::node.next != 0) emit_members<N, Mn::node.next, C, S>(holder, out);
+        }
+
+        template <typename N, std::size_t R, typename V, typename S>
+        void generator::emit_combinators(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using kind = yd::combinator_kind;
+            using Rn = typename N::template at<R>;
+            constexpr auto combinator = Rn::node.combinator;
+            constexpr auto first = Rn::node.operands_first;
+            const auto operand = [&]<std::size_t J>(std::integral_constant<std::size_t, J>, object_ref o) {
+                emit_node<typename N::template at<first + J>, V, S>(o);
+            };
+            using zero = std::integral_constant<std::size_t, 0>;
+            using one = std::integral_constant<std::size_t, 1>;
+            using two = std::integral_constant<std::size_t, 2>;
+            if constexpr (combinator == kind::not_)
+                operand(zero(), place(out, "not").emplace("not", empty_object));
+            else if constexpr (combinator == kind::if_then_else)
+            {
+                auto holder = place(out, "if");
+                operand(zero(), holder.emplace("if", empty_object));
+                if constexpr (!empty_node(N::template at<first + 1>::node))
+                    operand(one(), holder.emplace("then", empty_object));
+                if constexpr (!empty_node(N::template at<first + 2>::node))
+                    operand(two(), holder.emplace("else", empty_object));
+            }
+            else if constexpr (combinator == kind::dependent_required)
+            {
+                // the node tree holds it as an `if` of the key and a `then` of the dependents, which the keyword
+                // gives back in one place
+                using If = typename N::template at<first>;
+                constexpr auto key = N::template at<If::node.members>::node.key.view();
+                auto dependents = [&] {
+                    auto all = sub(out, "dependentRequired");
+                    if (auto it = all.find(key); it != all.end())
+                    {
+                        auto v = it->second;
+                        return *v.as_array();
+                    }
+                    return all.emplace(key, empty_array, copy_string);
+                }();
+                const auto add = [&]<std::size_t M>(auto& self, std::integral_constant<std::size_t, M>) -> void {
+                    using Mn = typename N::template at<M>;
+                    const auto dependent = Mn::node.key.view();
+                    bool listed = false;
+                    for (const auto d : dependents) listed = listed || d.as_string() == dependent;
+                    if (!listed) dependents.emplace_back(dependent, copy_string);
+                    if constexpr (Mn::node.next != 0) self(self, std::integral_constant<std::size_t, Mn::node.next>());
+                };
+                add(add, std::integral_constant<std::size_t, N::template at<first + 1>::node.members>());
+            }
+            else
+            {
+                constexpr std::string_view keyword = combinator == kind::all_of ? "allOf"
+                                                     : combinator == kind::any_of || combinator == kind::any_of_keys
+                                                         ? "anyOf"
+                                                         : "oneOf";
+                auto operands = place(out, keyword).emplace(keyword, empty_array);
+                [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                    (operand(std::integral_constant<std::size_t, Js>(), operands.emplace_back(empty_object)), ...);
+                }(std::make_index_sequence<Rn::node.operands_count>{});
+            }
+            if constexpr (Rn::node.next != 0) emit_combinators<N, Rn::node.next, V, S>(out);
+        }
+
+        // `yyjson::matches<T>` keeps no T but its check, whose name finds T among the settings of S.
+        template <typename N, typename S>
+        void generator::emit_matched(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using Ts = typename matched_types<yd::annotation_values_of<S>>::type;
+            constexpr auto i = matched_index<Ts>::of(N::constraints.matches.name());
+            static_assert(i < std::tuple_size_v<Ts>,
+                          "C7h: yyjson::matches inside yyjson::prefix_items, all_of, any_of or one_of is not emitted "
+                          "yet");
+            if constexpr (i < std::tuple_size_v<Ts>)
+            {
+                // the check reads T as `read` does, whatever the direction of the schema
+                const bool writing = writing_;
+                writing_ = false;
+                emit<std::tuple_element_t<i, Ts>>(out);
+                writing_ = writing;
             }
         }
 
