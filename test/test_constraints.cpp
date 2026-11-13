@@ -2086,7 +2086,8 @@ struct MergedAbsent
     std::map<std::string, MergedMinimum> mins;
     bool operator==(const MergedAbsent&) const = default;
 };
-// a field that the write omits as equal to its default, which a merge reads from the patch as an absent value
+// a field that the write omits as equal to its default, which a merge reads from the patch as an absent value; the
+// default of "min" violates the minimum of its struct, so that no write gives it
 struct OmittedInner
 {
     std::optional<int> y;
@@ -4966,12 +4967,12 @@ TEST(Constraints, MergedAbsentField)
         return expect_merge_rule<OmittedOuter, true>(t, patch);
     };
     rejected(merge(outer, R"({"in":{"y":1}})"), R"(OmittedInner is not constructible from JSON without the key "z")");
-    EXPECT_EQ(merge(outer, R"({"in":{"y":1,"z":2}})"), R"({"name":"a","in":{"y":1,"z":2},"min":{"a":0}})");
+    EXPECT_EQ(merge(outer, R"({"in":{"y":1,"z":2}})"), R"({"name":"a","in":{"y":1,"z":2}})");
     rejected(merge(outer, R"({"min":{"b":1}})"), "MergedMinimum has fewer properties than the minimum 2");
     EXPECT_EQ(merge(outer, R"({"min":{"a":1,"b":null,"c":2}})"), R"({"name":"a","in":{"z":0},"min":{"a":1}})");
     auto written = outer;
     written.in.z = 1;
-    EXPECT_EQ(merge(written, R"({"in":{"y":1}})"), R"({"name":"a","in":{"y":1,"z":1},"min":{"a":0}})");
+    EXPECT_EQ(merge(written, R"({"in":{"y":1}})"), R"({"name":"a","in":{"y":1,"z":1}})");
 
     // the counts in a condition count a field that the patch does not name
     rejected(expect_merge_rule(KeptGate{{}, {1}, {{"k", 1}, {"l", 2}}}, R"({"a":1})"),

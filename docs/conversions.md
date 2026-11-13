@@ -471,7 +471,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
 | `yyjson::required` | a field | rejects an object without the key, also without `yyjson::strict` | [Default values and required keys](#default-values-and-required-keys) |
 | `yyjson::default_`, `yyjson::default_from<f>` | a field, or a struct for `default_` | gives the field a default: its key may be left out, and a value equal to the default is not written | [Default values and required keys](#default-values-and-required-keys) |
-| `yyjson::emit_defaults` | a field with a default | writes the field also when it is equal to its default | [Default values and required keys](#default-values-and-required-keys) |
+| `yyjson::emit_defaults` | a field with a default | writes the field also when it is equal to its default, unless the default is a sentinel | [Default values and required keys](#default-values-and-required-keys) |
 | the [constraints](validation.md#constraints), such as `yyjson::minimum(m)` and `yyjson::items(s...)` | a field | rejects a value that does not satisfy them | [Constraints](validation.md#constraints) |
 | `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of` | a field, or a struct | rejects a value, or an object of the struct, that does not satisfy the combined subschemas | [Combining constraints](validation.md#combining-constraints), [Conditions between fields](validation.md#conditions-between-fields) |
 | `yyjson::property("key", s...)` | a struct, or a field that holds a struct | gives the settings `s` to the value of the key | [Constraints](validation.md#constraints), [Keywords of an object at a field](validation.md#keywords-of-an-object-at-a-field) |
@@ -557,7 +557,7 @@ A field has a default when its key may be left out of the JSON. These fields hav
 *   A field with `yyjson::default_`. Its default is its value in `T()`. On the struct, `yyjson::default_` gives a default to each field that has no setting of its own and is not a `std::optional`.
 *   A field with `yyjson::default_from<f>`. Its default is `f()`. For a field of `std::optional<U>`, `yyjson::nullable<U>`, a smart pointer or `yyjson::indirect<U>`, `f` returns a `U`. `T()` does not call `f`.
 
-When a field with `yyjson::default_` or `yyjson::default_from<f>` is equal to its default, the library does not write it. `yyjson::emit_defaults` on the field writes it in every case, and the call `yyjson::write(t, yyjson::emit_defaults)` writes every such field of every struct that it writes. An empty `std::optional` is left out also then.
+When a field with `yyjson::default_` or `yyjson::default_from<f>` is equal to its default, the library does not write it. `yyjson::emit_defaults` on the field writes it in every case, and the call `yyjson::write(t, yyjson::emit_defaults)` writes every such field of every struct that it writes. An empty `std::optional` is left out also then, and so is a field that is equal to a sentinel, as below.
 
 ```cpp
 std::string guest() { return "guest"; }
@@ -591,6 +591,32 @@ yyjson::read<Query>(R"({"limit":5})");
 *   `yyjson::required` makes every read reject an object without the key, with or without the policies. It takes no default, and a `std::optional` field takes no `yyjson::required`. [`yyjson::required("key", ...)`](reference.md#yyjsonrequired) on the struct is the same as `yyjson::required` on the field of each key.
 *   The library compares a field with its default as JSON Schema compares JSON values. Thus `-0.0` is equal to a default of `0.0`, and `write` leaves it out. To write the exact value, use `yyjson::emit_defaults`.
 *   `f` of `default_from<f>` must give the same value each time that it is called. The library calls it once and keeps the value for the comparison.
+
+A default of `yyjson::default_` or `yyjson::default_from<f>` can mark a field that has no value. Such a default is a sentinel. A default is a sentinel when it violates a [constraint](validation.md) of the field. It is also a sentinel when a write of it with `yyjson::emit_defaults` and no other flag fails. So is a default whose written text a read under `yyjson::strict` and `yyjson::reject_unknown_keys` rejects. Thus a default of infinity is a sentinel, also for a write with `yyjson::WriteFlag::AllowInfAndNan`. The library tests each default one time, when it first compares a field with the default.
+
+```cpp
+struct Range
+{
+    int low = -1;
+    int high = 10;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Range> = yyjson::annotate(
+    yyjson::field("low", yyjson::default_, yyjson::minimum(0)), yyjson::field("high", yyjson::default_));
+
+yyjson::write(Range(), yyjson::emit_defaults);
+// -> {"high":10}
+yyjson::read<Range>("{}", yyjson::strict);
+// -> Range{.low = -1, .high = 10}
+yyjson::validate(Range());
+// does not throw
+```
+
+*   No write of an object gives a field that is equal to a sentinel. `yyjson::emit_defaults` on the field or in the call, and `yyjson::min_properties` of the struct, do not change this. The library gives no warning for `yyjson::emit_defaults` on such a field. A struct with [`yyjson::as_array`](#a-struct-as-a-json-array) writes the sentinel, because each field keeps its position in the array.
+*   A read of an object without the key gives the field the sentinel, and does not check it. `yyjson::validate` does not check the field of an object either, because the write leaves it out.
+*   The JSON Schema of the struct gives no `default` for the field, and does not require its key.
+*   Only `yyjson::default_` and `yyjson::default_from<f>` make a sentinel. The value in `T()` of a field without them, such as a `std::optional` with an initializer, is written and checked as each other value.
 
 `yyjson::nullable<U>` reads `null` and writes an empty value as `null`, at every position. As a field, it needs its key as `U` does. `std::optional<yyjson::nullable<U>>` tells three states of a key: absent, `null`, and a value.
 
@@ -736,7 +762,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     // -> tree.children.size() == 2
     ```
 
-*   **Writing.** The write writes the fields in order. It leaves out the empty `std::optional` fields at the end of the array. In an array whose length varies, make the fields from the first one that may be left out to the last one `std::optional`. Only an optional with no later value may be empty. An empty optional before a value makes the write throw `yyjson::write_error`, because the array has no place for the missing element. Thus `yyjson::write(Rule{1, std::nullopt, 3})` throws `Rule cannot be written as an array: the field "mode" at the element 1 has no value and a later element has one`. The elements of the field of `yyjson::extra_items` are later values too. To write `null`, use `yyjson::nullable<U>`. A smart pointer and a `std::variant` with `std::monostate` also write `null`. A field of `std::optional<yyjson::nullable<int>>` is left out when it is empty, and it is written as `null` when it holds an empty `yyjson::nullable`. A value equal to its default is written.
+*   **Writing.** The write writes the fields in order. It leaves out the empty `std::optional` fields at the end of the array. In an array whose length varies, make the fields from the first one that may be left out to the last one `std::optional`. Only an optional with no later value may be empty. An empty optional before a value makes the write throw `yyjson::write_error`, because the array has no place for the missing element. Thus `yyjson::write(Rule{1, std::nullopt, 3})` throws `Rule cannot be written as an array: the field "mode" at the element 1 has no value and a later element has one`. The elements of the field of `yyjson::extra_items` are later values too. To write `null`, use `yyjson::nullable<U>`. A smart pointer and a `std::variant` with `std::monostate` also write `null`. A field of `std::optional<yyjson::nullable<int>>` is left out when it is empty, and it is written as `null` when it holds an empty `yyjson::nullable`. A value equal to its default is written, also a sentinel.
 *   **Settings of the whole array.** The struct takes `yyjson::min_items(n)`, `yyjson::max_items(n)`, `yyjson::unique_items`, `yyjson::contains(settings...)`, `yyjson::min_contains(n)` and `yyjson::max_contains(n)`. They are the keywords `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains` and `maxContains` beside `prefixItems` in JSON Schema. The read checks them after it reads the fields. The message is `the value of T`, and then the text of the [constraint](validation.md#constraints), at the path of the struct. For `yyjson::unique_items`, the message is `an element of the value of T is equal to an earlier element`, at the path of the later element, as for a `std::vector`.
 *   **What they count.** The read checks these settings on the elements of the JSON array, as JSON Schema does. A missing element is no element, also when its field gets the value in `T()` or a default. A `null` is an element. Its value is the value that the field reads from it, such as an empty `yyjson::nullable<U>`. An element after the fields that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`:
 

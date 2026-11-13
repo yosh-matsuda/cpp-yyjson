@@ -569,27 +569,20 @@ namespace yyjson
             return !yyjson::detail::struct_field_absence<S>[K];
         }
         // Whether every write of S gives the key of its field K: the field is not omitted when empty, nor when equal
-        // to its default unless the write takes `yyjson::emit_defaults`.
+        // to its default unless the write takes `yyjson::emit_defaults`, nor when its default is a sentinel.
         template <typename S, std::size_t K>
-        [[nodiscard]] constexpr bool write_requires(bool emit_defaults) noexcept
+        [[nodiscard]] bool write_requires(bool emit_defaults)
         {
             namespace yd = yyjson::detail;
             using F = yd::struct_field_type<S, K>;
-            return (emit_defaults || !yd::omits_default<S, yd::struct_declared_index<S, K>>) &&
-                   !yd::omittable<decltype(yd::writable_field(std::declval<const F&>()))>;
+            constexpr auto r = yd::struct_declared_index<S, K>;
+            if constexpr (yd::omittable<decltype(yd::writable_field(std::declval<const F&>()))>)
+                return false;
+            else if constexpr (yd::field_has_default<S, r>)
+                return (emit_defaults || !yd::omits_default<S, r>) && !yd::sentinel_default<S, r>();
+            else
+                return true;
         }
-
-        // A C array is read as the `std::array` of as many elements.
-        template <typename F>
-        struct read_back
-        {
-            using type = F;
-        };
-        template <typename E, std::size_t N>
-        struct read_back<E[N]>
-        {
-            using type = std::array<typename read_back<E>::type, N>;
-        };
 
         // Whether the read schema takes the written value `v` where it is narrower than the read: a tuple of pairs
         // whose values differ in type.
@@ -639,22 +632,13 @@ namespace yyjson
             decltype(auto) field = yd::writable_field(d);
             if constexpr (yd::omittable<decltype(field)>)
                 if (yd::should_omit_field(field)) return std::nullopt;
-            using R = typename read_back<std::remove_cv_t<F>>::type;
-            if constexpr (!readable<R>)
+            if constexpr (!readable<typename yd::read_back<std::remove_cv_t<F>>::type>)
                 return std::nullopt;
             else
             {
-                try
-                {
-                    auto text = std::string(yyjson::write(field, yyjson::emit_defaults));
-                    (void)yyjson::read<R>(text, yyjson::strict, yyjson::reject_unknown_keys);
-                    if (!read_schema_takes(field)) return std::nullopt;
-                    return text;
-                }
-                catch (const std::exception&)
-                {
-                    return std::nullopt;
-                }
+                auto text = yd::round_trip_text<F>(d);
+                if (text && !read_schema_takes(field)) text.reset();
+                return text;
             }
         }
 
@@ -671,8 +655,8 @@ namespace yyjson
                 return nullptr;
         }
 
-        // The `default` of the field K of S: the value of its `yyjson::default_from<f>`, or else the field of `S()`
-        // if it satisfies the keywords of the field as `validate` checks them.  A required field has none.
+        // The `default` of the field K of S: its declared default unless it is a sentinel, or else the field of
+        // `S()` if it satisfies the keywords of the field as `validate` checks them.  A required field has none.
         template <typename S, std::size_t K>
         const std::optional<std::string>& field_default(registry& names)
         {
@@ -683,8 +667,10 @@ namespace yyjson
             if (!added) return it->second;
             if constexpr (yd::presence_of<S, r>.required)
                 return it->second;
-            else if constexpr (yd::presence_of<S, r>.from.has_value())
-                it->second = default_text<F>(yd::default_field_value<S, r>());
+            else if constexpr (yd::field_has_default<S, r>)
+            {
+                if (!yd::sentinel_default<S, r>()) it->second = default_text<F>(yd::stored_default<S, r>());
+            }
             else if (const auto* s = initial_value<S>(names); s != nullptr)
             {
                 it->second = default_text<F>(yd::struct_field<K>(*s));

@@ -356,7 +356,8 @@ TEST(Validate, AsArrayWholeArray)
                    "the value of VdArrayCells satisfies the settings of yyjson::not_", "/1");
 }
 
-// a field that write leaves out is not checked, and a field that a read gives another value is a violation
+// a field that write leaves out is not checked, and a field that a read gives another value is a violation; each
+// default here violates the keywords of its field, so that write leaves out a field equal to it in every form
 struct VdWeight
 {
     int a = 0;
@@ -376,6 +377,16 @@ inline constexpr auto yyjson::annotations<VdDefaults> =
     yyjson::annotate(yyjson::field("d", yyjson::minimum(1), yyjson::default_),
                      yyjson::field("e", yyjson::minimum(1), yyjson::default_, yyjson::emit_defaults),
                      yyjson::field("w", yyjson::default_));
+// defaults that satisfy their keywords, which `yyjson::emit_defaults` writes past the maximum of the struct
+struct VdCapped
+{
+    int a = 1;
+    int b = 2;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdCapped> =
+    yyjson::annotate(yyjson::max_properties(1), yyjson::field("a", yyjson::default_, yyjson::minimum(1)),
+                     yyjson::field("b", yyjson::default_));
 int vd_three() { return 3; }
 struct VdReadBack
 {
@@ -400,34 +411,40 @@ struct VdReadBackTransparent
 TEST(Validate, Presence)
 {
     using yyjson::emit_defaults, yyjson::with_validation;
-    // the defaults of "d" and "w" are left out, and "e" is written
+    // the defaults of "d", "e" and "w" are left out also under `yyjson::emit_defaults` and are not checked
     const auto e1 = VdDefaults{0, 1, {0, 3}};
     expect_valid(e1);
-    expect_invalid(VdDefaults{0, 0, {0, 7}}, R"(the value of the key "e" of VdDefaults is less than the minimum 1)",
+    expect_valid(VdDefaults{0, 0, {0, 7}});
+    EXPECT_NO_THROW(yyjson::validate(e1, emit_defaults));
+    EXPECT_EQ(std::string(yyjson::write(e1, emit_defaults, with_validation)), R"({"e":1})");
+    EXPECT_EQ(std::string(yyjson::write(VdDefaults{0, 0, {0, 7}}, emit_defaults, with_validation)), "{}");
+    // a value other than the default is checked
+    expect_invalid(VdDefaults{-1, 1, {0, 3}}, R"(the value of the key "d" of VdDefaults is less than the minimum 1)",
+                   "/d");
+    expect_invalid(VdDefaults{1, -1, {0, 3}}, R"(the value of the key "e" of VdDefaults is less than the minimum 1)",
                    "/e");
-    // `yyjson::emit_defaults` of the call writes and checks them
-    const auto d_message = std::string(R"(the value of the key "d" of VdDefaults is less than the minimum 1 at /d)");
-    EXPECT_EQ(validation_error([&] { yyjson::validate(e1, emit_defaults); }).what(), d_message);
-    EXPECT_EQ(validation_error([&] { (void)yyjson::write(e1, emit_defaults, with_validation); }).what(), d_message);
+    expect_invalid(VdDefaults{1, 1, {-1, 3}}, R"(the value of the key "a" of VdWeight is less than the minimum 1)",
+                   "/w/a");
+
+    // `yyjson::emit_defaults` of the call writes and checks the other defaults
+    expect_valid(VdCapped{});
+    const auto capped = std::string("VdCapped has more properties than the maximum 1");
+    EXPECT_EQ(validation_error([&] { yyjson::validate(VdCapped{}, emit_defaults); }).what(), capped);
+    EXPECT_EQ(validation_error([&] { (void)yyjson::write(VdCapped{}, emit_defaults, with_validation); }).what(),
+              capped);
     auto out = std::string("previous");
-    EXPECT_EQ(validation_error([&] { yyjson::write(e1, out, emit_defaults, with_validation); }).what(), d_message);
+    EXPECT_EQ(validation_error([&] { yyjson::write(VdCapped{}, out, emit_defaults, with_validation); }).what(), capped);
     EXPECT_EQ(out, "previous");
     EXPECT_EQ(validation_error([&] {
-                  (void)yyjson::write(e1, yyjson::WriteFlag::NoFlag, emit_defaults, with_validation);
+                  (void)yyjson::write(VdCapped{}, yyjson::WriteFlag::NoFlag, emit_defaults, with_validation);
               }).what(),
-              d_message);
+              capped);
     EXPECT_EQ(validation_error([&] {
-                  yyjson::write(e1, out, yyjson::WriteFlag::NoFlag, emit_defaults, with_validation);
+                  yyjson::write(VdCapped{}, out, yyjson::WriteFlag::NoFlag, emit_defaults, with_validation);
               }).what(),
-              d_message);
+              capped);
     EXPECT_EQ(out, "previous");
-    // the field "w" equals its default as JSON, and the skipped field is not compared
-    const auto e2 = VdDefaults{1, 1, {0, 3}};
-    EXPECT_NO_THROW(yyjson::validate(e2));
-    const auto w_message = R"(the value of the key "a" of VdWeight is less than the minimum 1 at /w/a)";
-    EXPECT_EQ(validation_error([&] { yyjson::validate(e2, emit_defaults); }).what(), std::string(w_message));
-    EXPECT_EQ(std::string(yyjson::write(VdDefaults{1, 1, {2, 3}}, emit_defaults, with_validation)),
-              std::string(yyjson::write(VdDefaults{1, 1, {2, 3}}, emit_defaults)));
+    EXPECT_EQ(std::string(yyjson::write(VdCapped{}, emit_defaults)), R"({"a":1,"b":2})");
 
     // an empty `std::optional`, whose default holds a value, is read back as that value
     expect_valid(VdReadBack{});

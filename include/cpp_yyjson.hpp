@@ -11,6 +11,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <bitset>
 #include <cassert>
@@ -12593,13 +12594,20 @@ namespace yyjson
             (presence_of<S, R>.defaulted || presence_of<S, R>.from.has_value()) && !presence_of<S, R>.emit_defaults &&
             !struct_count_annotated<S, false> && !struct_conditions_min<S>;
 
+        // Whether a write of S can leave out a field equal to its default.  A sentinel default is left out under
+        // every tag, so each field with a declared default counts.
         template <typename S>
         inline constexpr bool has_omitted_defaults = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
             if constexpr (std::is_void_v<typename presence_keys<S>::type>)
                 return false;
             else
-                return count_true<omits_default<S, struct_declared_index<S, Ks>>...> != 0;
+                return count_true<field_has_default<S, struct_declared_index<S, Ks>>...> != 0;
         }(std::make_index_sequence<struct_field_count<S>>{});
+
+        // Whether the declared default of the field R of S is a sentinel: it violates the keywords of the field, or
+        // it does not write and read back.  A write always leaves out a field equal to a sentinel.
+        template <typename S, std::size_t R>
+        bool sentinel_default();
 
         // The default value of the field R of S: the value of its `yyjson::default_from<f>`, or the field of `S()`.
         // It is made once.
@@ -12625,7 +12633,8 @@ namespace yyjson
         }
 
         // Whether `field`, the field R of S as `forward_field` or `writable_field` gives it, equals its default
-        // value, and whether it is written as its default value, unless the write takes `yyjson::emit_defaults`.
+        // value, and whether a write leaves it out as its default: the write, the field or S does not ask for the
+        // defaults, or the default is a sentinel.  The sentinel is tested only for a field equal to it.
         template <typename S, std::size_t R, typename Field>
         bool equals_default(const Field& field)
         {
@@ -12633,10 +12642,11 @@ namespace yyjson
             return json_equal<std::remove_cvref_t<decltype(d)>>(d, field);
         }
         template <typename S, std::size_t R, typename Field>
-        bool holds_default(const Field& field)
+        bool omitted_default(const Field& field, bool emit_defaults = write_emit_defaults)
         {
-            if (write_emit_defaults) return false;
-            return equals_default<S, R>(field);
+            if constexpr (omits_default<S, R>)
+                if (!emit_defaults) return equals_default<S, R>(field);
+            return equals_default<S, R>(field) && sentinel_default<S, R>();
         }
 
         // Whether `yyjson::write(s)` writes the key of the field K of `s`, by its index among the fields that are
@@ -12650,9 +12660,9 @@ namespace yyjson
             else
             {
                 decltype(auto) field = writable_field(struct_field<K>(s));
-                if constexpr (omits_default<S, r>)
+                if constexpr (field_has_default<S, r>)
                 {
-                    if (equals_default<S, r>(field)) return false;
+                    if (omitted_default<S, r>(field, false)) return false;
                 }
                 if constexpr (omittable<decltype(field)>)
                 {
@@ -12669,7 +12679,7 @@ namespace yyjson
             using F = std::remove_cvref_t<struct_field_type<S, K>>;
             if constexpr (adjacent_declared_field<S, r>)
                 return false;
-            else if constexpr (omits_default<S, r>)
+            else if constexpr (field_has_default<S, r>)
                 return true;
             else
                 return omittable<decltype(writable_field(std::declval<const F&>()))> && !is_std_optional<F>::value &&
@@ -12902,9 +12912,9 @@ namespace yyjson
             }
             else
             {
-                if constexpr (omits_default<S, R>)
+                if constexpr (field_has_default<S, R>)
                 {
-                    if (holds_default<S, R>(field)) return;
+                    if (omitted_default<S, R>(field)) return;
                 }
                 emitter.template emplace<Plain>(key, std::forward<Field>(field), ts...);
             }
@@ -28323,9 +28333,9 @@ namespace yyjson
                         std::forward<Field>(field));
                     return;
                 }
-                if constexpr (yyjson::detail::omits_default<S, R>)
+                if constexpr (yyjson::detail::field_has_default<S, R>)
                 {
-                    if (yyjson::detail::holds_default<S, R>(field)) return;
+                    if (yyjson::detail::omitted_default<S, R>(field)) return;
                 }
                 if constexpr (omittable<Field>)
                 {
@@ -39395,9 +39405,9 @@ namespace yyjson
             else
             {
                 decltype(auto) w = writable_field(field);
-                if constexpr (omits_default<S, r>)
+                if constexpr (field_has_default<S, r>)
                 {
-                    if (holds_default<S, r>(w)) return false;
+                    if (omitted_default<S, r>(w)) return false;
                 }
                 if constexpr (omittable<decltype(w)>)
                 {
@@ -40488,6 +40498,123 @@ namespace yyjson
         detail::validate_for_write(t, write_flag);
         write(t, out, write_flag);
     }
+
+    namespace detail
+    {
+        // A C array is read as the `std::array` of as many elements.
+        template <typename F>
+        struct read_back
+        {
+            using type = F;
+        };
+        template <typename E, std::size_t N>
+        struct read_back<E[N]>
+        {
+            using type = std::array<typename read_back<E>::type, N>;
+        };
+
+        // The JSON text that `write` with `yyjson::emit_defaults` gives for the value `d` of a field of F, if the
+        // strict read of F takes it back.  A type that cannot be read is only written.
+        template <typename F, typename D>
+        std::optional<std::string> round_trip_text(const D& d)
+        {
+            using R = typename read_back<std::remove_cv_t<F>>::type;
+            try
+            {
+                auto text = std::string(yyjson::write(writable_field(d), yyjson::emit_defaults));
+                if constexpr (readable<R>) (void)yyjson::read<R>(text, yyjson::strict, yyjson::reject_unknown_keys);
+                return text;
+            }
+            catch (const std::bad_alloc&)
+            {
+                throw;
+            }
+            catch (const std::exception&)
+            {
+                return std::nullopt;
+            }
+        }
+
+        // The state of this thread as a call of the library starts, for a test that runs within another call.
+        class fresh_call_scope
+        {
+            std::size_t depth_ = std::exchange(recursion_depth, 0);
+            std::size_t rereads_ = std::exchange(variant_rereads, 1);
+            std::size_t recursive_reads_ = std::exchange(recursive_variant_reads, 0);
+            bool collecting_ = std::exchange(collecting_alternative_reasons, false);
+            std::uint8_t policies_ = std::exchange(read_policies, 0);
+            std::vector<const void*>* absent_reads_ = std::exchange(absent_reads, nullptr);
+            std::vector<reader::detail::absent_key>* absent_before_ =
+                std::exchange(reader::detail::absent_before, nullptr);
+
+        public:
+            fresh_call_scope() = default;
+            fresh_call_scope(const fresh_call_scope&) = delete;
+            fresh_call_scope& operator=(const fresh_call_scope&) = delete;
+            ~fresh_call_scope()
+            {
+                recursion_depth = depth_;
+                variant_rereads = rereads_;
+                recursive_variant_reads = recursive_reads_;
+                collecting_alternative_reasons = collecting_;
+                read_policies = policies_;
+                absent_reads = absent_reads_;
+                reader::detail::absent_before = absent_before_;
+            }
+        };
+
+        // The index among the fields that are read of the field R of S, by its index among all the fields.
+        template <typename S, std::size_t R>
+        inline constexpr std::size_t struct_read_index = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            auto k = std::size_t{0};
+            (void)((struct_declared_index<S, Ks> == R ? (k = Ks, true) : false) || ...);
+            return k;
+        }(std::make_index_sequence<struct_field_count<S>>{});
+
+        // An empty `std::optional` is the absence of a default, and no sentinel.
+        template <typename S, std::size_t R>
+        bool test_sentinel_default()
+        {
+            const auto& d = stored_default<S, R>();
+            if constexpr (omittable<decltype(writable_field(d))>)
+                if (should_omit_field(writable_field(d))) return false;
+            const fresh_call_scope fresh;
+            try
+            {
+                const emit_defaults_scope scope;
+                validate_written_field<false, S, struct_read_index<S, R>>(d, WriteFlag::NoFlag);
+            }
+            catch (const std::bad_alloc&)
+            {
+                throw;
+            }
+            catch (const std::exception&)
+            {
+                return true;
+            }
+            return !round_trip_text<declared_field_type<S, R>>(d).has_value();
+        }
+
+        // The test runs once, and threads that race to it get the same answer, with no lock that a default holding
+        // S again could wait on.  The default of a field of S met within its own test is no sentinel.
+        template <typename S, std::size_t R>
+        bool sentinel_default()
+        {
+            static constinit std::atomic<unsigned char> state{0};
+            static constinit thread_local bool testing = false;
+            if (const auto known = state.load(std::memory_order_acquire); known != 0) [[likely]]
+                return known == 2;
+            if (testing) return false;
+            testing = true;
+            const struct end_test
+            {
+                ~end_test() { testing = false; }
+            } end;
+            const bool sentinel = test_sentinel_default<S, R>();
+            state.store(sentinel ? 2 : 1, std::memory_order_release);
+            return sentinel;
+        }
+    }  // namespace detail
 
     template <typename T, typename... Args, typename cannot_be_written = detail::write_cause<T>>
     requires (!writable<T>)

@@ -157,6 +157,7 @@ namespace schema_test
     };
 
     inline int seven() { return 7; }
+    inline int negative() { return -5; }
     inline int calls = 0;
     inline int counted_seven()
     {
@@ -210,6 +211,15 @@ namespace schema_test
         int a = -1;
         int b = 5;
         std::optional<int> c = -1;
+    };
+
+    // defaults of `default_` and `default_from` that violate the keywords of their fields, which no write gives
+    struct DefaultSentinel
+    {
+        int a = -1;
+        int b = 5;
+        std::optional<int> c = -1;
+        int d = 3;
     };
 
     // a field whose default `write` gives because the struct counts its members
@@ -301,6 +311,12 @@ template <>
 inline constexpr auto yyjson::annotations<schema_test::Sentinel> =
     yyjson::annotate(yyjson::field("a", yyjson::minimum(0)), yyjson::field("b", yyjson::minimum(0)),
                      yyjson::field("c", yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::DefaultSentinel> =
+    yyjson::annotate(yyjson::field("a", yyjson::default_, yyjson::emit_defaults, yyjson::minimum(0)),
+                     yyjson::field("b", yyjson::default_, yyjson::emit_defaults, yyjson::minimum(0)),
+                     yyjson::field("c", yyjson::default_, yyjson::minimum(0)),
+                     yyjson::field("d", yyjson::default_from<schema_test::negative>, yyjson::minimum(0)));
 template <>
 inline constexpr auto yyjson::annotations<schema_test::Called> =
     yyjson::annotate(yyjson::field("a", yyjson::default_from<schema_test::counted_seven>));
@@ -904,6 +920,10 @@ TEST(Schema, Defaults)
     EXPECT_FALSE((yyjson::schema_detail::field_default<Sentinel, 0>(names)));
     EXPECT_EQ((yyjson::schema_detail::field_default<Sentinel, 1>(names)), "5");
     EXPECT_FALSE((yyjson::schema_detail::field_default<Sentinel, 2>(names)));
+    EXPECT_FALSE((yyjson::schema_detail::field_default<DefaultSentinel, 0>(names)));
+    EXPECT_EQ((yyjson::schema_detail::field_default<DefaultSentinel, 1>(names)), "5");
+    EXPECT_FALSE((yyjson::schema_detail::field_default<DefaultSentinel, 2>(names)));
+    EXPECT_FALSE((yyjson::schema_detail::field_default<DefaultSentinel, 3>(names)));
 
     const auto narrowed = definition<Narrowed>(false)["properties"];
     EXPECT_EQ(narrowed["wide"]["default"], json::parse(R"({"100":1})"));
@@ -948,6 +968,15 @@ TEST(Schema, WriteRequired)
     EXPECT_TRUE((sd::write_requires<Counted, 1>(false)));
     EXPECT_FALSE((sd::write_requires<StructDefault, 0>(false)));
     EXPECT_TRUE((sd::write_requires<StructDefault, 0>(true)));
+    // no write gives a sentinel, even under `yyjson::emit_defaults`
+    for (const bool emit : {false, true})
+    {
+        EXPECT_FALSE((sd::write_requires<DefaultSentinel, 0>(emit)));
+        EXPECT_TRUE((sd::write_requires<DefaultSentinel, 1>(emit)));
+        EXPECT_FALSE((sd::write_requires<DefaultSentinel, 2>(emit)));
+        EXPECT_FALSE((sd::write_requires<DefaultSentinel, 3>(emit)));
+    }
+    EXPECT_EQ(std::string(yyjson::write(DefaultSentinel{-1, 5, -1, -5}, yyjson::emit_defaults)), R"({"b":5})");
     const auto counted = yyjson::read(yyjson::write(Counted{}));
     EXPECT_EQ(counted.as_object()->size(), 2);
 }

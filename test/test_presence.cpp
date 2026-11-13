@@ -265,6 +265,115 @@ struct yyjson::caster<PreMembers>
     }
 };
 
+// sentinel defaults: a default of `default_` or `default_from` that violates the keywords of its field
+struct PreSentinel
+{
+    int x = -1;
+    int y = 2;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinel> =
+    yyjson::annotate(yyjson::field("x", yyjson::default_, yyjson::minimum(0)), yyjson::field("y", yyjson::default_));
+struct PreSentinelEmit
+{
+    int x = -1;
+    int y = 2;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelEmit> =
+    yyjson::annotate(yyjson::field("x", yyjson::default_, yyjson::emit_defaults, yyjson::minimum(0)),
+                     yyjson::field("y", yyjson::default_, yyjson::emit_defaults));
+// the struct counts its members, which writes every default but the sentinel
+struct PreSentinelCounted
+{
+    int x = -1;
+    int y = 2;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelCounted> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::field("x", yyjson::default_, yyjson::minimum(0)),
+                     yyjson::field("y", yyjson::default_));
+namespace
+{
+    int make_negative() { return -5; }
+}  // namespace
+struct PreSentinelFrom
+{
+    int x = 3;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelFrom> =
+    yyjson::annotate(yyjson::field("x", yyjson::default_from<make_negative>, yyjson::minimum(0)));
+struct PreSentinelOpt
+{
+    std::optional<int> x = -1;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelOpt> =
+    yyjson::annotate(yyjson::field("x", yyjson::default_, yyjson::minimum(0)));
+// no `default_`: the initializer is written and checked
+struct PreInitOpt
+{
+    std::optional<int> x = -1;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreInitOpt> = yyjson::annotate(yyjson::field("x", yyjson::minimum(0)));
+struct PreInitPlain
+{
+    int x = -1;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreInitPlain> = yyjson::annotate(yyjson::field("x", yyjson::minimum(0)));
+// a struct default that violates the keywords of the inner struct, which a merge reads as absent
+struct PreSentinelInner
+{
+    int a = -1;
+    std::optional<int> b;
+    bool operator==(const PreSentinelInner&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelInner> =
+    yyjson::annotate(yyjson::field("a", yyjson::required, yyjson::minimum(0)));
+struct PreSentinelOuter
+{
+    PreSentinelInner in;
+    int n = 0;
+    bool operator==(const PreSentinelOuter&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelOuter> =
+    yyjson::annotate(yyjson::field("in", yyjson::default_, yyjson::emit_defaults));
+// a default that the write does not give back without a flag
+struct PreSentinelInf
+{
+    double x = std::numeric_limits<double>::infinity();
+    int y = 1;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelInf> = yyjson::annotate(yyjson::default_);
+// a valid default whose first test runs near the recursion limit of the walk that meets it
+struct PreSentinelNode
+{
+    int v = 0;
+    std::unique_ptr<PreSentinelNode> child;
+};
+namespace
+{
+    PreSentinelNode make_leaf() { return PreSentinelNode{1, nullptr}; }
+}  // namespace
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelNode> =
+    yyjson::annotate(yyjson::field("child", yyjson::default_from<make_leaf>));
+// an array keeps the position of each field, so that it writes a sentinel
+struct PreSentinelArray
+{
+    int a = 1;
+    int b = -1;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreSentinelArray> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("b", yyjson::default_, yyjson::minimum(0)));
+
 // The rules that the table of the keys of a struct of the members `v` and `w` enforces
 namespace presence_rules
 {
@@ -586,6 +695,69 @@ TEST(Presence, WriteDefaults)
     EXPECT_EQ(write_both(PreMembers()), R"({"b":2,"c":3,"last":0})");
     EXPECT_EQ(write_all(PreMembers()), R"({"a":1,"b":2,"c":3,"last":0})");
     EXPECT_EQ(std::string(yyjson::object(PreDef()).write()), R"({"b":2,"c":3})");
+}
+
+TEST(Presence, Sentinel)
+{
+    using yyjson::emit_defaults;
+    // a field equal to a sentinel is left out under every tag, and a missing key reads as it
+    EXPECT_EQ(write_both(PreSentinel()), R"({})");
+    EXPECT_EQ(write_all(PreSentinel()), R"({"y":2})");
+    EXPECT_EQ(write_all(PreSentinel{0, 2}), R"({"x":0,"y":2})");
+    EXPECT_EQ(write_both(PreSentinelEmit()), R"({"y":2})");
+    EXPECT_EQ(write_all(PreSentinelEmit()), R"({"y":2})");
+    EXPECT_EQ(write_both(PreSentinelCounted()), R"({"y":2})");
+    EXPECT_EQ(write_all(PreSentinelCounted()), R"({"y":2})");
+    EXPECT_EQ(yyjson::read<PreSentinel>("{}", yyjson::strict).x, -1);
+    EXPECT_EQ(yyjson::read<PreSentinelEmit>("{}", yyjson::strict).x, -1);
+    EXPECT_EQ(yyjson::read<PreSentinelCounted>(R"({"y":2})", yyjson::strict).x, -1);
+    for (const auto& validate :
+         {+[] { yyjson::validate(PreSentinel()); }, +[] { yyjson::validate(PreSentinel(), emit_defaults); },
+          +[] { yyjson::validate(PreSentinelEmit()); }, +[] { yyjson::validate(PreSentinelCounted(), emit_defaults); }})
+        EXPECT_NO_THROW(validate());
+    EXPECT_THROW(yyjson::validate(PreSentinel{-2, 2}), yyjson::bad_cast);
+
+    // the value of `default_from`, which is not checked when it is read
+    EXPECT_EQ(write_all(PreSentinelFrom()), R"({"x":3})");
+    EXPECT_EQ(write_all(PreSentinelFrom{-5}), R"({})");
+    EXPECT_EQ(yyjson::read<PreSentinelFrom>("{}", yyjson::strict).x, -5);
+    EXPECT_NO_THROW(yyjson::validate(PreSentinelFrom{-5}, emit_defaults));
+
+    // a std::optional with `default_` leaves out the sentinel and an empty value
+    EXPECT_EQ(write_all(PreSentinelOpt()), R"({})");
+    EXPECT_EQ(write_all(PreSentinelOpt{std::nullopt}), R"({})");
+    EXPECT_EQ(write_all(PreSentinelOpt{3}), R"({"x":3})");
+    EXPECT_NO_THROW(yyjson::validate(PreSentinelOpt(), emit_defaults));
+    // an initializer without `default_` is no sentinel
+    EXPECT_EQ(write_all(PreInitOpt()), R"({"x":-1})");
+    EXPECT_THROW(yyjson::validate(PreInitOpt()), yyjson::bad_cast);
+    EXPECT_EQ(write_all(PreInitPlain()), R"({"x":-1})");
+    EXPECT_THROW(yyjson::validate(PreInitPlain()), yyjson::bad_cast);
+
+    // a merge patch into a field that the write leaves out reads the object of the patch alone
+    const auto merge = [](const PreSentinelOuter& t, std::string_view patch) {
+        return expect_merge_rule<PreSentinelOuter, true>(t, patch);
+    };
+    EXPECT_EQ(write_all(PreSentinelOuter()), R"({"n":0})");
+    EXPECT_EQ(merge(PreSentinelOuter(), R"({"in":{"b":1}})"), missing("PreSentinelInner", "a") + " at /in");
+    EXPECT_EQ(merge(PreSentinelOuter(), R"({"in":{"a":1}})"), R"({"in":{"a":1},"n":0})");
+    auto held = PreSentinelOuter{{2, std::nullopt}, 0};
+    EXPECT_EQ(merge(held, R"({"in":{"b":1}})"), R"({"in":{"a":2,"b":1},"n":0})");
+
+    // the round trip without flags decides, also for a write that allows infinity
+    EXPECT_EQ(std::string(yyjson::write(PreSentinelInf(), yyjson::WriteFlag::AllowInfAndNan, emit_defaults)),
+              R"({"y":1})");
+
+    // the test starts from the state of a new call
+    auto deep = PreSentinelNode{0, std::make_unique<PreSentinelNode>(make_leaf())};
+    for (auto i = 0; i < CPPYYJSON_RECURSION_DEPTH_LIMIT - 1; ++i)
+        deep = PreSentinelNode{0, std::make_unique<PreSentinelNode>(std::move(deep))};
+    EXPECT_THROW(yyjson::validate(deep, emit_defaults), yyjson::bad_cast);
+    const auto shallow = PreSentinelNode{0, std::make_unique<PreSentinelNode>(make_leaf())};
+    EXPECT_EQ(std::string(yyjson::write(shallow, emit_defaults)), R"({"v":0,"child":{"v":1,"child":null}})");
+
+    EXPECT_EQ(write_all(PreSentinelArray()), R"([1,-1])");
+    EXPECT_THROW(yyjson::validate(PreSentinelArray()), yyjson::bad_cast);
 }
 
 #if FIELD_RFL_ANNOTATIONS

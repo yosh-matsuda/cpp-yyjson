@@ -281,7 +281,7 @@ void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t);
 
 Throws `yyjson::write_error` in the same cases as `value::write`. The second form leaves `out` empty when it throws.
 
-The forms with [`yyjson::emit_defaults`](#yyjsonemit_defaults) also write the fields that are equal to their [defaults](#yyjsondefault_-yyjsondefault_from). Without it, `write` leaves those fields out. The tag applies to every struct that the call writes, the structs that a caster writes included.
+The forms with [`yyjson::emit_defaults`](#yyjsonemit_defaults) also write the fields that are equal to their [defaults](#yyjsondefault_-yyjsondefault_from), but not a field that is equal to a sentinel. Without it, `write` leaves those fields out. The tag applies to every struct that the call writes, the structs that a caster writes included.
 
 ```cpp
 using namespace yyjson;
@@ -1860,6 +1860,7 @@ A field with a default:
 *   may leave out its key under [`yyjson::reject_missing_keys`](#read-policies) and `yyjson::strict`.
 *   gets its default when `yyjson::merge_into` reads `null` for it. Under `yyjson::reject_missing_keys`, `merge_into` accepts `null` only for a field with a default.
 *   is left out by `yyjson::write` when it is equal to its default as a JSON value, unless [`yyjson::emit_defaults`](#yyjsonemit_defaults) applies. Numbers compare as in JSON Schema and in the [comparison of JSON values](#comparison), so `-0.0` is equal to `0.0`. The library makes the default once, the first time that it writes the field, and compares each value with it. Thus `f` must return the same value each time.
+*   is never written in an object when it is equal to a sentinel. A default is a sentinel when it violates a constraint of the field. It is also a sentinel when a write of it with `yyjson::emit_defaults` and no other flag fails. So is a default whose written text a read under `yyjson::strict` and `yyjson::reject_unknown_keys` rejects. `yyjson::emit_defaults` and `yyjson::min_properties` do not change this, `yyjson::validate` does not check the field, and the JSON Schema gives no `default` for it. See [Default values and required keys](conversions.md#default-values-and-required-keys).
 
 A `std::optional` field also has a default: its value in `T()`. It is written when it has a value, and it is left out when it is empty. With `yyjson::default_` or `yyjson::default_from<f>`, it is left out when it is equal to that default.
 
@@ -1892,7 +1893,7 @@ inline constexpr emit_defaults_t emit_defaults{};
 *   As a setting of [`yyjson::field`](#yyjsonfield), it applies to that field. The field needs a default: `yyjson::default_` or `yyjson::default_from<f>` on the field, or `yyjson::default_` on the struct. Otherwise it is a compile error. With the reflection of C++26, it can also be written on the member, as `[[=yyjson::emit_defaults]]`.
 *   As an argument of [`yyjson::write`](#yyjsonwrite), it applies to every field that the call writes.
 
-A field with `emit_defaults` still has its default, so an object may leave out its key. An empty `std::optional` field is left out also with `emit_defaults`.
+A field with `emit_defaults` still has its default, so an object may leave out its key. An empty `std::optional` field and a field that is equal to a [sentinel](#yyjsondefault_-yyjsondefault_from) are left out also with `emit_defaults`. The library gives no warning for `emit_defaults` on a field whose default is a sentinel.
 
 ```cpp
 yyjson::write(Page(), yyjson::emit_defaults);  // -> {"size":20,"offset":0}
