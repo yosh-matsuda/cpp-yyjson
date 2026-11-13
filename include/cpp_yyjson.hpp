@@ -6275,7 +6275,7 @@ namespace yyjson
 
         // The names of the alternatives of the variant V that `Spec::value`, a `yyjson::internal_tag` or
         // `yyjson::adjacent_tag`, tags.  `alternative(id)` is the index of the alternative that `id` names, or else
-        // that of `std::monostate`, which a missing or unknown tag reads as, or else `std::variant_npos`.
+        // `std::variant_npos`.
         template <typename V, typename Spec>
         struct variant_tag_table
         {
@@ -12586,13 +12586,20 @@ namespace yyjson
         template <typename T>
         bool json_equal(const T& a, const T& b);
 
+        // Whether the field R of S, by its index among all the fields, holds the tag of a field that
+        // `yyjson::adjacent_tag` tags, which a read needs beside a value of that field.
+        template <typename S, std::size_t R>
+        inline constexpr bool declared_adjacent_tag_holder = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return any_true({(struct_declared_index<S, Ks> == R && holds_adjacent_tag<S, Ks>)...});
+        }(std::make_index_sequence<struct_field_count<S>>{});
+
         // Whether the field R of S, by its index among all the fields, is left out of an object when it equals its
         // default value.  `yyjson::min_properties` on S, or in its `yyjson::all_of`, counts the members, so S writes
         // every default.
         template <typename S, std::size_t R>
         inline constexpr bool omits_default =
             (presence_of<S, R>.defaulted || presence_of<S, R>.from.has_value()) && !presence_of<S, R>.emit_defaults &&
-            !struct_count_annotated<S, false> && !struct_conditions_min<S>;
+            !struct_count_annotated<S, false> && !struct_conditions_min<S> && !declared_adjacent_tag_holder<S, R>;
 
         // Whether a write of S can leave out a field equal to its default.  A sentinel default is left out under
         // every tag, so each field with a declared default counts.

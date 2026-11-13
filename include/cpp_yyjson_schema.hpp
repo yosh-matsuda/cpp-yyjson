@@ -85,6 +85,11 @@ namespace yyjson
         template <typename T>
         concept variant_type = yyjson::detail::variant_json_kinds<T>::is_variant;
 
+        // A variant that `yyjson::internal_tag` tags, which reads the annotations of T only when T is a variant.
+        template <typename T>
+        concept internal_tagged_variant =
+            variant_type<T> && !yyjson::detail::union_variant<T> && yyjson::detail::internally_tagged<T>;
+
         // The types read from a JSON string and written as one.
         template <typename T>
         concept string_type =
@@ -104,30 +109,6 @@ namespace yyjson
         // The types whose schemas are a single `type` with keywords that the type `null` ignores.
         template <typename T>
         concept primitive_type = std::same_as<T, bool> || std::integral<T> || std::floating_point<T> || string_type<T>;
-
-        // A set whose elements are equal exactly when their JSON values are: scalars that a standard comparison
-        // orders, so that a JSON array of the set has unique items.
-        template <typename T>
-        concept json_unique_set = yyjson::detail::insertable_set<T> && yyjson::detail::unique_set<T> && [] {
-            using K = typename T::key_type;
-            if constexpr (!std::is_arithmetic_v<K> && !std::is_enum_v<K> && !std::same_as<K, std::string> &&
-                          !std::same_as<K, std::string_view>)
-                return false;
-            // the writer rounds a wider float to a double, which can give two elements one text
-            else if constexpr (std::floating_point<K> &&
-                               std::numeric_limits<K>::digits > std::numeric_limits<double>::digits)
-                return false;
-            else if constexpr (requires { typename T::key_compare; })
-                return std::same_as<typename T::key_compare, std::less<K>> ||
-                       std::same_as<typename T::key_compare, std::less<>> ||
-                       std::same_as<typename T::key_compare, std::greater<K>> ||
-                       std::same_as<typename T::key_compare, std::greater<>>;
-            else if constexpr (requires { typename T::key_equal; })
-                return std::same_as<typename T::key_equal, std::equal_to<K>> ||
-                       std::same_as<typename T::key_equal, std::equal_to<>>;
-            else
-                return false;
-        }();
 
         class generator;
 
@@ -380,7 +361,9 @@ namespace yyjson
         // directions while the two are the same.
         struct registry
         {
-            using body_function = void (*)(generator&, object_ref);
+            using tag_keys = std::vector<std::string>;
+            // the keys are a copy, which the registry can move while the body adds types
+            using body_function = void (*)(generator&, object_ref, tag_keys);
             struct entry
             {
                 const void* id;
@@ -389,9 +372,14 @@ namespace yyjson
                 std::array<bool, 2> used = {};  // read, write
                 bool shared = true;
                 std::array<std::string, 2> names = {};
+                // the keys of the internal tags that the object of a struct holds besides its members
+                tag_keys tags = {};
             };
             std::vector<entry> types;
-            std::map<const void*, std::size_t> index;
+            std::map<std::pair<const void*, tag_keys>, std::size_t> index;
+            // Whether the keys of internal tags change the schema of a type in a direction.
+            std::map<std::tuple<const void*, tag_keys, bool>, bool> tagged;
+            std::size_t unnamed_tags = 0;
             // The schemas in the order in which they are found: the type and whether it is the write direction.
             std::vector<std::pair<std::size_t, bool>> order;
             std::string ref_prefix;
@@ -402,7 +390,7 @@ namespace yyjson
             std::map<const void*, std::optional<std::string>> defaults;
 
             template <typename T>
-            std::size_t find_or_add(bool writing);
+            std::size_t find_or_add(bool writing, const tag_keys& tags = {});
 
             [[nodiscard]] bool split(std::size_t i) const noexcept
             {
@@ -479,16 +467,20 @@ namespace yyjson
             }
             // Writes the schema of the named type T, which `$defs` holds.
             template <typename T>
-            static void emit_definition(generator& g, object_ref out)
+            static void emit_definition(generator& g, object_ref out, registry::tag_keys tags)
             {
                 if constexpr (std::is_enum_v<T>)
                     g.emit_enum<T>(out);
                 else if constexpr (yyjson::detail::transparent_struct<T>)
+                {
+                    g.tags_ = tags;
+                    g.within_ = {&type_identity_tag<T>};
                     g.emit_transparent<T>(out);
+                }
                 else if constexpr (yyjson::detail::as_array_struct<T>)
                     g.emit_array_struct<T>(out);
                 else
-                    g.emit_struct<T>(out);
+                    g.emit_struct<T>(out, tags);
             }
 
         private:
@@ -496,12 +488,64 @@ namespace yyjson
             bool writing_;
             std::uint8_t policies_;
             bool emit_defaults_;
+            // The keys of the internal tags that the object of the next value holds besides its own members, which
+            // a variant, a nullable value and a transparent struct pass on to the value that they hold.
+            registry::tag_keys tags_;
+            // The keys that `additionalProperties: false` of a node at the current object takes, each with whether
+            // it is the key of an internal tag.
+            std::vector<std::pair<std::string, bool>> closed_keys_;
+            // Whether a key of an internal tag changed the schema.
+            bool tags_used_ = false;
+            // The transparent structs whose schemas the next value is the schema of, which a variant, a nullable
+            // value and a transparent struct pass on as they pass `tags_`.
+            std::vector<const void*> within_;
 
+            // A transparent struct that holds itself at the same value never ends a read, and one inside another
+            // has its schema there, so that no chain of references comes back to a schema without a value between.
             template <typename T>
-            void emit_named(object_ref out)
+            void emit_named(object_ref out, const registry::tag_keys& tags, std::vector<const void*> within)
             {
-                const auto i = names_.find_or_add<T>(writing_);
+                if constexpr (yyjson::detail::transparent_struct<T>)
+                {
+                    if (std::ranges::find(within, &type_identity_tag<T>) != within.end())
+                    {
+                        out.emplace("not", empty_object);
+                        return;
+                    }
+                    if (!within.empty())
+                    {
+                        within.push_back(&type_identity_tag<T>);
+                        tags_ = tags;
+                        within_ = std::move(within);
+                        emit_transparent<T>(out);
+                        return;
+                    }
+                }
+                auto used = false;
+                if constexpr (struct_type<T> && !yyjson::detail::as_array_struct<T>)
+                    used = !tags.empty() && changes_schema<T>(tags);
+                const auto i = names_.find_or_add<T>(writing_, used ? tags : registry::tag_keys());
+                tags_used_ = tags_used_ || used;
                 out.emplace("$ref", names_.ref(i, writing_), copy_string);
+            }
+            // Whether the keys of internal tags change the schema of the struct T, which a trial emission tells.  The
+            // trial adds no schema, and a reach of T inside it takes the keys as unused.
+            template <typename T>
+            bool changes_schema(const registry::tag_keys& tags)
+            {
+                const auto [it, added] = names_.tagged.try_emplace({&type_identity_tag<T>, tags, writing_}, false);
+                if (added)
+                {
+                    auto saved = std::tuple(names_.types, names_.index, names_.order, names_.unnamed_tags);
+                    auto g = *this;
+                    g.closed_keys_.clear();
+                    g.tags_used_ = false;
+                    auto doc = value(object());
+                    emit_definition<T>(g, *doc.as_object(), tags);
+                    it->second = g.tags_used_;
+                    std::tie(names_.types, names_.index, names_.order, names_.unnamed_tags) = std::move(saved);
+                }
+                return it->second;
             }
 
             template <typename T>
@@ -535,7 +579,11 @@ namespace yyjson
             template <typename K>
             void emit_property_names(object_ref out);
             template <typename S>
-            void emit_struct(object_ref out);
+            void emit_struct(object_ref out, const registry::tag_keys& tags);
+            template <typename S>
+            void emit_adjacent_tags(object_ref out);
+            template <typename S, std::size_t K>
+            void emit_adjacent_tag(object_ref out);
             template <typename S, std::size_t K>
             void emit_field(object_ref properties, std::vector<std::string_view>& required);
             template <typename S, std::size_t K>
@@ -549,19 +597,20 @@ namespace yyjson
             template <typename S, std::size_t R>
             void emit_map_values(object_ref out);
             template <typename S, std::size_t P>
-            void emit_pattern_values(object_ref out);
+            void emit_pattern_values(object_ref out, const std::vector<std::string_view>& tags);
             template <typename S>
-            void emit_key_names(object_ref out);
+            void emit_key_names(object_ref out, const std::vector<std::string_view>& tags);
             template <typename T>
-            void emit_range(object_ref out);
+            void emit_range(object_ref out, const registry::tag_keys& tags);
             template <typename T, typename E>
             void emit_array_form(object_ref out);
             template <typename T, typename K, typename V>
-            void emit_object_form(object_ref out);
+            void emit_object_form(object_ref out, const registry::tag_keys& tags = {});
             template <typename T, std::size_t... Is>
-            void emit_tuple(object_ref out, std::index_sequence<Is...>);
+            void emit_tuple(object_ref out, std::index_sequence<Is...>, const registry::tag_keys& tags);
             template <typename T, std::size_t... Is>
-            void emit_pair_object(object_ref out);
+            void emit_pair_object(object_ref out, const registry::tag_keys& tags);
+            void declare_tag_keys(object_ref out, const registry::tag_keys& tags);
             template <typename... Vs>
             void emit_values(object_ref out, std::string_view combinator);
             template <typename V>
@@ -569,10 +618,19 @@ namespace yyjson
             template <typename V, std::size_t I>
             void emit_alternative(object_ref out);
             template <typename V>
+            void emit_internal_tag(object_ref out, registry::tag_keys tags);
+            template <typename V>
+            void emit_untagged(object_ref out);
+            template <typename V, std::size_t I>
+            void emit_untagged_alternative(object_ref out, const registry::tag_keys& tags,
+                                           const std::vector<const void*>& within);
+            template <typename V>
             static consteval bool bare_alternatives();
             // Adds the keywords of the node N, at a value of V of a field of S, to `out`.
             template <typename N, typename V, typename S>
             void emit_node(object_ref out);
+            template <typename N, typename V, typename S>
+            bool emit_projections(object_ref out);
             template <typename N, typename C>
             void emit_listed(object_ref out);
             template <typename N, typename C>
@@ -589,14 +647,23 @@ namespace yyjson
             void emit_matched(object_ref out);
         };
 
+        // A struct whose object holds the keys of internal tags is "Name-key" in `$defs`, or "Name-tagN" when a key
+        // has a character that a name does not take.
         template <typename T>
-        std::size_t registry::find_or_add(bool writing)
+        std::size_t registry::find_or_add(bool writing, const tag_keys& tags)
         {
-            const auto [it, added] = index.try_emplace(&type_identity_tag<T>, types.size());
+            const auto [it, added] = index.try_emplace({&type_identity_tag<T>, tags}, types.size());
             const auto i = it->second;
             if (added)
-                types.push_back({&type_identity_tag<T>, def_name(yyjson::detail::type_name<T>()),
-                                 &generator::emit_definition<T>});
+            {
+                auto base = def_name(yyjson::detail::type_name<T>());
+                if (std::ranges::all_of(tags, [](const std::string& key) { return def_name(key) == key; }))
+                    for (const auto& key : tags) base += "-" + key;
+                else if (!tags.empty())
+                    base += "-tag" + std::to_string(++unnamed_tags);
+                types.push_back({&type_identity_tag<T>, std::move(base), &generator::emit_definition<T>});
+                types.back().tags = tags;
+            }
             if (!types[i].used[writing ? 1 : 0])
             {
                 types[i].used[writing ? 1 : 0] = true;
@@ -609,8 +676,18 @@ namespace yyjson
         void generator::emit(object_ref out)
         {
             namespace yd = yyjson::detail;
+            // a variant, a nullable value and a reference pass the keys of internal tags on to the value they hold
+            auto tags = std::exchange(tags_, {});
+            auto within = std::exchange(within_, {});
+            const auto pass = [&] {
+                tags_ = std::move(tags);
+                within_ = std::move(within);
+            };
             if constexpr (!std::same_as<T, std::remove_cv_t<T>>)
+            {
+                pass();
                 emit<std::remove_cv_t<T>>(out);
+            }
             else if constexpr (std::same_as<T, json_view> || std::same_as<T, writer::value>)
             {
             }
@@ -625,15 +702,27 @@ namespace yyjson
             else if constexpr (user_caster<T>)
                 static_assert(yd::false_v<T>, "C7g: a type with a caster of the user is not emitted yet");
             else if constexpr (variant_type<T>)
+            {
+                pass();
                 emit_variant<T>(out);
+            }
             else if constexpr (yd::is_std_optional<T>::value || yd::nullable_value<T>)
+            {
+                pass();
                 emit_nullable<typename T::value_type>(out);
+            }
             else if constexpr (yd::owning_pointer<T>)
+            {
+                pass();
                 emit_nullable<std::remove_cv_t<typename yd::is_owning_pointer<T>::value_type>>(out);
+            }
             else if constexpr (yd::indirect_value<T>)
+            {
+                pass();
                 emit<typename yd::is_indirect<T>::value_type>(out);
+            }
             else if constexpr (named_type<T>)
-                emit_named<T>(out);
+                emit_named<T>(out, tags, std::move(within));
             else if constexpr (primitive_type<T>)
             {
                 out.emplace("type", type_keyword<T>());
@@ -645,13 +734,15 @@ namespace yyjson
                 out.emplace("items", empty_object).emplace("type", "boolean");
             }
             else if constexpr (std::ranges::range<T>)
-                emit_range<T>(out);
+                emit_range<T>(out, tags);
             else if constexpr (yd::tuple_like<T>)
-                emit_tuple<T>(out, std::make_index_sequence<std::tuple_size_v<T>>{});
+                emit_tuple<T>(out, std::make_index_sequence<std::tuple_size_v<T>>{}, tags);
             else
                 static_assert(yd::false_v<T>,
                               "C7g: a type that is converted by its constructors or its conversions is not emitted "
                               "yet");
+            tags_.clear();
+            within_.clear();
         }
 
         // The written text of a float is the shortest one that reads back as it, which can be past its double:
@@ -794,7 +885,7 @@ namespace yyjson
                     o.emplace("pattern", pattern, copy_string);
                 }
             };
-            auto keys = out.emplace("propertyNames", empty_object);
+            auto keys = out;
             if constexpr (conv::format == enum_format::name)
                 names(keys);
             else if constexpr (conv::format == enum_format::integer)
@@ -807,11 +898,42 @@ namespace yyjson
             }
         }
 
+        // Whether `key` is the key of a field of S.
         template <typename S>
-        void generator::emit_struct(object_ref out)
+        bool field_key(std::string_view key)
+        {
+            return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return ((yyjson::detail::struct_field_key<S, Ks> == key) || ...);
+            }(std::make_index_sequence<yyjson::detail::struct_field_count<S>>{});
+        }
+
+        // The keys of the adjacent tags of S that are written as members of their own.
+        template <typename S>
+        std::vector<std::string_view> adjacent_keys()
         {
             namespace yd = yyjson::detail;
-            static_assert(!yd::has_adjacent_fields<S>, "C7f2: yyjson::adjacent_tag is not emitted yet");
+            auto keys = std::vector<std::string_view>();
+            if constexpr (yd::has_adjacent_fields<S>)
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    (
+                        [&] {
+                            if constexpr (yd::writes_adjacent_tag<S, yd::struct_field_tags<S, Ks>>)
+                                keys.push_back(yd::struct_field_tags<S, Ks>::key);
+                        }(),
+                        ...);
+                }(std::make_index_sequence<yd::struct_field_count<S>>{});
+            return keys;
+        }
+
+        // The object of S also holds the members of the internal tags `tags` that no field holds, which the read
+        // takes as members that it knows.
+        template <typename S>
+        void generator::emit_struct(object_ref out, const registry::tag_keys& tags)
+        {
+            namespace yd = yyjson::detail;
+            auto internal = std::vector<std::string_view>();
+            for (const auto& key : tags)
+                if (!field_key<S>(key)) internal.push_back(key);
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
             auto required = std::vector<std::string_view>();
@@ -823,6 +945,15 @@ namespace yyjson
                 auto keys = out.emplace("required", empty_array);
                 for (const auto key : required) keys.emplace_back(key);
             }
+            if constexpr (yd::has_adjacent_fields<S>) emit_adjacent_tags<S>(out);
+            const auto declare_tags = [&] {
+                for (const auto key : internal)
+                    if (!properties.contains(key))
+                    {
+                        properties.emplace(key, empty_object, copy_string);
+                        tags_used_ = true;
+                    }
+            };
             if constexpr (yd::has_pattern_fields<S>)
             {
                 auto patterns = out.emplace("patternProperties", empty_object);
@@ -839,7 +970,7 @@ namespace yyjson
                                 }
                                 return patterns.emplace(pattern, empty_object, copy_string);
                             }();
-                            emit_pattern_values<S, Ps>(target);
+                            emit_pattern_values<S, Ps>(target, internal);
                         }(),
                         ...);
                 }(std::make_index_sequence<yd::pattern_count<S>>{});
@@ -847,11 +978,17 @@ namespace yyjson
             // the map of `yyjson::extra_keys` takes the unknown keys under every policy; else the read rejects them as
             // `struct_key_list::closed` decides it, and a read policy has no effect on the write
             if constexpr (yd::has_extra_keys<S>)
+            {
+                declare_tags();
                 emit_map_values<S, yd::extra_keys_index<S>>(out.emplace("additionalProperties", empty_object));
+            }
             else if (yd::struct_closed<S> ||
                      (!writing_ && ((policies_ | yd::struct_policies<S>)&yd::unknown_keys_policy) != 0))
+            {
+                declare_tags();
                 out.emplace("additionalProperties", false);
-            emit_key_names<S>(out);
+            }
+            emit_key_names<S>(out, internal);
             if constexpr (yd::struct_property_counts<S>)
             {
                 constexpr const auto& c = yd::struct_count_schema<S>::constraints;
@@ -860,7 +997,14 @@ namespace yyjson
                 if constexpr (c.template has<yyjson::max_properties>())
                     tighten(out, "maxProperties", c.max_properties, false);
             }
-            if constexpr (yd::has_struct_conditions<S>) emit_node<yd::node_schema<yd::struct_tree<S>, 0>, S, S>(out);
+            if constexpr (yd::has_struct_conditions<S>)
+            {
+                // a closed node of the conditions takes the members of the tags, as the read does
+                for (const auto key : internal) closed_keys_.emplace_back(key, true);
+                for (const auto key : adjacent_keys<S>()) closed_keys_.emplace_back(key, false);
+                emit_node<yd::node_schema<yd::struct_tree<S>, 0>, S, S>(out);
+                closed_keys_.clear();
+            }
         }
 
         // The values of the map of the field R of S, by its index among all the fields, that receives keys of no
@@ -879,7 +1023,7 @@ namespace yyjson
         // The values that the pattern P of S checks.  The pattern reads a value that it does not keep as `read` does,
         // and a write gives such values from a field, a tag or an earlier pattern of another type that matches.
         template <typename S, std::size_t P>
-        void generator::emit_pattern_values(object_ref out)
+        void generator::emit_pattern_values(object_ref out, const std::vector<std::string_view>& tags)
         {
             namespace yd = yyjson::detail;
             using E = typename yd::pattern_type<S, P>::mapped_type;
@@ -894,7 +1038,8 @@ namespace yyjson
                 };
                 return after_other || has(patterns.fields) || has(patterns.tags);
             };
-            if (!writing_ || !checks_others())
+            const bool internal_tag = std::ranges::any_of(tags, yd::pattern_matches<S, P>);
+            if (!writing_ || !(checks_others() || internal_tag))
             {
                 emit_map_values<S, r>(out);
                 return;
@@ -909,6 +1054,7 @@ namespace yyjson
                 emit_map_values<S, r>(out);
             else
             {
+                tags_used_ = tags_used_ || !checks_others();
                 auto any = out.emplace("anyOf", empty_array);
                 any.emplace_back(written);
                 any.emplace_back(read);
@@ -919,7 +1065,7 @@ namespace yyjson
         // keys that no field names and no pattern matches, and that of a field of `yyjson::pattern_properties` the
         // keys that its pattern matches.
         template <typename S>
-        void generator::emit_key_names(object_ref out)
+        void generator::emit_key_names(object_ref out, const std::vector<std::string_view>& tags)
         {
             namespace yd = yyjson::detail;
             constexpr auto names_of = []<std::size_t R>(std::integral_constant<std::size_t, R>) {
@@ -948,12 +1094,16 @@ namespace yyjson
                 {
                     // a key passes if it does not go into the map
                     auto any = place(names, "anyOf").emplace("anyOf", empty_array);
-                    if constexpr (yd::struct_field_count<S> != 0)
+                    const auto adjacent = adjacent_keys<S>();
+                    if (yd::struct_field_count<S> != 0 || !tags.empty())
                     {
                         auto keys = any.emplace_back(empty_object).emplace("enum", empty_array);
                         [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                             (keys.emplace_back(yd::struct_field_key<S, Ks>), ...);
                         }(std::make_index_sequence<yd::struct_field_count<S>>{});
+                        for (const auto key : adjacent) keys.emplace_back(key);
+                        for (const auto key : tags) keys.emplace_back(key, copy_string);
+                        tags_used_ = tags_used_ || !tags.empty();
                     }
                     [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
                         (any.emplace_back(empty_object).emplace("pattern", yd::pattern_of<S, Ps>, copy_string), ...);
@@ -986,15 +1136,18 @@ namespace yyjson
         {
             return !yyjson::detail::struct_field_absence<S>[K];
         }
-        // Whether every write of S gives the key of its field K: the field is not omitted when empty, nor when equal
-        // to its default unless the write takes `yyjson::emit_defaults`, nor when its default is a sentinel.
+        // Whether every write of S gives the key of its field K: a field that `yyjson::adjacent_tag` tags, or a field
+        // not omitted when empty, nor when equal to its default unless the write takes `yyjson::emit_defaults`, nor
+        // when its default is a sentinel.
         template <typename S, std::size_t K>
         [[nodiscard]] bool write_requires(bool emit_defaults)
         {
             namespace yd = yyjson::detail;
             using F = yd::struct_field_type<S, K>;
             constexpr auto r = yd::struct_declared_index<S, K>;
-            if constexpr (yd::omittable<decltype(yd::writable_field(std::declval<const F&>()))>)
+            if constexpr (yd::adjacent_declared_field<S, r>)
+                return true;
+            else if constexpr (yd::omittable<decltype(yd::writable_field(std::declval<const F&>()))>)
                 return false;
             else if constexpr (yd::field_has_default<S, r>)
                 return (emit_defaults || !yd::omits_default<S, r>) && !yd::sentinel_default<S, r>();
@@ -1139,6 +1292,19 @@ namespace yyjson
             }
         }
 
+        // The default text of the field K of S, which writes the alternative alone when an adjacent tag names it.
+        template <typename S, std::size_t K, typename D>
+        std::optional<std::string> adjacent_default_text(const D& d)
+        {
+            namespace yd = yyjson::detail;
+            using F = yd::struct_field_type<S, K>;
+            if constexpr (yd::adjacent_field<S, K> && internal_tagged_variant<F>)
+                return std::visit([](const auto& a) { return default_text<std::remove_cvref_t<decltype(a)>>(a); },
+                                  static_cast<const yd::variant_base_t<F>&>(d));
+            else
+                return default_text<F>(d);
+        }
+
         template <typename S>
         const S* initial_value(registry& names)
         {
@@ -1166,11 +1332,11 @@ namespace yyjson
                 return it->second;
             else if constexpr (yd::field_has_default<S, r>)
             {
-                if (!yd::sentinel_default<S, r>()) it->second = default_text<F>(yd::stored_default<S, r>());
+                if (!yd::sentinel_default<S, r>()) it->second = adjacent_default_text<S, K>(yd::stored_default<S, r>());
             }
             else if (const auto* s = initial_value<S>(names); s != nullptr)
             {
-                it->second = default_text<F>(yd::struct_field<K>(*s));
+                it->second = adjacent_default_text<S, K>(yd::struct_field<K>(*s));
                 if (it->second)
                 {
                     try
@@ -1203,7 +1369,11 @@ namespace yyjson
         {
             namespace yd = yyjson::detail;
             using F = yd::struct_field_type<S, K>;
-            emit_member<F>(out);
+            // an adjacent tag names the alternative, which then reads and writes without the tag of its variant
+            if constexpr (yd::adjacent_field<S, K> && internal_tagged_variant<F>)
+                emit_untagged<F>(out);
+            else
+                emit_member<F>(out);
             if constexpr (yd::has_constraints<S>)
                 emit_node<yd::field_schema<S, yd::struct_declared_index<S, K>>, F, S>(out);
             if (const auto& d = field_default<S, K>(names_)) out.emplace("default", yyjson::read(*d));
@@ -1294,7 +1464,7 @@ namespace yyjson
         // A range is written as an object when its elements are key-value pairs, and read from the forms that
         // `nested_casts` gives: an array of its elements, an object of its values, or either.
         template <typename T>
-        void generator::emit_range(object_ref out)
+        void generator::emit_range(object_ref out, const registry::tag_keys& tags)
         {
             namespace yd = yyjson::detail;
             using pair = std::remove_cv_t<std::ranges::range_value_t<const T>>;
@@ -1302,7 +1472,7 @@ namespace yyjson
             {
                 if constexpr (yd::object_written_range<T>)
                     emit_object_form<T, std::remove_cv_t<std::tuple_element_t<0, pair>>,
-                                     std::remove_cv_t<std::tuple_element_t<1, pair>>>(out);
+                                     std::remove_cv_t<std::tuple_element_t<1, pair>>>(out, tags);
                 else
                     emit_array_form<T, pair>(out);
                 return;
@@ -1344,23 +1514,37 @@ namespace yyjson
                 out.emplace("minItems", fixed_size<T>());
                 out.emplace("maxItems", fixed_size<T>());
             }
-            if constexpr (json_unique_set<T>) out.emplace("uniqueItems", true);
+            if constexpr (yyjson::detail::json_unique_set<T>) out.emplace("uniqueItems", true);
         }
 
         // A range of a fixed size is written as an object of a member for each of its pairs, and read from an
-        // object of as many members.
+        // object of as many members.  A write puts the members of the internal tags `tags` beside the pairs, but a
+        // read takes such a member as a pair.
         template <typename T, typename K, typename V>
-        void generator::emit_object_form(object_ref out)
+        void generator::emit_object_form(object_ref out, const registry::tag_keys& tags)
         {
             namespace yd = yyjson::detail;
             out.emplace("type", "object");
             if constexpr (yd::c_array<T> || yd::std_array<T>)
             {
                 out.emplace("minProperties", fixed_size<T>());
-                out.emplace("maxProperties", fixed_size<T>());
+                out.emplace("maxProperties", fixed_size<T>() + tags.size());
             }
+            declare_tag_keys(out, tags);
             emit<V>(out.emplace("additionalProperties", empty_object));
-            if constexpr (yd::enum_key<K>) emit_property_names<K>(out);
+            if constexpr (yd::enum_key<K>)
+            {
+                auto names = out.emplace("propertyNames", empty_object);
+                if (tags.empty())
+                    emit_property_names<K>(names);
+                else
+                {
+                    auto any = names.emplace("anyOf", empty_array);
+                    auto keys = any.emplace_back(empty_object).emplace("enum", empty_array);
+                    for (const auto& key : tags) keys.emplace_back(key, copy_string);
+                    emit_property_names<K>(any.emplace_back(empty_object));
+                }
+            }
         }
 
         // Whether the I-th of Vs is the first of its type.
@@ -1400,27 +1584,29 @@ namespace yyjson
         consteval bool generator::bare_alternatives()
         {
             return []<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
-                constexpr bool bare =
-                    ((primitive_type<Ts> || std::same_as<Ts, std::monostate> || std::same_as<Ts, std::nullptr_t>) &&
-                     ...);
-                if constexpr (!bare)
-                    return false;
-                else
-                {
-                    const auto keyword = []<typename T>(std::type_identity<T>) -> std::string_view {
-                        if constexpr (primitive_type<T>)
-                            return type_keyword<T>();
-                        else
-                            return "null";
-                    };
-                    const auto keywords = std::array{keyword(std::type_identity<Ts>())...};
-                    for (std::size_t i = 0; i < keywords.size(); ++i)
-                        for (std::size_t j = 0; j < i; ++j)
-                            if (keywords[i] == keywords[j]) return false;
-                    constexpr auto numbers = ((std::integral<Ts> && !std::same_as<Ts, bool> ? 1 : 0) + ... + 0) +
-                                             ((std::floating_point<Ts> ? 1 : 0) + ... + 0);
-                    return numbers <= 1;
-                }
+                return []<typename... Us>(std::type_identity<std::variant<Us...>>) {
+                    constexpr bool bare =
+                        ((primitive_type<Us> || std::same_as<Us, std::monostate> || std::same_as<Us, std::nullptr_t>) &&
+                         ...);
+                    if constexpr (!bare)
+                        return false;
+                    else
+                    {
+                        const auto keyword = []<typename T>(std::type_identity<T>) -> std::string_view {
+                            if constexpr (primitive_type<T>)
+                                return type_keyword<T>();
+                            else
+                                return "null";
+                        };
+                        const auto keywords = std::array{keyword(std::type_identity<Us>())...};
+                        for (std::size_t i = 0; i < keywords.size(); ++i)
+                            for (std::size_t j = 0; j < i; ++j)
+                                if (keywords[i] == keywords[j]) return false;
+                        constexpr auto numbers = ((std::integral<Us> && !std::same_as<Us, bool> ? 1 : 0) + ... + 0) +
+                                                 ((std::floating_point<Us> ? 1 : 0) + ... + 0);
+                        return numbers <= 1;
+                    }
+                }(std::type_identity<std::variant<std::remove_cv_t<Ts>...>>{});
             }(std::type_identity<yyjson::detail::variant_base_t<V>>{});
         }
 
@@ -1429,38 +1615,113 @@ namespace yyjson
         {
             namespace yd = yyjson::detail;
             using T = std::variant_alternative_t<I, yd::variant_base_t<V>>;
-            emit<T>(out);
             if constexpr (yd::constrained_union_alternative<V, I>)
+            {
+                auto closed = std::vector<std::pair<std::string, bool>>();
+                for (const auto& key : tags_) closed.emplace_back(key, true);
+                emit<T>(out);
+                closed_keys_ = std::move(closed);
                 emit_node<yd::union_alternative_schema<V, I>, T, typename yd::union_traits<V>::template alternative<I>>(
                     out);
+                closed_keys_.clear();
+            }
+            else
+                emit<T>(out);
         }
 
         // A variant without a tag reads a value that an alternative reads, and a `yyjson::one_of_variant` one that
-        // exactly one reads.  `validate` checks that only against the read schemas, so that a written value can
-        // match two write schemas.
+        // exactly one reads.  `validate` rejects a value whose JSON another alternative reads, so that `oneOf` holds
+        // in the write schema too.
         template <typename V>
         void generator::emit_variant(object_ref out)
         {
             namespace yd = yyjson::detail;
-            static_assert(yd::union_variant<V> || !yd::internally_tagged<V>,
-                          "C7f2: yyjson::internal_tag is not emitted yet");
+            if constexpr (!yd::union_variant<V> && yd::internally_tagged<V>)
+                emit_internal_tag<V>(out, std::exchange(tags_, {}));
+            else
+                emit_untagged<V>(out);
+        }
+
+        // An internally tagged variant reads null as its `std::monostate`, and else an object with the member of the
+        // tag beside those of the alternative that the tag names.  Exactly one alternative takes a value, so that
+        // `oneOf` holds in both directions.
+        template <typename V>
+        void generator::emit_internal_tag(object_ref out, registry::tag_keys tags)
+        {
+            namespace yd = yyjson::detail;
+            using B = yd::variant_base_t<V>;
+            using Tags = yd::variant_tags<V>;
+            constexpr auto size = std::variant_size_v<B>;
+            const bool inherited = !tags.empty();
+            const bool used = std::exchange(tags_used_, false);
+            const auto within = std::exchange(within_, {});
+            // a set, so that a recursive reach of a struct finds the entry of the registry that it is in
+            if (const auto at = std::ranges::lower_bound(tags, Tags::key); at == tags.end() || *at != Tags::key)
+                tags.emplace(at, Tags::key);
+            const auto alternative = [&]<std::size_t I>(std::integral_constant<std::size_t, I>, object_ref o) {
+                if constexpr (I == Tags::monostate)
+                    o.emplace("type", "null");
+                else
+                {
+                    tags_ = tags;
+                    within_ = within;
+                    emit_alternative<V, I>(o);
+                    tags_.clear();
+                    within_.clear();
+                    // a reference alone takes keywords beside it, which then apply to the same value; the schema of a
+                    // struct of members says "object" already, and any other alternative reads only an object here
+                    using T = std::variant_alternative_t<I, B>;
+                    const bool bare = o.size() == 1 && o.contains("$ref");
+                    auto target = bare ? o : conjunct(o);
+                    if (!(struct_type<T> && !yd::as_array_struct<T> && !yd::transparent_struct<T>))
+                        target.emplace("type", "object");
+                    target.emplace("properties", empty_object)
+                        .emplace(Tags::key, empty_object)
+                        .emplace("const", Tags::ids[I]);
+                    target.emplace("required", empty_array).emplace_back(Tags::key);
+                }
+            };
+            if constexpr (size == 1)
+                alternative(std::integral_constant<std::size_t, 0>(), out);
+            else
+            {
+                auto each = out.emplace("oneOf", empty_array);
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (alternative(std::integral_constant<std::size_t, Is>(), each.emplace_back(empty_object)), ...);
+                }(std::make_index_sequence<size>{});
+            }
+            // the keys of the outer tags changed the schema if a schema of an alternative changed
+            tags_used_ = used || (inherited && tags_used_);
+        }
+
+        template <typename V>
+        void generator::emit_untagged(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            const auto tags = std::exchange(tags_, {});
+            const auto within = std::exchange(within_, {});
             using B = yd::variant_base_t<V>;
             constexpr auto size = std::variant_size_v<B>;
             constexpr bool constrained = []<std::size_t... Is>(std::index_sequence<Is...>) {
                 return (yd::constrained_union_alternative<V, Is> || ...);
             }(std::make_index_sequence<size>{});
             if constexpr (size == 1)
+            {
+                tags_ = tags;
+                within_ = within;
                 emit_alternative<V, 0>(out);
+            }
             else if constexpr (!constrained && bare_alternatives<V>())
             {
                 auto types = out.emplace("type", empty_array);
                 [&]<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
                     (
                         [&] {
-                            if constexpr (primitive_type<Ts>)
+                            using U = std::remove_cv_t<Ts>;
+                            if constexpr (primitive_type<U>)
                             {
-                                types.emplace_back(type_keyword<Ts>());
-                                emit_primitive_keywords<Ts>(out);
+                                types.emplace_back(type_keyword<U>());
+                                emit_primitive_keywords<U>(out);
                             }
                             else
                                 types.emplace_back("null");
@@ -1470,16 +1731,95 @@ namespace yyjson
             }
             else
             {
-                const auto keyword = yd::is_one_of_variant<V> && !writing_ ? "oneOf" : "anyOf";
+                const auto keyword = yd::is_one_of_variant<V> ? "oneOf" : "anyOf";
                 auto each = out.emplace(keyword, empty_array);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emit_alternative<V, Is>(each.emplace_back(empty_object)), ...);
+                    (emit_untagged_alternative<V, Is>(each.emplace_back(empty_object), tags, within), ...);
                 }(std::make_index_sequence<size>{});
             }
         }
 
+        // Whether `validate` may find that the walk of the alternative I of the untagged variant V fails, and then
+        // passes the value if read gives another alternative from its JSON.
+        template <typename V, std::size_t I>
+        consteval bool walk_may_fail()
+        {
+            namespace yd = yyjson::detail;
+            if constexpr (yd::constrained_union_alternative<V, I> ||
+                          yd::needs_validation<std::variant_alternative_t<I, yd::variant_base_t<V>>>)
+                return true;
+            else if constexpr (yd::is_one_of_variant<V>)
+                return yd::overlaps_another(yd::one_of_variant_cast<V>::overlap, I) ||
+                       yd::overlaps_another(yd::one_of_variant_cast<V>::tagged_overlap, I);
+            else
+                return false;
+        }
+
+        // The write schema of the alternative I also takes what its read schema takes, when `validate` may pass the
+        // value of another alternative because read gives I from its JSON.  A `yyjson::one_of_variant` branch takes
+        // only what reads as I, so that a value of I that another branch also describes matches one branch.
+        template <typename V, std::size_t I>
+        void generator::emit_untagged_alternative(object_ref out, const registry::tag_keys& tags,
+                                                  const std::vector<const void*>& within)
+        {
+            constexpr bool read_back = []<std::size_t... Js>(std::index_sequence<Js...>) {
+                return ((Js != I && walk_may_fail<V, Js>()) || ...);
+            }(std::make_index_sequence<std::variant_size_v<yyjson::detail::variant_base_t<V>>>{});
+            if constexpr (read_back || yyjson::detail::is_one_of_variant<V>)
+            {
+                if (writing_)
+                {
+                    auto written = value(object());
+                    tags_ = tags;
+                    within_ = within;
+                    emit_alternative<V, I>(*written.as_object());
+                    auto read = value(object());
+                    writing_ = false;
+                    tags_ = tags;
+                    within_ = within;
+                    emit_alternative<V, I>(*read.as_object());
+                    writing_ = true;
+                    if (written.write() != read.write())
+                    {
+                        if constexpr (!yyjson::detail::is_one_of_variant<V>)
+                        {
+                            auto any = out.emplace("anyOf", empty_array);
+                            any.emplace_back(written);
+                            any.emplace_back(read);
+                        }
+                        else if constexpr (read_back)
+                        {
+                            const auto members = *read.as_object();
+                            for (const auto& [key, v] : members) out.emplace(std::string(key), v, copy_string);
+                        }
+                        else
+                        {
+                            auto all = out.emplace("allOf", empty_array);
+                            all.emplace_back(written);
+                            all.emplace_back(read);
+                        }
+                        return;
+                    }
+                }
+            }
+            tags_ = tags;
+            within_ = within;
+            emit_alternative<V, I>(out);
+        }
+
+        // The members of the internal tags `tags` take any value beside `additionalProperties`.
+        inline void generator::declare_tag_keys(object_ref out, const registry::tag_keys& tags)
+        {
+            if (tags.empty()) return;
+            auto properties = out.emplace("properties", empty_object);
+            for (const auto& key : tags) properties.emplace(key, empty_object, copy_string);
+            tags_used_ = true;
+        }
+
+        // A write puts the members of the internal tags `tags` beside the pairs, but a read takes such a member as
+        // a pair.
         template <typename T, std::size_t... Is>
-        void generator::emit_pair_object(object_ref out)
+        void generator::emit_pair_object(object_ref out, const registry::tag_keys& tags)
         {
             out.emplace("type", "object");
             if (!writing_)
@@ -1487,6 +1827,8 @@ namespace yyjson
                 out.emplace("minProperties", sizeof...(Is));
                 out.emplace("maxProperties", sizeof...(Is));
             }
+            else
+                declare_tag_keys(out, tags);
             emit_values<std::remove_cv_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>...>(
                 out.emplace("additionalProperties", empty_object), writing_ ? "anyOf" : "allOf");
         }
@@ -1495,22 +1837,26 @@ namespace yyjson
         // from such an object or from an array of the pairs.  JSON Schema cannot tie a member to its position, so a
         // member that is read must satisfy the schemas of the values of all the pairs.
         template <typename T, std::size_t... Is>
-        void generator::emit_tuple(object_ref out, std::index_sequence<Is...>)
+        void generator::emit_tuple(object_ref out, std::index_sequence<Is...>, const registry::tag_keys& tags)
         {
             constexpr auto size = sizeof...(Is);
             if constexpr (size == 0)
             {
                 // written as an empty object, and read from an empty array as well
                 if (writing_)
+                {
                     out.emplace("type", "object");
+                    declare_tag_keys(out, tags);
+                    out.emplace("maxProperties", tags.size());
+                }
                 else
                 {
                     auto types = out.emplace("type", empty_array);
                     types.emplace_back("array");
                     types.emplace_back("object");
                     out.emplace("maxItems", 0);
+                    out.emplace("maxProperties", 0);
                 }
-                out.emplace("maxProperties", 0);
             }
             else
             {
@@ -1526,18 +1872,18 @@ namespace yyjson
                 if (writing_)
                 {
                     if constexpr (writer::detail::to_json_obj_defined<const T&>)
-                        emit_pair_object<T, Is...>(out);
+                        emit_pair_object<T, Is...>(out, tags);
                     else
                         array_form(out);
                 }
                 else if constexpr (object_read && array_read)
                 {
                     auto any = out.emplace("anyOf", empty_array);
-                    emit_pair_object<T, Is...>(any.emplace_back(empty_object));
+                    emit_pair_object<T, Is...>(any.emplace_back(empty_object), {});
                     array_form(any.emplace_back(empty_object));
                 }
                 else if constexpr (object_read)
-                    emit_pair_object<T, Is...>(out);
+                    emit_pair_object<T, Is...>(out, {});
                 else if constexpr (array_read)
                     array_form(out);
                 else
@@ -1676,6 +2022,132 @@ namespace yyjson
             out.emplace("required", empty_array).emplace_back(key, copy_string);
         }
 
+        // The `if` and the `then` of a new condition of `out`.
+        inline std::pair<object_ref, object_ref> condition(object_ref out)
+        {
+            auto holder = place(out, "if");
+            auto cond = holder.emplace("if", empty_object);
+            return {cond, holder.emplace("then", empty_object)};
+        }
+
+        template <typename S>
+        void generator::emit_adjacent_tags(object_ref out)
+        {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (
+                    [&] {
+                        if constexpr (yyjson::detail::adjacent_field<S, Ks>) emit_adjacent_tag<S, Ks>(out);
+                    }(),
+                    ...);
+            }(std::make_index_sequence<yyjson::detail::struct_field_count<S>>{});
+        }
+
+        // The tag of the variant of the field K names its alternative, also when a field of S holds it.  A missing tag
+        // reads only null, as `std::monostate`, and a missing value keeps its default, which the tag must name.  A
+        // write gives no tag for `std::monostate`, and none beside a default value that it leaves out.
+        template <typename S, std::size_t K>
+        void generator::emit_adjacent_tag(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using Tags = yd::struct_field_tags<S, K>;
+            using F = yd::struct_field_type<S, K>;
+            constexpr auto key = Tags::key;
+            constexpr auto value = yd::struct_field_key<S, K>;
+            constexpr bool own = yd::writes_adjacent_tag<S, Tags>;
+            constexpr bool monostate = Tags::monostate != std::variant_npos;
+            constexpr auto size = std::variant_size_v<F>;
+            const bool required = writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>();
+            auto properties = [&] {
+                auto v = out.find("properties")->second;
+                return *v.as_object();
+            }();
+            const auto names = [](object_ref o) {
+                auto values = o.emplace("enum", empty_array);
+                for (std::size_t i = 0; i < size; ++i)
+                    if (i != Tags::monostate) values.emplace_back(Tags::ids[i]);
+            };
+            if constexpr (own)
+                names(properties.emplace(key, empty_object));
+            else
+            {
+                // `S()` may hold a tag that names no alternative, which no read keeps unless the variant is missing
+                auto field = sub(properties, key);
+                if (auto it = field.find("default"); it != field.end())
+                {
+                    const auto d = it->second.as_string();
+                    if (!d || Tags::alternative(*d) == std::variant_npos) field.erase("default");
+                }
+                if (!monostate || !writing_) names(place(field, "enum"));
+            }
+            // a write leaves the field of the tag unchecked while the variant has no value
+            const bool unchecked = !own && monostate && writing_;
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (
+                    [&] {
+                        if constexpr (Is != Tags::monostate)
+                        {
+                            auto [tagged, then] = condition(out);
+                            tagged.emplace("properties", empty_object)
+                                .emplace(key, empty_object)
+                                .emplace("const", Tags::ids[Is]);
+                            tagged.emplace("required", empty_array).emplace_back(key);
+                            auto at = then.emplace("properties", empty_object).emplace(value, empty_object);
+                            using T = std::variant_alternative_t<Is, F>;
+                            if (!unchecked)
+                                emit<T>(at);
+                            else
+                            {
+                                auto any = at.emplace("anyOf", empty_array);
+                                emit<T>(any.emplace_back(empty_object));
+                                any.emplace_back(empty_object).emplace("type", "null");
+                            }
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<size>{});
+            // a write checks a field of the tag only against the variant, and may leave it out as any other field
+            if constexpr (!own)
+                if (writing_) return;
+            const auto depend = [&](std::string_view from, std::string_view to) {
+                auto all = sub(out, "dependentRequired");
+                all.emplace(from, empty_array).emplace_back(to);
+            };
+            if constexpr (monostate)
+            {
+                auto [valued, then] = condition(out);
+                valued.emplace("required", empty_array).emplace_back(value);
+                valued.emplace("properties", empty_object)
+                    .emplace(value, empty_object)
+                    .emplace("not", empty_object)
+                    .emplace("type", "null");
+                then.emplace("required", empty_array).emplace_back(key);
+            }
+            else if (required)
+                add_required(out, key);
+            else
+                depend(value, key);
+            if (required) return;
+            const auto initial = [&]() -> std::size_t {
+                constexpr auto r = yd::struct_declared_index<S, K>;
+                if constexpr (yd::presence_of<S, r>.from.has_value())
+                    return yd::stored_default<S, r>().index();
+                else if (const auto* s = initial_value<S>(names_); s != nullptr)
+                    return yd::struct_field<K>(*s).index();
+                return std::variant_npos;
+            }();
+            if (writing_ || initial == Tags::monostate)
+                depend(key, value);
+            else if (initial != std::variant_npos)
+            {
+                auto [missing, then] = condition(out);
+                missing.emplace("required", empty_array).emplace_back(key);
+                missing.emplace("not", empty_object).emplace("required", empty_array).emplace_back(value);
+                then.emplace("properties", empty_object)
+                    .emplace(key, empty_object)
+                    .emplace("const", Tags::ids[initial]);
+            }
+        }
+
         // The keywords of a node go into the schema that the type already gives, as the checker applies them to the
         // same value.  The schemas of the subschemas get keywords alone, besides the type of their position.
         template <typename N, typename V, typename S>
@@ -1685,6 +2157,19 @@ namespace yyjson
             using C = yd::constrained_value_t<std::remove_cv_t<V>>;
             constexpr const auto& n = N::node;
             constexpr const auto& c = N::constraints;
+            // a closed node at a value of an internally tagged variant takes its tag, unless it sees other keys
+            if constexpr (internal_tagged_variant<C>)
+                if (closed_keys_.empty())
+                {
+                    closed_keys_.emplace_back(yd::variant_tags<C>::key, false);
+                    emit_node<N, V, S>(out);
+                    closed_keys_.clear();
+                    return;
+                }
+            if constexpr (yd::variant_value<C> && !empty_node(n))
+                if (emit_projections<N, C, S>(out)) return;
+            // only the nodes of the same value see the keys that a closed node takes
+            const auto closed = std::exchange(closed_keys_, {});
             if constexpr (c.template has<yyjson::matches_t<void>>())
                 emit_matched<N, S>(out.empty() ? out : conjunct(out));
             if constexpr (n.values_count != 0) emit_listed<N, C>(out);
@@ -1713,9 +2198,105 @@ namespace yyjson
                                               out.contains("patternProperties"));
                 auto holder = own ? conjunct(out) : out;
                 if constexpr (n.members != 0) emit_members<N, n.members, C, S>(holder, out);
-                if constexpr (n.closed) holder.emplace("additionalProperties", false);
+                if constexpr (n.closed)
+                {
+                    for (const auto& [key, internal] : closed)
+                    {
+                        auto properties = sub(holder, "properties");
+                        if (properties.contains(key)) continue;
+                        properties.emplace(key, empty_object, copy_string);
+                        tags_used_ = tags_used_ || internal;
+                    }
+                    holder.emplace("additionalProperties", false);
+                }
             }
+            closed_keys_ = closed;
             if constexpr (n.combinators != 0) emit_combinators<N, n.combinators, V, S>(out);
+            closed_keys_ = closed;
+        }
+
+        // The JSON types that a read of A takes, or none for all.
+        template <typename A>
+        std::vector<std::string_view> json_types()
+        {
+            namespace yd = yyjson::detail;
+            constexpr auto kinds = yd::accepted_json_kinds<A, reader::const_value_ref>();
+            auto types = std::vector<std::string_view>();
+            if constexpr ((kinds & yd::json_kind_all) != yd::json_kind_all)
+            {
+                if constexpr ((kinds & yd::json_kind_null) != 0) types.emplace_back("null");
+                if constexpr ((kinds & yd::json_kind_bool) != 0) types.emplace_back("boolean");
+                if constexpr ((kinds & yd::json_kind_number) != 0) types.emplace_back("number");
+                if constexpr ((kinds & yd::json_kind_string) != 0) types.emplace_back("string");
+                if constexpr ((kinds & yd::json_kind_array) != 0) types.emplace_back("array");
+                if constexpr ((kinds & yd::json_kind_object) != 0) types.emplace_back("object");
+            }
+            return types;
+        }
+
+        // The keywords of a node at a variant V check the alternative that it holds.  When they differ between the
+        // alternatives, each applies to the JSON types of its alternative, and also to a value that another one reads.
+        template <typename N, typename V, typename S>
+        bool generator::emit_projections(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            struct projection
+            {
+                std::vector<std::string_view> types;
+                value schema;
+                std::string text;
+            };
+            const auto closed = closed_keys_;
+            auto each = std::vector<projection>();
+            [&]<typename... As>(std::type_identity<std::variant<As...>>) {
+                (
+                    [&] {
+                        auto o = value(object());
+                        closed_keys_ = closed;
+                        emit_node<N, As, S>(*o.as_object());
+                        auto text = o.write();
+                        each.push_back({json_types<yd::constrained_value_t<std::remove_cv_t<As>>>(), std::move(o),
+                                        std::move(text)});
+                    }(),
+                    ...);
+            }(std::type_identity<yd::variant_base_t<V>>{});
+            closed_keys_ = closed;
+            if (std::ranges::all_of(each, [&](const projection& p) { return p.text == each.front().text; }))
+                return false;
+            for (std::size_t i = 0; i < each.size(); ++i)
+            {
+                const auto& p = each[i];
+                const auto repeated = [&] {
+                    for (std::size_t j = 0; j < i; ++j)
+                        if (each[j].text == p.text && each[j].types == p.types) return true;
+                    return false;
+                };
+                if (p.text == "{}" || repeated()) continue;
+                auto all = [&] {
+                    if (auto it = out.find("allOf"); it != out.end())
+                    {
+                        auto v = it->second;
+                        return *v.as_array();
+                    }
+                    return out.emplace("allOf", empty_array);
+                }();
+                if (p.types.empty())
+                    all.emplace_back(p.schema);
+                else
+                {
+                    auto conditional = all.emplace_back(empty_object);
+                    auto condition = conditional.emplace("if", empty_object);
+                    if (p.types.size() == 1)
+                        condition.emplace("type", p.types.front());
+                    else
+                    {
+                        auto types = condition.emplace("type", empty_array);
+                        for (const auto t : p.types) types.emplace_back(t);
+                    }
+                    conditional.emplace("then", p.schema);
+                }
+            }
+            return true;
         }
 
         template <typename N, typename C, typename S>
@@ -1982,7 +2563,8 @@ namespace yyjson
                 {
                     if (!names_->split(i) && names_->types[i].used[0] && writing) continue;
                     auto g = generator(*names_, writing, mode_);
-                    names_->types[i].body(g, defs.emplace(names_->name(i, writing), empty_object, copy_string));
+                    names_->types[i].body(g, defs.emplace(names_->name(i, writing), empty_object, copy_string),
+                                          names_->types[i].tags);
                 }
             }
 
@@ -1991,7 +2573,7 @@ namespace yyjson
             {
                 const void* id;
                 bool writing;
-                registry::body_function emit;
+                void (*emit)(generator&, object_ref);
             };
             std::string ref_prefix_;
             schema_mode mode_;
@@ -2002,7 +2584,7 @@ namespace yyjson
             {
                 auto doc = value(object());
                 auto g = generator(*names_, writing, mode_);
-                names_->types[i].body(g, *doc.as_object());
+                names_->types[i].body(g, *doc.as_object(), names_->types[i].tags);
                 return std::string(doc.write());
             }
 
@@ -2035,7 +2617,7 @@ namespace yyjson
                     const auto [i, writing] = names_->order[k];
                     auto doc = value(object());
                     auto g = generator(*names_, writing, mode_);
-                    names_->types[i].body(g, *doc.as_object());
+                    names_->types[i].body(g, *doc.as_object(), names_->types[i].tags);
                 }
                 // A type has one name while its two schemas are the same, where the types that they refer to are the
                 // same if they share a name.  Splitting a type changes the schemas that refer to it, so this repeats.

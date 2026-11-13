@@ -1041,7 +1041,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `prefixItems` | `yyjson::prefix_items(...)`, a tuple, or the fields of a struct with `yyjson::as_array` | a tuple reads only an array of exactly as many elements as it has. |
 | `contains`, `minContains`, `maxContains` | `yyjson::contains(settings...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | `contains` with a `$ref` is `yyjson::matches<T>` on values of the DOM. |
 | `minItems`, `maxItems` | `yyjson::min_items(n)`, `yyjson::max_items(n)` | none. |
-| `uniqueItems` | `yyjson::unique_items`, or a set | a set keeps one of equal elements, and `yyjson::reject_duplicates` rejects the repeated one. |
+| `uniqueItems` | `yyjson::unique_items`, or a set | a set keeps one of equal elements, and `yyjson::reject_duplicates` rejects the repeated one. An alternative of a [`yyjson::one_of_variant`](conversions.md#exactly-one-alternative) does not match an array with a repeated element. |
 
 ### Objects
 

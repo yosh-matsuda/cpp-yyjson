@@ -582,7 +582,203 @@ namespace schema_test
             std::variant<int, std::string> v;
             std::variant<int, std::string> w;
         };
+        struct ClosedA
+        {
+            int a;
+        };
+        struct OpenAB
+        {
+            int a;
+            int b;
+        };
     }  // namespace variants
+    namespace tags
+    {
+        struct Circle
+        {
+            double r;
+        };
+        struct Rect
+        {
+            int w;
+            int h;
+        };
+        using Shape = std::variant<Circle, Rect>;
+        using Payload = std::variant<Circle, Rect, int>;
+        struct Event
+        {
+            int id;
+            Payload data;
+        };
+        enum class Kind
+        {
+            circle,
+            rect,
+            count
+        };
+        struct TypedEvent
+        {
+            Kind kind;
+            Payload data;
+        };
+        // the alternatives of an internal tag with keywords that see the key of the tag
+        struct Sealed
+        {
+            double r;
+        };
+        struct Spread
+        {
+            int a = 0;
+            std::map<std::string, int> rest;
+        };
+        struct Fenced
+        {
+            int a = 0;
+        };
+        struct Ticks
+        {
+            int a = 0;
+            std::map<std::string, int> ts;
+        };
+        struct Counted
+        {
+            int a = 0;
+        };
+        struct Labeled
+        {
+            std::string type;
+            int a = 0;
+        };
+        struct Bag
+        {
+            std::map<std::string, std::string> items;
+        };
+        using Kinds = std::variant<std::monostate, Circle, Sealed, Spread, Fenced, Ticks, Counted, Labeled, Bag,
+                                   std::map<std::string, std::string>, std::map<std::string, int>>;
+        enum class Mark
+        {
+            circle,
+            marked
+        };
+        struct Marked
+        {
+            Mark type = Mark::marked;
+            int n = 0;
+        };
+        using MarkedShape = std::variant<Circle, Marked>;
+        struct Group;
+        using Item = std::variant<Circle, yyjson::indirect<Group>>;
+        struct Group
+        {
+            std::string name;
+            std::vector<Item> items;
+        };
+        // a variant that has `std::monostate` under an adjacent tag, and one whose field has a default
+        using Maybe = std::variant<std::monostate, Circle, int>;
+        struct Optional
+        {
+            Maybe d;
+        };
+        struct Three
+        {
+            Maybe d = 3;
+        };
+        struct SealedEvent
+        {
+            int id;
+            Payload data;
+        };
+        struct DefaultEvent
+        {
+            int id;
+            Payload data;
+        };
+        // two variants of one key, and a variant with `std::monostate` whose tag a field holds
+        struct Two
+        {
+            std::string kind;
+            Payload a;
+            Payload b;
+        };
+        struct Held
+        {
+            std::string kind;
+            Maybe d;
+        };
+        // a transparent struct that holds its own tagged variant, and a closed struct that does so through an array
+        struct Coil;
+        using Coiled = std::variant<std::map<std::string, std::string>, yyjson::indirect<Coil>>;
+        struct Coil
+        {
+            Coiled value;
+        };
+        struct Nest;
+        using Nested = std::variant<std::map<std::string, int>, yyjson::indirect<Nest>>;
+        struct Nest
+        {
+            std::vector<Nested> items;
+        };
+        // alternatives that are not a struct, which only an object can carry beside the tag
+        using Scalars = std::variant<Mark, int>;
+        struct Wrapped
+        {
+            std::optional<Circle> v;
+        };
+        using MaybeWrapped = std::variant<std::monostate, Wrapped>;
+        // the keywords of a field that see the members of each alternative
+        using Only = std::variant<Circle>;
+        struct ClosedOnly
+        {
+            Only v;
+        };
+        struct ClosedItems
+        {
+            std::vector<Only> v;
+        };
+        using Inner = std::variant<Rect, Circle>;
+        using Outer = std::variant<Inner, Circle>;
+        struct ClosedOuter
+        {
+            Outer v;
+        };
+        // alternatives that a write puts as pairs beside the tag
+        using Pairs = std::variant<std::tuple<std::pair<std::string, int>>, std::array<std::pair<std::string, int>, 1>,
+                                   std::tuple<>, int>;
+        // a field holds the tag of a variant with a default
+        using Number = std::variant<int, std::string>;
+        using MaybeNumber = std::variant<std::monostate, int, std::string>;
+        struct KindDefault
+        {
+            std::string kind = "i";
+            Number d;
+        };
+        struct StructDefault
+        {
+            std::string kind = "i";
+            Number d;
+        };
+        struct MaybeKindDefault
+        {
+            std::string kind = "i";
+            MaybeNumber d;
+        };
+        struct MaybeStructDefault
+        {
+            std::string kind = "s";
+            MaybeNumber d;
+        };
+        // an adjacent tag over an internal tag, whose value carries no internal tag
+        using SealedOnly = std::variant<Sealed>;
+        using SealedOrRect = std::variant<std::monostate, Sealed, Rect>;
+        struct Bare
+        {
+            SealedOnly d;
+        };
+        struct BareDefault
+        {
+            SealedOrRect d = Rect{1, 2};
+        };
+    }  // namespace tags
 }  // namespace schema_test
 
 template <>
@@ -793,6 +989,127 @@ template <>
 inline constexpr auto yyjson::annotations<schema_test::variants::Limited> = yyjson::annotate(
     yyjson::field("v", yyjson::minimum(0), yyjson::max_length(2)),
     yyjson::field("w", yyjson::not_(yyjson::const_(0)), yyjson::one_of(yyjson::minimum(5), yyjson::max_length(1))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::variants::ClosedA> = yyjson::annotate(yyjson::reject_unknown_keys);
+
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Shape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Event> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::TypedEvent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Sealed> =
+    yyjson::annotate(yyjson::additional_properties(false));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Spread> =
+    yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Fenced> =
+    yyjson::annotate(yyjson::all_of(yyjson::additional_properties(false)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Ticks> =
+    yyjson::annotate(yyjson::field("ts", yyjson::pattern_properties("^t")));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Counted> = yyjson::annotate(yyjson::max_properties(1));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Bag> = yyjson::annotate(yyjson::transparent);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Kinds> = yyjson::annotate(yyjson::internal_tag(
+    "type", {"circle", "sealed", "spread", "fenced", "ticks", "counted", "labeled", "bag", "texts", "counts"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::MarkedShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "marked"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Item> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "group"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Optional> =
+    yyjson::annotate(yyjson::field("d", yyjson::adjacent_tag("k", {"c", "i"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Three> =
+    yyjson::annotate(yyjson::field("d", yyjson::adjacent_tag("k", {"c", "i"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::SealedEvent> =
+    yyjson::annotate(yyjson::additional_properties(false),
+                     yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::DefaultEvent> = yyjson::annotate(
+    yyjson::default_, yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Two> =
+    yyjson::annotate(yyjson::field("a", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})),
+                     yyjson::field("b", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Held> =
+    yyjson::annotate(yyjson::field("d", yyjson::adjacent_tag("kind", {"c", "i"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Coil> = yyjson::annotate(yyjson::transparent);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Coiled> =
+    yyjson::annotate(yyjson::internal_tag("type", {"leaf", "coil"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Nest> =
+    yyjson::annotate(yyjson::additional_properties(false));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Nested> =
+    yyjson::annotate(yyjson::internal_tag("type", {"leaf", "nest"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Scalars> =
+    yyjson::annotate(yyjson::internal_tag("type", {"mark", "int"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Wrapped> = yyjson::annotate(yyjson::transparent);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::MaybeWrapped> =
+    yyjson::annotate(yyjson::internal_tag("type", {"wrapped"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Only> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::ClosedOnly> =
+    yyjson::annotate(yyjson::field("v", yyjson::property("r"), yyjson::additional_properties(false)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::ClosedItems> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::property("r"), yyjson::additional_properties(false))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Inner> =
+    yyjson::annotate(yyjson::internal_tag("shape", {"rect", "circle"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Outer> =
+    yyjson::annotate(yyjson::internal_tag("type", {"inner", "circle"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::ClosedOuter> =
+    yyjson::annotate(yyjson::field("v", yyjson::additional_properties(false)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Pairs> =
+    yyjson::annotate(yyjson::internal_tag("type", {"tuple", "array", "empty", "int"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::KindDefault> = yyjson::annotate(
+    yyjson::field("kind", yyjson::default_), yyjson::field("d", yyjson::adjacent_tag("kind", {"i", "s"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::StructDefault> =
+    yyjson::annotate(yyjson::default_, yyjson::field("d", yyjson::adjacent_tag("kind", {"i", "s"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::MaybeKindDefault> = yyjson::annotate(
+    yyjson::field("kind", yyjson::default_), yyjson::field("d", yyjson::adjacent_tag("kind", {"i", "s"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::MaybeStructDefault> =
+    yyjson::annotate(yyjson::default_, yyjson::field("d", yyjson::adjacent_tag("kind", {"i", "s"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::SealedOnly> =
+    yyjson::annotate(yyjson::internal_tag("type", {"sealed"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::SealedOrRect> =
+    yyjson::annotate(yyjson::internal_tag("type", {"sealed", "rect"}));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::Bare> =
+    yyjson::annotate(yyjson::field("d", yyjson::adjacent_tag("k", {"sealed"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::BareDefault> =
+    yyjson::annotate(yyjson::default_, yyjson::field("d", yyjson::adjacent_tag("k", {"sealed", "rect"})));
 
 namespace
 {
@@ -1770,6 +2087,10 @@ TEST(Schema, Variants)
     EXPECT_EQ((schema<std::variant<std::monostate, bool, std::string>>()),
               R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":["null","boolean","string"]})");
     EXPECT_TRUE(to_jsoncons(yyjson::json_schema<std::variant<int, double>>()).contains("anyOf"));
+    // a cv-qualified alternative has the JSON type of its type
+    check<std::variant<const bool, std::string>>({"true", "1", R"("a")"});
+    EXPECT_EQ((schema<std::variant<const bool, std::string>>()),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":["boolean","string"]})");
 }
 
 TEST(Schema, AnyOfVariant)
@@ -1789,6 +2110,29 @@ TEST(Schema, AnyOfVariant)
     EXPECT_EQ(schema<Id>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[)"
                             R"({"type":"integer","minimum":1,"maximum":2147483647},)"
                             R"({"type":"string","minLength":1,"maxLength":8}]})");
+    // the settings of an alternative that is a variant check the alternative that it holds
+    using Pairs = std::vector<std::pair<std::string, int>>;
+    const auto converted = {doc("[]"), doc("{}"), doc(R"([["a",1]])"), doc(R"({"a":1})"), doc("3")};
+    check<yyjson::any_of_variant<yyjson::alt<std::variant<Pairs, int>, yyjson::min_properties(1)>>>(converted);
+    check<yyjson::any_of_variant<yyjson::alt<yyjson::any_of_variant<Pairs, int>, yyjson::min_properties(1)>>>(
+        converted);
+    check<yyjson::any_of_variant<yyjson::alt<yyjson::one_of_variant<Pairs, int>, yyjson::min_properties(1)>>>(
+        converted);
+    check<yyjson::any_of_variant<yyjson::alt<std::optional<std::variant<Pairs, int>>, yyjson::min_properties(1)>>>(
+        {"null", "[]", "{}", R"({"a":1})", "3"});
+    check<yyjson::any_of_variant<
+        yyjson::alt<std::variant<std::variant<int, std::string>, bool>, yyjson::minimum(5), yyjson::min_length(2)>>>(
+        {"1", "7", "1.5", "7.5", R"("a")", R"("ab")", "true"});
+    // `validate` passes an empty vector that the first alternative rejects, as read gives the second from `[]`
+    using Fallback = yyjson::any_of_variant<yyjson::alt<std::vector<int>, yyjson::min_items(1)>, Pairs>;
+    const auto fallback = Fallback(std::in_place_index<0>);
+    EXPECT_NO_THROW(yyjson::validate(fallback));
+    const auto written = compile(checked_schema(yyjson::json_schema<Fallback>(yyjson::write_direction)));
+    EXPECT_TRUE(written.is_valid(json::parse(std::string(yyjson::write(fallback)))));
+    using Low = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>, std::string>;
+    EXPECT_EQ(schema<Low>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[)"
+              R"({"type":"integer","minimum":1,"maximum":2147483647},{"type":"string"}]})");
 }
 
 TEST(Schema, OneOfVariant)
@@ -1803,14 +2147,27 @@ TEST(Schema, OneOfVariant)
         {R"({"x":1,"y":2})", R"({"x":1})", R"({"y":2})", R"({"x":1,"y":2,"z":3})", R"({"x":null,"y":2})"});
     check<yyjson::one_of_variant<Named, Sized>>(
         {R"({"size":1})", R"({"name":"a"})", "{}", R"({"name":"a","size":1})", R"({"other":1})"});
+    using Mixed = yyjson::one_of_variant<yyjson::alt<std::vector<int>, yyjson::min_items(1)>,
+                                         std::vector<std::pair<std::string, int>>>;
+    check<Mixed>({"[1]", "[]", R"({"a":1})", R"([["a",1]])", R"([1,["a",1]])"});
     EXPECT_EQ(schema<Range>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[)"
                                R"({"type":"integer","minimum":0,"maximum":2147483647},)"
                                R"({"type":"integer","minimum":-2147483648,"maximum":10}]})");
-    // `validate` checks one match against the read schemas only, and 5 that the first alternative holds is written
+    // `validate` rejects a value that two alternatives read, so that `oneOf` holds for written values too
     EXPECT_EQ(schema<Range>(yyjson::write_direction),
-              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[)"
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[)"
               R"({"type":"integer","minimum":0,"maximum":2147483647},)"
               R"({"type":"integer","minimum":-2147483648,"maximum":10}]})");
+    // alternatives of distinct JSON types keep `oneOf`, which a list in `type` cannot replace
+    using Bare = yyjson::one_of_variant<bool, std::string>;
+    check<Bare>({"true", R"("a")", "1", "null"});
+    EXPECT_EQ(schema<Bare>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[)"
+                              R"({"type":"boolean"},{"type":"string"}]})");
+    // the write schema of ClosedA stays closed, so that the output of OpenAB matches one branch
+    using Closed = yyjson::one_of_variant<ClosedA, OpenAB>;
+    check<Closed>({R"({"a":1})", R"({"a":1,"b":2})"});
+    const auto closed_written = compile(checked_schema(yyjson::json_schema<Closed>(yyjson::write_direction)));
+    EXPECT_TRUE(closed_written.is_valid(json::parse(std::string(yyjson::write(Closed(OpenAB{1, 2}))))));
 }
 
 TEST(Schema, VariantFields)
@@ -1831,6 +2188,156 @@ TEST(Schema, VariantFields)
     EXPECT_TRUE(required_keys(holder).contains("m"));
     EXPECT_FALSE(required_keys(holder).contains("o"));
     EXPECT_EQ(holder["properties"]["o"]["type"], json::parse(R"(["integer","string"])"));
+}
+
+TEST(Schema, InternalTag)
+{
+    namespace tags = schema_test::tags;
+    check<tags::Shape>({R"({"type":"circle","r":1.5})", R"({"w":2,"h":3,"type":"rect"})", R"({"type":"rect","r":1})",
+                        R"({"type":"circle","r":1,"x":2})", R"({"r":1})", R"({"type":"square","r":1})",
+                        R"({"type":1,"r":1})", "null", "5", "[]"});
+    check<std::vector<tags::Shape>>(
+        {R"([{"type":"circle","r":1.5},{"w":2,"h":3,"type":"rect"}])", R"([{"r":1}])", "[]"});
+    // the struct of an alternative takes the tag as a key of its own, which a map of int values cannot read
+    check<tags::Kinds>({"null",
+                        "{}",
+                        R"({"type":"circle","r":1})",
+                        R"({"type":"sealed","r":1})",
+                        R"({"type":"sealed","r":1,"x":1})",
+                        R"({"type":"spread","a":1,"x":2})",
+                        R"({"type":"spread","a":1,"x":"y"})",
+                        R"({"type":"fenced","a":1})",
+                        R"({"type":"fenced","a":1,"b":2})",
+                        R"({"type":"ticks","a":1})",
+                        R"({"type":"counted"})",
+                        R"({"type":"counted","a":1})",
+                        R"({"type":"labeled","a":1})",
+                        R"({"type":"bag","x":"y"})",
+                        R"({"type":"bag","x":1})",
+                        R"({"type":"texts","x":"y"})",
+                        R"({"type":"texts","x":1})",
+                        R"({"type":"counts"})",
+                        R"({"type":"counts","x":1})",
+                        R"({"type":"other"})",
+                        R"({"type":null})",
+                        "5"});
+    check<tags::MarkedShape>({R"({"type":"marked","n":1})", R"({"type":"marked"})", R"({"type":"circle","r":1})",
+                              R"({"type":"circle","n":1})", R"({"n":1})"});
+    check<tags::Item>(
+        {R"({"type":"group","name":"a","items":[{"type":"circle","r":1},{"type":"group","name":"b","items":[]}]})",
+         R"({"type":"group","name":"a","items":[{"r":1}]})", R"({"type":"circle","r":1})", R"({"name":"a"})"});
+    // a write puts the tag beside the values of a map, which the read takes as one of them
+    const auto written = compile(checked_schema(yyjson::json_schema<tags::Kinds>(yyjson::write_direction)));
+    for (const auto& k : {tags::Kinds(std::map<std::string, int>{{"a", 1}}), tags::Kinds(tags::Bag{{{"a", "b"}}}),
+                          tags::Kinds(std::map<std::string, std::string>{{"a", "b"}})})
+        EXPECT_TRUE(written.is_valid(json::parse(std::string(yyjson::write(k)))));
+    // a variant that holds itself through a transparent struct, or through a closed struct, ends its recursion
+    check<tags::Coiled>(
+        {R"({"type":"leaf","a":"b"})", R"({"type":"coil","a":"b"})", R"({"type":"coil"})", "{}", "null"});
+    check<tags::Nested>({R"({"type":"leaf","x":1})", R"({"type":"nest","items":[{"type":"leaf"}]})",
+                         R"({"type":"nest","items":[{"type":"nest","items":[]}]})",
+                         R"({"type":"nest","items":[],"x":1})"});
+    // an alternative that is not an object cannot carry the tag
+    check<tags::Scalars>({R"("circle")", R"({"type":"int"})", R"({"type":"mark"})", "1", "null"});
+    check<tags::MaybeWrapped>({"null", R"({"type":"wrapped"})", R"({"type":"wrapped","r":1})", R"({"r":1})", "{}"});
+    // the keywords of a field see the key of the tag of its own variant, but not that of a nested variant
+    check<tags::ClosedOnly>({R"({"v":{"type":"circle","r":1}})", R"({"v":{"type":"circle","r":1,"x":1}})"});
+    check<tags::ClosedItems>({R"({"v":[{"type":"circle","r":1}]})", R"({"v":[{"type":"circle","r":1,"x":1}]})"});
+    check<tags::ClosedOuter>(
+        {R"({"v":{"type":"inner","shape":"circle","r":1}})", R"({"v":{"type":"inner","shape":"rect","w":1,"h":2}})",
+         R"({"v":{"shape":"rect","type":"inner","w":1,"h":2}})", R"({"v":{"type":"circle","r":1}})",
+         R"({"v":{"type":"inner","r":1}})", R"({"v":{"type":"inner","shape":"rect","w":1,"h":2,"x":1}})"});
+    // a write puts the tag beside the pairs, which the read takes as a pair
+    check<tags::Pairs>(
+        {R"({"type":"tuple","a":1})", R"({"type":"array","a":1})", R"({"type":"empty"})", R"({"type":"tuple"})", "1"});
+    const auto pairs = compile(checked_schema(yyjson::json_schema<tags::Pairs>(yyjson::write_direction)));
+    for (const auto& p :
+         {tags::Pairs(std::tuple<std::pair<std::string, int>>{{"a", 1}}),
+          tags::Pairs(std::array<std::pair<std::string, int>, 1>{{{"a", 1}}}), tags::Pairs(std::tuple<>{})})
+        EXPECT_TRUE(pairs.is_valid(json::parse(std::string(yyjson::write(p)))));
+    // a struct whose keywords see the tag has a schema of its own for it
+    const auto s = to_jsoncons(yyjson::json_schema<tags::Kinds>());
+    EXPECT_TRUE(s["$defs"].contains("schema_test.tags.Sealed-type"));
+    EXPECT_FALSE(s["$defs"].contains("schema_test.tags.Sealed"));
+    EXPECT_TRUE(s["$defs"].contains("schema_test.tags.Circle"));
+    EXPECT_EQ(
+        schema<std::vector<tags::Shape>>(),
+        R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.tags.Circle":{"type":"object","properties":{"r":{"type":"number","minimum":-1.7976931348623157e308,"maximum":1.7976931348623157e308,"default":0.0}},"required":["r"]},"schema_test.tags.Rect":{"type":"object","properties":{"w":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0},"h":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},"required":["w","h"]}},"type":"array","items":{"oneOf":[{"$ref":"#/$defs/schema_test.tags.Circle","properties":{"type":{"const":"circle"}},"required":["type"]},{"$ref":"#/$defs/schema_test.tags.Rect","properties":{"type":{"const":"rect"}},"required":["type"]}]}})");
+}
+
+TEST(Schema, AdjacentTag)
+{
+    namespace tags = schema_test::tags;
+    const auto docs = {doc(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
+                       doc(R"({"id":1,"data":5,"kind":"count"})"),
+                       doc(R"({"id":1,"kind":"count","data":{"r":1}})"),
+                       doc(R"({"id":1,"kind":"circle"})"),
+                       doc(R"({"id":1,"kind":"count"})"),
+                       doc(R"({"id":1,"data":5})"),
+                       doc(R"({"id":1})"),
+                       doc(R"({"id":1,"kind":"zz","data":5})"),
+                       doc(R"({"id":1,"kind":5,"data":5})"),
+                       doc(R"({"id":1,"kind":"count","data":null})"),
+                       doc(R"({"id":1,"data":null})"),
+                       doc(R"({"id":1,"kind":"count","data":5,"x":1})")};
+    check<tags::Event>(docs);
+    check<tags::TypedEvent>({R"({"kind":"rect","data":{"w":1,"h":2}})", R"({"kind":"count","data":5})",
+                             R"({"kind":"count","data":{"r":1}})", R"({"kind":"circle"})", R"({"data":5})",
+                             R"({"kind":"zz","data":5})", "{}"});
+    check<tags::SealedEvent>(docs);
+    check<tags::DefaultEvent>(docs);
+    check<tags::DefaultEvent>({"{}", R"({"data":{"r":1}})", R"({"kind":"circle"})", R"({"kind":"count"})"});
+    // R9: null reads as `std::monostate` without a tag
+    const auto maybe = {doc("{}"),
+                        doc(R"({"d":null})"),
+                        doc(R"({"k":"c"})"),
+                        doc(R"({"k":"i"})"),
+                        doc(R"({"d":5})"),
+                        doc(R"({"k":"i","d":5})"),
+                        doc(R"({"k":"i","d":null})"),
+                        doc(R"({"k":null,"d":null})"),
+                        doc(R"({"k":"c","d":{"r":1}})"),
+                        doc(R"({"k":"c","d":5})")};
+    check<tags::Optional>(maybe);
+    check<tags::Three>(maybe);
+    // R10: a field holds the tag
+    check<tags::Two>({R"({"kind":"count","a":1,"b":2})", R"({"kind":"count"})", R"({"kind":"count","a":{"r":1},"b":1})",
+                      R"({"kind":"circle","a":{"r":1},"b":{"r":2}})", R"({"a":1,"b":2})",
+                      R"({"kind":"zz","a":1,"b":2})"});
+    check<tags::Held>({R"({"kind":"x","d":null})", R"({"kind":"c","d":null})", R"({"kind":"i","d":3})", R"({"d":null})",
+                       R"({"kind":"i","d":null})", R"({"kind":"c","d":3})", R"({"kind":"x","d":3})"});
+    // the read checks a tag that a field holds as it checks a tag of its own
+    const auto held = {doc("{}"),
+                       doc(R"({"d":1})"),
+                       doc(R"({"d":null})"),
+                       doc(R"({"kind":"i"})"),
+                       doc(R"({"kind":"s"})"),
+                       doc(R"({"kind":"x"})"),
+                       doc(R"({"kind":"i","d":1})"),
+                       doc(R"({"kind":"s","d":1})"),
+                       doc(R"({"kind":"s","d":"x"})"),
+                       doc(R"({"kind":"i","d":null})"),
+                       doc(R"({"kind":"i","d":"x"})")};
+    check<tags::KindDefault>(held);
+    check<tags::StructDefault>(held);
+    check<tags::MaybeKindDefault>(held);
+    check<tags::MaybeStructDefault>(held);
+    // a write keeps a tag equal to its default, which a read needs beside the value
+    const auto kinds = std::vector{tags::KindDefault{"i", 1}, tags::KindDefault{"s", "x"}};
+    check_write_required(kinds);
+    for (const auto& v : kinds) EXPECT_NO_THROW((void)yyjson::read<tags::KindDefault>(yyjson::write(v)));
+    const auto maybe_struct = std::vector{tags::MaybeStructDefault{"s", "x"}, tags::MaybeStructDefault{"i", 1}};
+    check_write_required(maybe_struct);
+    for (const auto& v : maybe_struct) EXPECT_NO_THROW((void)yyjson::read<tags::MaybeStructDefault>(yyjson::write(v)));
+    // the value of an adjacent tag has no internal tag, and so has its default
+    check<tags::Bare>({R"({"k":"sealed","d":{"r":1}})", R"({"k":"sealed","d":{"type":"sealed","r":1}})"});
+    check<tags::BareDefault>({"{}", R"({"k":"rect"})", R"({"k":"rect","d":{"w":1,"h":2}})",
+                              R"({"k":"rect","d":{"type":"rect","w":1,"h":2}})", R"({"k":"sealed","d":{"r":1}})",
+                              R"({"d":null})"});
+    EXPECT_EQ(definition<tags::BareDefault>(false)["properties"]["d"]["default"], json::parse(R"({"w":1,"h":2})"));
+    EXPECT_EQ(
+        schema<tags::Event>(),
+        R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.tags.Event":{"type":"object","properties":{"id":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0},"data":{"anyOf":[{"$ref":"#/$defs/schema_test.tags.Circle"},{"$ref":"#/$defs/schema_test.tags.Rect"},{"type":"integer","minimum":-2147483648,"maximum":2147483647}],"default":{"r":0.0}},"kind":{"enum":["circle","rect","count"]}},"required":["id","data","kind"],"if":{"properties":{"kind":{"const":"circle"}},"required":["kind"]},"then":{"properties":{"data":{"$ref":"#/$defs/schema_test.tags.Circle"}}},"allOf":[{"if":{"properties":{"kind":{"const":"rect"}},"required":["kind"]},"then":{"properties":{"data":{"$ref":"#/$defs/schema_test.tags.Rect"}}}},{"if":{"properties":{"kind":{"const":"count"}},"required":["kind"]},"then":{"properties":{"data":{"type":"integer","minimum":-2147483648,"maximum":2147483647}}}}]},"schema_test.tags.Circle":{"type":"object","properties":{"r":{"type":"number","minimum":-1.7976931348623157e308,"maximum":1.7976931348623157e308,"default":0.0}},"required":["r"]},"schema_test.tags.Rect":{"type":"object","properties":{"w":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0},"h":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},"required":["w","h"]}},"$ref":"#/$defs/schema_test.tags.Event"})");
 }
 
 // NOLINTEND

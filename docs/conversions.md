@@ -337,6 +337,7 @@ yyjson::read<Shape>(R"({"x":1,"y":2,"z":3})");
 A read counts the alternatives that match the JSON value. The schema of the type decides the count. Of the policies of the call, only `yyjson::reject_unknown_keys` changes it:
 
 *   An alternative matches if it reads the value under `yyjson::reject_missing_keys`, `yyjson::reject_null_as_missing` and its own policies, and the value satisfies its settings. Thus a field without a default must be in the object. A struct that takes other keys matches an object with more keys.
+*   A set that the schema gives `uniqueItems`, such as `std::set<int>`, does not match an array with a repeated element. A repeated key does not change the count, because no keyword of a schema rejects it.
 *   When the call gives `yyjson::reject_unknown_keys`, the alternatives are also read under it. Every struct that they read is then closed, also the structs in their fields. A struct with `yyjson::extra_keys` or `yyjson::pattern_properties` still takes other keys. Thus a struct does not match an object with a key that names none of its fields.
 *   If exactly one alternative matches, the read gives that alternative. The read then applies the policies of the call to it, and throws `yyjson::bad_cast` if they reject the value.
 *   If no alternative matches, the read throws `yyjson::bad_cast` with `... is not constructible from JSON` and the reason of each alternative. Each reason comes from a read under the policies that count the matches. If two alternatives match, the read throws `yyjson::bad_cast` with the indexes of the two.
@@ -557,7 +558,7 @@ A field has a default when its key may be left out of the JSON. These fields hav
 *   A field with `yyjson::default_`. Its default is its value in `T()`. On the struct, `yyjson::default_` gives a default to each field that has no setting of its own and is not a `std::optional`.
 *   A field with `yyjson::default_from<f>`. Its default is `f()`. For a field of `std::optional<U>`, `yyjson::nullable<U>`, a smart pointer or `yyjson::indirect<U>`, `f` returns a `U`. `T()` does not call `f`.
 
-When a field with `yyjson::default_` or `yyjson::default_from<f>` is equal to its default, the library does not write it. `yyjson::emit_defaults` on the field writes it in every case, and the call `yyjson::write(t, yyjson::emit_defaults)` writes every such field of every struct that it writes. An empty `std::optional` is left out also then, and so is a field that is equal to a sentinel, as below.
+When a field with `yyjson::default_` or `yyjson::default_from<f>` is equal to its default, the library does not write it. `yyjson::emit_defaults` on the field writes it in every case, and the call `yyjson::write(t, yyjson::emit_defaults)` writes every such field of every struct that it writes. An empty `std::optional` is left out also then, and so is a field that is equal to a sentinel, as below. The library always writes a field that holds the tag of a [`yyjson::adjacent_tag`](#tagged-variants), unless the field is equal to a sentinel. A read needs this tag beside the value.
 
 ```cpp
 std::string guest() { return "guest"; }

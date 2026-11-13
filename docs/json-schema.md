@@ -184,6 +184,15 @@ Each schema gives `default` for each field, also for a required key. The value i
 *   The field has `yyjson::required`.
 *   The value violates a constraint of the field, such as an empty string with `yyjson::min_length(1)`.
 
+## Variants
+
+| C++ type | Keyword |
+| --- | --- |
+| `std::variant`, `yyjson::any_of_variant` | `anyOf`. When each alternative gives only a JSON type, the schema merges them into one `type`, such as `["integer","string"]`. |
+| `yyjson::one_of_variant` | `oneOf` in the read schema and in the write schema. The schema keeps `oneOf` also when each alternative gives only a JSON type. A variant of one alternative gives the schema of that alternative alone, because `oneOf` of one schema accepts the same values. |
+| [internal tag](conversions.md#internal-tag) | `oneOf`. Each alternative is a `$ref` with `properties` that give the `const` of the tag and `required` that gives its key. |
+| [adjacent tag](conversions.md#adjacent-tag) | The field of the value is `anyOf` of the alternatives. The key of the tag takes `enum` of the names. `if` and `then` connect each name to its alternative. |
+
 ## `yyjson::matches<T>`
 
 [`yyjson::matches<T>`](validation.md#values-of-the-dom-that-read-as-a-type) in a combinator gives the schema of `T`. A named type gives a `$ref` to its definition. For example, `yyjson::not_(yyjson::matches<Circle>)` on a `yyjson::value` field gives `{"not":{"$ref":"#/$defs/Circle"},"default":null}`.
