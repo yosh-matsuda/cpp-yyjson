@@ -83,7 +83,7 @@ namespace yyjson
                               !std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
 
         template <typename T>
-        concept variant_type = yyjson::detail::variant_json_kinds<T>::is_variant || std::is_union_v<T>;
+        concept variant_type = yyjson::detail::variant_json_kinds<T>::is_variant;
 
         // The types read from a JSON string and written as one.
         template <typename T>
@@ -252,6 +252,18 @@ namespace yyjson
         struct matched_types<X<N, As...>>
         {
             using type = decltype(std::tuple_cat(std::declval<typename matched_types<As>::type>()...));
+        };
+        // The settings that hold the `yyjson::matches` of a node of S: its annotations, or the settings of the
+        // alternative S of a union.
+        template <typename S>
+        struct settings_of
+        {
+            using type = yyjson::detail::annotation_values_of<S>;
+        };
+        template <typename T, auto... Settings>
+        struct settings_of<yyjson::alt<T, Settings...>>
+        {
+            using type = std::tuple<yyjson::detail::alternative_setting_t<Settings>...>;
         };
         // The index in the tuple Ts of the type whose name is `name`, or the size of Ts.
         template <typename Ts>
@@ -552,6 +564,12 @@ namespace yyjson
             void emit_pair_object(object_ref out);
             template <typename... Vs>
             void emit_values(object_ref out, std::string_view combinator);
+            template <typename V>
+            void emit_variant(object_ref out);
+            template <typename V, std::size_t I>
+            void emit_alternative(object_ref out);
+            template <typename V>
+            static consteval bool bare_alternatives();
             // Adds the keywords of the node N, at a value of V of a field of S, to `out`.
             template <typename N, typename V, typename S>
             void emit_node(object_ref out);
@@ -607,7 +625,7 @@ namespace yyjson
             else if constexpr (user_caster<T>)
                 static_assert(yd::false_v<T>, "C7g: a type with a caster of the user is not emitted yet");
             else if constexpr (variant_type<T>)
-                static_assert(yd::false_v<T>, "C7f: variants and unions are not emitted yet");
+                emit_variant<T>(out);
             else if constexpr (yd::is_std_optional<T>::value || yd::nullable_value<T>)
                 emit_nullable<typename T::value_type>(out);
             else if constexpr (yd::owning_pointer<T>)
@@ -793,7 +811,7 @@ namespace yyjson
         void generator::emit_struct(object_ref out)
         {
             namespace yd = yyjson::detail;
-            static_assert(!yd::has_adjacent_fields<S>, "C7f: yyjson::adjacent_tag is not emitted yet");
+            static_assert(!yd::has_adjacent_fields<S>, "C7f2: yyjson::adjacent_tag is not emitted yet");
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
             auto required = std::vector<std::string_view>();
@@ -1073,6 +1091,12 @@ namespace yyjson
             }
             else if constexpr (primitive_type<T> || std::is_enum_v<T> || std::same_as<T, std::vector<bool>>)
                 return true;
+            else if constexpr (variant_type<T>)
+            {
+                const auto& base = yd::as_std_variant(v);
+                return !base.valueless_by_exception() &&
+                       std::visit([](const auto& a) { return read_schema_takes(a); }, base);
+            }
             else if constexpr (std::ranges::range<T>)
             {
                 for (const auto& e : v)
@@ -1367,6 +1391,90 @@ namespace yyjson
                         }(),
                         ...);
                 }(std::index_sequence_for<Vs...>{});
+            }
+        }
+
+        // Whether a `type` array of the alternatives of V takes exactly what each of them takes: primitives of
+        // distinct types without settings, of which at most one has the bounds of a number.
+        template <typename V>
+        consteval bool generator::bare_alternatives()
+        {
+            return []<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
+                constexpr bool bare =
+                    ((primitive_type<Ts> || std::same_as<Ts, std::monostate> || std::same_as<Ts, std::nullptr_t>) &&
+                     ...);
+                if constexpr (!bare)
+                    return false;
+                else
+                {
+                    const auto keyword = []<typename T>(std::type_identity<T>) -> std::string_view {
+                        if constexpr (primitive_type<T>)
+                            return type_keyword<T>();
+                        else
+                            return "null";
+                    };
+                    const auto keywords = std::array{keyword(std::type_identity<Ts>())...};
+                    for (std::size_t i = 0; i < keywords.size(); ++i)
+                        for (std::size_t j = 0; j < i; ++j)
+                            if (keywords[i] == keywords[j]) return false;
+                    constexpr auto numbers = ((std::integral<Ts> && !std::same_as<Ts, bool> ? 1 : 0) + ... + 0) +
+                                             ((std::floating_point<Ts> ? 1 : 0) + ... + 0);
+                    return numbers <= 1;
+                }
+            }(std::type_identity<yyjson::detail::variant_base_t<V>>{});
+        }
+
+        template <typename V, std::size_t I>
+        void generator::emit_alternative(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using T = std::variant_alternative_t<I, yd::variant_base_t<V>>;
+            emit<T>(out);
+            if constexpr (yd::constrained_union_alternative<V, I>)
+                emit_node<yd::union_alternative_schema<V, I>, T, typename yd::union_traits<V>::template alternative<I>>(
+                    out);
+        }
+
+        // A variant without a tag reads a value that an alternative reads, and a `yyjson::one_of_variant` one that
+        // exactly one reads.  `validate` checks that only against the read schemas, so that a written value can
+        // match two write schemas.
+        template <typename V>
+        void generator::emit_variant(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            static_assert(yd::union_variant<V> || !yd::internally_tagged<V>,
+                          "C7f2: yyjson::internal_tag is not emitted yet");
+            using B = yd::variant_base_t<V>;
+            constexpr auto size = std::variant_size_v<B>;
+            constexpr bool constrained = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return (yd::constrained_union_alternative<V, Is> || ...);
+            }(std::make_index_sequence<size>{});
+            if constexpr (size == 1)
+                emit_alternative<V, 0>(out);
+            else if constexpr (!constrained && bare_alternatives<V>())
+            {
+                auto types = out.emplace("type", empty_array);
+                [&]<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
+                    (
+                        [&] {
+                            if constexpr (primitive_type<Ts>)
+                            {
+                                types.emplace_back(type_keyword<Ts>());
+                                emit_primitive_keywords<Ts>(out);
+                            }
+                            else
+                                types.emplace_back("null");
+                        }(),
+                        ...);
+                }(std::type_identity<B>{});
+            }
+            else
+            {
+                const auto keyword = yd::is_one_of_variant<V> && !writing_ ? "oneOf" : "anyOf";
+                auto each = out.emplace(keyword, empty_array);
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (emit_alternative<V, Is>(each.emplace_back(empty_object)), ...);
+                }(std::make_index_sequence<size>{});
             }
         }
 
@@ -1826,8 +1934,7 @@ namespace yyjson
         template <typename N, typename S>
         void generator::emit_matched(object_ref out)
         {
-            namespace yd = yyjson::detail;
-            using Ts = typename matched_types<yd::annotation_values_of<S>>::type;
+            using Ts = typename matched_types<typename settings_of<S>::type>::type;
             constexpr auto i = matched_index<Ts>::of(N::constraints.matches.name());
             static_assert(i < std::tuple_size_v<Ts>,
                           "C7h: yyjson::matches inside yyjson::prefix_items, all_of, any_of or one_of is not emitted "

@@ -513,6 +513,76 @@ namespace schema_test
     {
         std::vector<Expr> sub;
     };
+
+    // variants without a tag
+    namespace variants
+    {
+        struct Ok
+        {
+            int code;
+        };
+        struct Err
+        {
+            int code;
+            std::string msg;
+        };
+        using Result = std::variant<Ok, Err>;
+        struct Shape
+        {
+            std::string kind;
+            double size = 0;
+        };
+        using Shapes = yyjson::any_of_variant<yyjson::alt<Shape, yyjson::property("kind", yyjson::const_("circle"))>,
+                                              yyjson::alt<Shape, yyjson::property("kind", yyjson::const_("square"))>>;
+        struct Pair
+        {
+            int a = 0;
+            std::optional<int> b;
+        };
+        using OnlyA = yyjson::any_of_variant<
+            yyjson::alt<Pair, yyjson::property("a", yyjson::minimum(0)), yyjson::additional_properties(false)>,
+            std::string>;
+        struct XY
+        {
+            int x = 0;
+            int y = 0;
+        };
+        struct XZ
+        {
+            int x = 0;
+            int z = 0;
+        };
+        using PointOrBox = yyjson::one_of_variant<XY, XZ>;
+        struct A
+        {
+            int x;
+        };
+        struct B
+        {
+            std::optional<int> x;
+            int y;
+        };
+        struct Named
+        {
+            std::optional<std::string> name;
+        };
+        struct Sized
+        {
+            int size = 0;
+        };
+        struct VariantFields
+        {
+            std::variant<int, std::string> v;
+            std::optional<std::variant<int, std::string>> o;
+            std::variant<std::monostate, int> m;
+            std::vector<std::variant<int, Ok>> list;
+        };
+        struct Limited
+        {
+            std::variant<int, std::string> v;
+            std::variant<int, std::string> w;
+        };
+    }  // namespace variants
 }  // namespace schema_test
 
 template <>
@@ -719,6 +789,10 @@ inline constexpr auto yyjson::annotations<schema_test::Expr> = yyjson::annotate(
 template <>
 inline constexpr auto yyjson::annotations<schema_test::OptionalOne> =
     yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::const_(1)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::variants::Limited> = yyjson::annotate(
+    yyjson::field("v", yyjson::minimum(0), yyjson::max_length(2)),
+    yyjson::field("w", yyjson::not_(yyjson::const_(0)), yyjson::one_of(yyjson::minimum(5), yyjson::max_length(1))));
 
 namespace
 {
@@ -1668,6 +1742,95 @@ TEST(Schema, TransparentStructs)
     EXPECT_FALSE(required_keys(ids).contains("id"));
     EXPECT_EQ(ids["properties"]["id"]["not"]["type"].as<std::string>(), "null");
     EXPECT_FALSE(required_keys(definition<OptionalIds>(true)).contains("id"));
+}
+
+TEST(Schema, Variants)
+{
+    using namespace schema_test::variants;
+    using schema_test::UserId;
+    using schema_test::arrays::Sealed;
+    check<std::variant<int, std::string>>({"1", R"("a")", "1.0", "1.5", "2147483648", "null", "[]"});
+    check<std::variant<std::monostate, int>>({"null", "1", R"("a")", "false"});
+    check<std::variant<int, double>>({"1", "1.5", "1e10", R"("1")"});
+    check<std::variant<bool, std::int8_t, std::string>>({"true", "-128", "128", R"("a")", "null"});
+    check<Result>({R"({"code":1,"msg":"x"})", R"({"code":1})", R"({"msg":"x"})", "{}", R"({"code":"a"})", "1"});
+    check<std::variant<Ok, std::map<std::string, int>>>({R"({"code":1})", R"({"a":2})", R"({"a":"x"})", "{}", "[]"});
+    check<std::variant<Ok, yyjson::value>>({R"({"code":1})", R"({"code":"x"})", "1", "{}"});
+    check<std::variant<std::vector<int>, std::map<std::string, int>>>({"[1]", R"({"a":1})", R"(["a"])", "1"});
+    check<std::variant<UserId, std::string>>({"1", R"("a")", "null", R"({"value":1})"});
+    check<std::variant<Sealed, std::string>>({"[]", "[1]", "[1,2]", "[1,2,3]", R"("a")", "1"});
+    EXPECT_EQ(schema<Result>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.variants.Ok":)"
+              R"({"type":"object","properties":{"code":{"type":"integer","minimum":-2147483648,"maximum":2147483647,)"
+              R"("default":0}},"required":["code"]},"schema_test.variants.Err":{"type":"object","properties":)"
+              R"({"code":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0},"msg":)"
+              R"({"type":"string","default":""}},"required":["code","msg"]}},"anyOf":[)"
+              R"({"$ref":"#/$defs/schema_test.variants.Ok"},{"$ref":"#/$defs/schema_test.variants.Err"}]})");
+    // primitives of distinct JSON types without other bounds are a type array
+    EXPECT_EQ((schema<std::variant<std::monostate, bool, std::string>>()),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":["null","boolean","string"]})");
+    EXPECT_TRUE(to_jsoncons(yyjson::json_schema<std::variant<int, double>>()).contains("anyOf"));
+}
+
+TEST(Schema, AnyOfVariant)
+{
+    using namespace schema_test::variants;
+    using Id = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>,
+                                      yyjson::alt<std::string, yyjson::min_length(1), yyjson::max_length(8)>>;
+    check<Id>({"7", R"("ab")", "0", R"("")", R"("abcdefghi")", "1.5", "null"});
+    check<Shapes>(
+        {R"({"kind":"square","size":2})", R"({"kind":"circle"})", R"({"kind":"triangle"})", "{}", R"({"size":1})"});
+    check<OnlyA>({R"({"a":1})", R"({"a":1,"b":2})", R"({"a":-1})", "{}", R"("s")", R"({"c":1})"});
+    check<yyjson::any_of_variant<yyjson::alt<yyjson::value, yyjson::matches<std::uint8_t>>, std::string>>(
+        {"3", "300", R"("a")", "[]"});
+    check<yyjson::any_of_variant<yyjson::alt<int, yyjson::not_(yyjson::minimum(5))>, std::string>>(
+        {"3", "7", R"("a")"});
+    check<yyjson::any_of_variant<int, yyjson::alt<int, yyjson::minimum(0)>>>({"5", "-5", R"("a")"});
+    EXPECT_EQ(schema<Id>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[)"
+                            R"({"type":"integer","minimum":1,"maximum":2147483647},)"
+                            R"({"type":"string","minLength":1,"maxLength":8}]})");
+}
+
+TEST(Schema, OneOfVariant)
+{
+    using namespace schema_test::variants;
+    using Range = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
+    check<Range>({"5", "-1", "11", "0", "10", R"("a")"});
+    check<PointOrBox>({R"({"x":1,"y":2})", R"({"x":1,"y":2,"z":3})", R"({"x":1})", R"({"x":1,"z":2})", "{}",
+                       R"({"x":1,"y":2,"w":3})"});
+    // under `yyjson::reject_unknown_keys` only B reads it, else both
+    check<yyjson::one_of_variant<A, B>>(
+        {R"({"x":1,"y":2})", R"({"x":1})", R"({"y":2})", R"({"x":1,"y":2,"z":3})", R"({"x":null,"y":2})"});
+    check<yyjson::one_of_variant<Named, Sized>>(
+        {R"({"size":1})", R"({"name":"a"})", "{}", R"({"name":"a","size":1})", R"({"other":1})"});
+    EXPECT_EQ(schema<Range>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[)"
+                               R"({"type":"integer","minimum":0,"maximum":2147483647},)"
+                               R"({"type":"integer","minimum":-2147483648,"maximum":10}]})");
+    // `validate` checks one match against the read schemas only, and 5 that the first alternative holds is written
+    EXPECT_EQ(schema<Range>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[)"
+              R"({"type":"integer","minimum":0,"maximum":2147483647},)"
+              R"({"type":"integer","minimum":-2147483648,"maximum":10}]})");
+}
+
+TEST(Schema, VariantFields)
+{
+    using namespace schema_test::variants;
+    check<VariantFields>({R"({"v":1,"m":null,"list":[1,{"code":2}]})",
+                          R"({"v":"a","o":2,"m":3,"list":[]})",
+                          {R"({"v":1,"o":null,"m":null,"list":[]})", lenient_null},
+                          R"({"v":null,"m":null,"list":[]})",
+                          "{}",
+                          R"({"v":1,"m":"x","list":[]})",
+                          R"({"v":1,"m":null,"list":[1.5]})",
+                          R"({"v":1,"o":[],"m":null,"list":[]})"});
+    check<Limited>({R"({"v":1,"w":3})", R"({"v":-1,"w":3})", R"({"v":"abc","w":3})", R"({"v":"ab","w":"xy"})",
+                    R"({"v":1,"w":0})", R"({"v":1,"w":7})", R"({"v":1,"w":"x"})"});
+    // a `std::monostate` alternative reads null, so that the key of such a field is required and takes null
+    const auto holder = definition<VariantFields>(false);
+    EXPECT_TRUE(required_keys(holder).contains("m"));
+    EXPECT_FALSE(required_keys(holder).contains("o"));
+    EXPECT_EQ(holder["properties"]["o"]["type"], json::parse(R"(["integer","string"])"));
 }
 
 // NOLINTEND
