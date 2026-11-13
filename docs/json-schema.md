@@ -193,6 +193,16 @@ Each schema gives `default` for each field, also for a required key. The value i
 | [internal tag](conversions.md#internal-tag) | `oneOf`. Each alternative is a `$ref` with `properties` that give the `const` of the tag and `required` that gives its key. |
 | [adjacent tag](conversions.md#adjacent-tag) | The field of the value is `anyOf` of the alternatives. The key of the tag takes `enum` of the names. `if` and `then` connect each name to its alternative. |
 
+## Casters
+
+The schema of a type with a [user-defined caster](conversions.md#user-defined-casters) comes from the C++ type that the caster converts:
+
+*   A caster whose `from_json` takes a C++ type gives the schema of that type. For example, `from_json(const std::string&)` gives `{"type":"string"}`.
+*   A [translator](conversions.md#translator) gives the type of `from_json` in the read schema and the type of `to_json` in the write schema.
+*   A caster whose `from_json` takes a JSON value, such as `yyjson::json_view`, gives `{}` in the read schema. Declare its schema with [`yyjson::schema`](#declared-schemas).
+*   A caster with two `from_json` forms reads a field through the form that reads into an existing value. Other positions read through the form that returns a value. The field can thus take the definition `Name-field`.
+*   The [constraints on a field of a caster type](validation.md#values-that-a-caster-reads) check the JSON that the caster reads. The schema gives them as keywords.
+
 ## `yyjson::matches<T>`
 
 [`yyjson::matches<T>`](validation.md#values-of-the-dom-that-read-as-a-type) in a combinator gives the schema of `T`. A named type gives a `$ref` to its definition. For example, `yyjson::not_(yyjson::matches<Circle>)` on a `yyjson::value` field gives `{"not":{"$ref":"#/$defs/Circle"},"default":null}`.

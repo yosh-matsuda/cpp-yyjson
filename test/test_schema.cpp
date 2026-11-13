@@ -1,6 +1,7 @@
 // The schemas of `yyjson::json_schema`, checked with the JSON Schema validator of jsoncons against what `read` takes
 // and what `write` gives
 
+#include <charconv>
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
 #include "cpp_yyjson_schema.hpp"
@@ -1111,6 +1112,432 @@ template <>
 inline constexpr auto yyjson::annotations<schema_test::tags::BareDefault> =
     yyjson::annotate(yyjson::default_, yyjson::field("d", yyjson::adjacent_tag("k", {"sealed", "rect"})));
 
+namespace schema_test::casters
+{
+    // read from an integer, written as a string
+    struct Digits
+    {
+        int v = 0;
+    };
+    struct Counted
+    {
+        Digits d;
+    };
+
+    // read and written as a `Point`
+    struct Spot
+    {
+        int x = 0;
+        int y = 0;
+    };
+
+    // read and written as a `Level`, whose keywords check the value that `to_json` returns
+    struct Level
+    {
+        int n = 1;
+    };
+    struct Grade
+    {
+        int n = 1;
+    };
+
+    // read from an integer by the form that returns, and from a string in place
+    struct Both
+    {
+        int v = 0;
+        bool operator==(const Both&) const = default;
+    };
+    struct HoldsBoth
+    {
+        Both b;
+    };
+    struct NestsBoth
+    {
+        std::vector<Both> v;
+        std::optional<Both> o;
+    };
+    struct NotBoth
+    {
+        yyjson::value n;
+    };
+    struct BothDefaults
+    {
+        Both b{3};
+        std::vector<Both> v{Both{4}};
+    };
+    // read from a DOM value by the form that returns, and from a string in place
+    struct Dom
+    {
+        int v = 0;
+    };
+    struct HoldsDom
+    {
+        Dom d;
+    };
+    struct NotDom
+    {
+        yyjson::value n;
+    };
+
+    // written by emitters
+    struct Bag
+    {
+        std::map<std::string, int> m;
+    };
+    struct ClosedBag
+    {
+        std::map<std::string, int> m;
+    };
+    struct Seq
+    {
+        std::vector<int> v;
+    };
+
+    // a caster of one direction
+    struct ReadOnly
+    {
+        int v = 0;
+    };
+    struct WriteOnly
+    {
+        int v = 0;
+    };
+
+    struct Disk
+    {
+        double r = 0;
+    };
+    struct DiskSource
+    {
+        double r = 0;
+    };
+    struct Square
+    {
+        double a = 0;
+    };
+    using Plane = std::variant<Disk, Square>;
+
+    struct Recurse
+    {
+        std::vector<Recurse> c;
+    };
+
+    // conversions.md
+    struct Color
+    {
+        std::uint8_t r, g, b;
+    };
+    struct Counter
+    {
+        std::string name;
+        // the caster of `std::atomic<int>` in test_common.hpp reads a JSON value
+        std::atomic<unsigned> hits;
+
+        Counter() = default;
+        Counter(const Counter& other) : name(other.name), hits(other.hits.load()) {}
+        Counter& operator=(const Counter& other)
+        {
+            name = other.name;
+            hits = other.hits.load();
+            return *this;
+        }
+    };
+    struct Shape
+    {
+        std::string kind;
+        std::optional<double> radius;
+        std::vector<std::string> tags;
+    };
+    struct Params
+    {
+        int timeout = 1000;
+        std::optional<int> num_gpus;
+    };
+    struct Request
+    {
+        Params params;
+        std::vector<std::vector<double>> terms;
+    };
+    template <typename T>
+    struct maybe
+    {
+        bool has_value = false;
+        T value{};
+        explicit operator bool() const { return has_value; }
+        const T& operator*() const { return value; }
+    };
+    struct Config
+    {
+        int port = 8080;
+        maybe<std::string> host;
+    };
+    struct Hex
+    {
+        static std::string to_json(int v) { return std::format("{:x}", v); }
+        static int from_json(std::string_view s)
+        {
+            auto v = 0;
+            const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), v, 16);
+            if (ec != std::errc() || end != s.data() + s.size())
+                throw yyjson::bad_cast("int is not constructible from JSON");
+            return v;
+        }
+    };
+    struct Mask
+    {
+        static std::string to_json(const std::string&) { return "***"; }
+    };
+    struct Account
+    {
+        yyjson::with_caster<int, Hex> id;
+        yyjson::with_caster<std::string, Mask> password;
+        std::vector<yyjson::with_caster<int, Hex>> keys;
+        int level = 0;
+    };
+    struct HexChoice
+    {
+        std::variant<yyjson::with_caster<int, Hex>, bool> v;
+        std::optional<yyjson::with_caster<int, Hex>> o;
+    };
+    // validation.md
+    struct Tags
+    {
+        std::vector<std::string> names;
+    };
+    struct Post
+    {
+        Tags tags;
+    };
+
+    // types that the library reads by their constructors
+    struct Ctor
+    {
+        Ctor() = default;
+        Ctor(int) {}
+    };
+    union Number
+    {
+        int i;
+        float f;
+    };
+    struct Legacy
+    {
+        int* p;
+        Ctor c;
+        Number n;
+        std::chrono::seconds s;
+    };
+    struct Skipping
+    {
+        int a = 0;
+        std::function<void()> f;
+    };
+    struct Unlisted
+    {
+        int a = 0;
+        int* p = nullptr;
+    };
+}  // namespace schema_test::casters
+
+template <>
+struct yyjson::caster<schema_test::casters::Digits>
+{
+    static schema_test::casters::Digits from_json(int v) { return {v}; }
+    static std::string to_json(const schema_test::casters::Digits& d) { return std::to_string(d.v); }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::Counted> =
+    yyjson::annotate(yyjson::field("d", yyjson::minimum(0), yyjson::max_length(2)));
+template <>
+struct yyjson::caster<schema_test::casters::Spot>
+{
+    static schema_test::casters::Spot from_json(const schema_test::Point& p) { return {p.x, p.y}; }
+    static schema_test::Point to_json(const schema_test::casters::Spot& s) { return {s.x, s.y}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::Level> =
+    yyjson::annotate(yyjson::field("n", yyjson::minimum(1)));
+template <>
+struct yyjson::caster<schema_test::casters::Grade>
+{
+    static schema_test::casters::Grade from_json(const schema_test::casters::Level& l) { return {l.n}; }
+    static schema_test::casters::Level to_json(const schema_test::casters::Grade& g) { return {g.n}; }
+};
+template <>
+struct yyjson::caster<schema_test::casters::Both>
+{
+    static schema_test::casters::Both from_json(int v) { return {v}; }
+    static void from_json(schema_test::casters::Both& b, const std::string& s) { b.v = static_cast<int>(s.size()); }
+    static int to_json(const schema_test::casters::Both& b) { return b.v; }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::BothDefaults> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_), yyjson::field("v", yyjson::default_));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::NotBoth> =
+    yyjson::annotate(yyjson::field("n", yyjson::not_(yyjson::matches<schema_test::casters::Both>)));
+template <>
+struct yyjson::caster<schema_test::casters::Dom>
+{
+    static schema_test::casters::Dom from_json(const yyjson::reader::const_value_ref&) { return {}; }
+    static void from_json(schema_test::casters::Dom& d, const std::string& s) { d.v = static_cast<int>(s.size()); }
+    static int to_json(const schema_test::casters::Dom& d) { return d.v; }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::NotDom> =
+    yyjson::annotate(yyjson::field("n", yyjson::not_(yyjson::matches<schema_test::casters::Dom>)));
+template <>
+struct yyjson::caster<schema_test::casters::Bag>
+{
+    static schema_test::casters::Bag from_json(std::map<std::string, int> m) { return {std::move(m)}; }
+    static void to_json(yyjson::object_emitter& out, const schema_test::casters::Bag& b)
+    {
+        for (const auto& [k, v] : b.m) out.emplace(k, v);
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::Bag> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(2)), yyjson::min_properties(1));
+template <>
+struct yyjson::caster<schema_test::casters::ClosedBag>
+{
+    static schema_test::casters::ClosedBag from_json(std::map<std::string, int> m) { return {std::move(m)}; }
+    static void to_json(yyjson::object_emitter& out, const schema_test::casters::ClosedBag& b)
+    {
+        for (const auto& [k, v] : b.m) out.emplace(k, v);
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::ClosedBag> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::max_properties(1));
+template <>
+struct yyjson::caster<schema_test::casters::Seq>
+{
+    static schema_test::casters::Seq from_json(std::vector<int> v) { return {std::move(v)}; }
+    static void to_json(yyjson::array_emitter& out, const schema_test::casters::Seq& s)
+    {
+        for (const auto v : s.v) out.emplace_back(v);
+    }
+};
+template <>
+struct yyjson::caster<schema_test::casters::ReadOnly>
+{
+    static schema_test::casters::ReadOnly from_json(const std::map<std::string, int>& m)
+    {
+        return {static_cast<int>(m.size())};
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::ReadOnly> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::max_properties(1));
+template <>
+struct yyjson::caster<schema_test::casters::WriteOnly>
+{
+    static std::map<std::string, int> to_json(const schema_test::casters::WriteOnly& w)
+    {
+        return {{"aa", w.v}, {"bb", 1}};
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::WriteOnly> =
+    yyjson::annotate(yyjson::max_properties(1));
+template <>
+struct yyjson::caster<schema_test::casters::Disk>
+{
+    static schema_test::casters::Disk from_json(const schema_test::casters::DiskSource& d) { return {d.r}; }
+    static schema_test::casters::DiskSource to_json(const schema_test::casters::Disk& d) { return {d.r}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::DiskSource> =
+    yyjson::annotate(yyjson::additional_properties(false));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::Plane> =
+    yyjson::annotate(yyjson::internal_tag("type", {"disk", "square"}));
+template <>
+struct yyjson::caster<schema_test::casters::Recurse>
+{
+    static schema_test::casters::Recurse from_json(std::vector<schema_test::casters::Recurse> c) { return {c}; }
+    static std::vector<schema_test::casters::Recurse> to_json(const schema_test::casters::Recurse& r) { return r.c; }
+};
+template <>
+struct yyjson::caster<schema_test::casters::Color>
+{
+    static schema_test::casters::Color from_json(std::string_view hex)
+    {
+        if (hex.size() != 7 || hex[0] != '#') throw yyjson::bad_cast("Color is not constructible from JSON");
+        const auto byte = [&](std::size_t i) {
+            const auto* first = hex.data() + i;
+            auto v = std::uint8_t();
+            const auto [end, ec] = std::from_chars(first, first + 2, v, 16);
+            if (ec != std::errc() || end != first + 2) throw yyjson::bad_cast("Color is not constructible from JSON");
+            return v;
+        };
+        return {byte(1), byte(3), byte(5)};
+    }
+    static std::string to_json(const schema_test::casters::Color& c)
+    {
+        return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    }
+};
+template <>
+struct yyjson::caster<std::atomic<unsigned>>
+{
+    static void from_json(std::atomic<unsigned>& field, unsigned value) { field = value; }
+    static unsigned to_json(const std::atomic<unsigned>& field) { return field.load(); }
+};
+VISITABLE_STRUCT(schema_test::casters::Counter, name, hits);
+template <>
+struct yyjson::caster<schema_test::casters::Shape>
+{
+    static void to_json(yyjson::object_emitter& out, const schema_test::casters::Shape& s)
+    {
+        out.emplace("kind", s.kind);
+        if (s.radius) out.emplace("r", *s.radius);
+        out.emplace_array("tags", [&](yyjson::array_emitter& tags) {
+            for (const auto& t : s.tags) tags.emplace_back(t);
+        });
+    }
+};
+template <>
+struct yyjson::caster<schema_test::casters::Request>
+{
+    static void to_json(yyjson::object_emitter& out, const schema_test::casters::Request& r)
+    {
+        out.emplace_members(r.params);
+        out.emplace_array("sparse_objective", [&](yyjson::array_emitter& a) {
+            for (const auto& t : r.terms) a.emplace_back(t);
+        });
+    }
+};
+template <typename T>
+struct yyjson::caster<schema_test::casters::maybe<T>>
+{
+    static bool should_omit(const schema_test::casters::maybe<T>& m) { return !m; }
+    static T to_json(const schema_test::casters::maybe<T>& m) { return *m; }
+};
+template <>
+struct yyjson::caster<schema_test::casters::Tags>
+{
+    // a string is one tag
+    static schema_test::casters::Tags from_json(yyjson::json_view json)
+    {
+        auto tags = schema_test::casters::Tags();
+        if (const auto s = json.as_string())
+            tags.names.emplace_back(*s);
+        else if (const auto a = json.as_array())
+            for (const auto e : *a) tags.names.emplace_back(*e.as_string());
+        return tags;
+    }
+    static std::vector<std::string> to_json(const schema_test::casters::Tags& t) { return t.names; }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::Post> =
+    yyjson::annotate(yyjson::field("tags", yyjson::max_items(2), yyjson::max_length(4)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::casters::Skipping> =
+    yyjson::annotate(yyjson::field("f", yyjson::skip));
+VISITABLE_STRUCT(schema_test::casters::Unlisted, a);
+
 namespace
 {
     namespace jss = jsoncons::jsonschema;
@@ -1132,8 +1559,10 @@ namespace
         // the read takes a string that `yyjson::format` does not describe, as the format is an annotation which the
         // validator of the tests asserts
         format = 16,
-        // the read rejects a value that `yyjson::satisfies` rejects, which no schema can describe
+        // the read rejects a value that `yyjson::satisfies` or a caster rejects, which no schema can describe
         unchecked = 32,
+        // the read rejects an integer written as a real, such as `5.0`, which a schema cannot tell from `5`
+        integer_only = 64,
     };
 
     struct doc
@@ -1234,15 +1663,16 @@ namespace
             auto more =
                 (d.diff & (lenient | format | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
             if constexpr (!missing) more = more || (accepted && !reads<T>(d.json, ps..., yyjson::reject_missing_keys));
-            const auto less = (repeat && (d.diff & not_expressible) != 0) || (d.diff & unchecked) != 0;
+            const auto less = (repeat && (d.diff & not_expressible) != 0) || (d.diff & (unchecked | integer_only)) != 0;
             const auto valid = validator.is_valid(json::parse(d.json));
             const auto policy = yyjson::detail::policies_of<Ps...>;
             EXPECT_EQ(valid && !accepted, less) << "valid, but not read: " << d.json << " under " << +policy;
             EXPECT_EQ(accepted && !valid, more) << "read, but not valid: " << d.json << " under " << +policy;
             // `validate` takes no read policy, and a closed struct can make a `yyjson::one_of_variant` unambiguous
-            if (accepted && valid && (policies & yyjson::detail::unknown_keys_policy) == 0)
-                EXPECT_TRUE(meets_constraints(yyjson::read<T>(d.json, ps...)))
-                    << "valid, but the value read fails its check: " << d.json << " under " << +policy;
+            if constexpr (yyjson::writable<T>)
+                if (accepted && valid && (policies & yyjson::detail::unknown_keys_policy) == 0)
+                    EXPECT_TRUE(meets_constraints(yyjson::read<T>(d.json, ps...)))
+                        << "valid, but the value read fails its check: " << d.json << " under " << +policy;
         }
     }
 
@@ -2338,6 +2768,117 @@ TEST(Schema, AdjacentTag)
     EXPECT_EQ(
         schema<tags::Event>(),
         R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.tags.Event":{"type":"object","properties":{"id":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0},"data":{"anyOf":[{"$ref":"#/$defs/schema_test.tags.Circle"},{"$ref":"#/$defs/schema_test.tags.Rect"},{"type":"integer","minimum":-2147483648,"maximum":2147483647}],"default":{"r":0.0}},"kind":{"enum":["circle","rect","count"]}},"required":["id","data","kind"],"if":{"properties":{"kind":{"const":"circle"}},"required":["kind"]},"then":{"properties":{"data":{"$ref":"#/$defs/schema_test.tags.Circle"}}},"allOf":[{"if":{"properties":{"kind":{"const":"rect"}},"required":["kind"]},"then":{"properties":{"data":{"$ref":"#/$defs/schema_test.tags.Rect"}}}},{"if":{"properties":{"kind":{"const":"count"}},"required":["kind"]},"then":{"properties":{"data":{"type":"integer","minimum":-2147483648,"maximum":2147483647}}}}]},"schema_test.tags.Circle":{"type":"object","properties":{"r":{"type":"number","minimum":-1.7976931348623157e308,"maximum":1.7976931348623157e308,"default":0.0}},"required":["r"]},"schema_test.tags.Rect":{"type":"object","properties":{"w":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0},"h":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"default":0}},"required":["w","h"]}},"$ref":"#/$defs/schema_test.tags.Event"})");
+}
+
+TEST(Schema, Casters)
+{
+    namespace casters = schema_test::casters;
+    // a translator reads an integer and writes a string, and a field keyword checks either JSON
+    check<casters::Digits>({"5", "-1", "1.0", R"("5")", "null"});
+    check<casters::Counted>({R"({"d":5})", R"({"d":-1})", R"({"d":10})", R"({"d":"5"})", "{}"});
+    const auto counted = compile(checked_schema(yyjson::json_schema<casters::Counted>(yyjson::write_direction)));
+    EXPECT_FALSE(meets_constraints(casters::Counted{{100}}));
+    EXPECT_FALSE(counted.is_valid(json::parse(std::string(yyjson::write(casters::Counted{{100}})))));
+    EXPECT_EQ(schema<casters::Digits>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema",)"
+                                         R"("type":"integer","minimum":-2147483648,"maximum":2147483647})");
+    EXPECT_EQ(schema<casters::Digits>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string"})");
+    check<casters::Spot>({R"({"x":1,"y":2})", R"({"x":1})", R"({"x":"a","y":2})", "[1,2]"});
+    EXPECT_EQ(definition<casters::Spot>(false), definition<schema_test::Point>(false));
+    check<casters::Grade>({R"({"n":1})", R"({"n":0})", "{}"});
+    const auto grade = compile(checked_schema(yyjson::json_schema<casters::Grade>(yyjson::write_direction)));
+    EXPECT_FALSE(meets_constraints(casters::Grade{0}));
+    EXPECT_FALSE(grade.is_valid(json::parse(std::string(yyjson::write(casters::Grade{0})))));
+    // a field reads in place and any other value by the form that returns
+    check_read<casters::Both>({"1", R"("ab")", "true"});
+    check_read<casters::HoldsBoth>({R"({"b":"ab"})", R"({"b":1})", R"({"b":true})"});
+    check_read<casters::NestsBoth>({R"({"v":[1],"o":2})", R"({"v":["ab"]})", R"({"v":[],"o":"ab"})"});
+    check_read<casters::NotBoth>({R"({"n":"ab"})", R"({"n":1})", R"({"n":true})"});
+    // the form that returns reads any JSON, and the field reads a string in place
+    EXPECT_EQ(schema<casters::Dom>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema"})");
+    check_read<casters::Dom>({"1", R"("ab")", "{}"});
+    check_read<casters::HoldsDom>({R"({"d":"ab"})", R"({"d":1})"});
+    check_read<casters::NotDom>({R"({"n":"ab"})", R"({"n":1})"});
+    // the field reads its default 3 in place, which takes only a string, and the element by the form that returns
+    EXPECT_EQ(definition<casters::BothDefaults>(false),
+              json::parse(R"({"type":"object","properties":{"b":{"type":"string"},"v":{"type":"array","items":)"
+                          R"({"type":"integer","minimum":-2147483648,"maximum":2147483647},"default":[4]}}})"));
+    // a caster that reads a `json_view` reads any JSON, which the keywords of its field check
+    check<casters::Post>({R"({"tags":["a","b","c"]})", R"({"tags":"cpp20"})", R"({"tags":["cpp20"]})",
+                          R"({"tags":"cpp"})", R"({"tags":["ab","cd"]})", R"({"tags":null})", R"({"tags":{}})"});
+}
+
+TEST(Schema, CasterKeywords)
+{
+    namespace casters = schema_test::casters;
+    // an emitter writes the kind of its JSON, and the keywords of the type check the object in both directions
+    const auto bags = {doc("{}"), doc(R"({"a":1})"),  doc(R"({"abc":1})"), doc(R"({"a":1,"b":2})"),
+                       doc("[]"), doc(R"({"a":"x"})")};
+    check<casters::Bag>(bags);
+    check<casters::ClosedBag>(bags);
+    check<casters::Seq>({"[]", "[1,2]", R"(["a"])", "{}"});
+    EXPECT_EQ(schema<casters::Bag>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":)"
+              R"({"type":"integer","minimum":-2147483648,"maximum":2147483647},"propertyNames":{"maxLength":2},)"
+              R"("minProperties":1})");
+    EXPECT_EQ(schema<casters::Bag>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",)"
+              R"("propertyNames":{"maxLength":2},"minProperties":1})");
+    // without `to_json`, the write reflects the type and its keys pass the closed read
+    check<casters::ReadOnly>({"{}", R"({"v":1})", R"({"w":1})", R"({"v":1,"w":1})", R"({"v":"x"})"});
+    // `validate` does not check the keywords of a type on the JSON of its `to_json`, as the read does not read it
+    check<casters::WriteOnly>({R"({"v":1})", R"({"v":1,"w":1})", "{}"});
+    EXPECT_EQ(schema<casters::WriteOnly>(yyjson::write_direction),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":)"
+              R"({"type":"integer","minimum":-2147483648,"maximum":2147483647}})");
+    // the source of a caster that an internal tag selects reads the object with the tag
+    check<casters::Plane>({R"({"type":"disk","r":1})", R"({"type":"disk","r":1,"x":1})", R"({"type":"square","a":1})",
+                           R"({"r":1})", R"({"type":"disk"})"});
+    // a caster type that holds itself has no name in `$defs`
+    EXPECT_THROW((void)yyjson::json_schema<casters::Recurse>(), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::json_schema<casters::Recurse>(yyjson::write_direction), std::invalid_argument);
+}
+
+TEST(Schema, CasterExamples)
+{
+    namespace casters = schema_test::casters;
+    check<std::vector<casters::Color>>(
+        {R"(["#ff8000","#000000"])", {R"(["#zz8000"])", unchecked}, R"([1])", "[]", R"("#ff8000")"});
+    check<casters::Counter>({R"({"name":"b","hits":9})", R"({"name":"b","hits":"9"})", R"({"hits":1.5})"});
+    check<casters::Shape>({R"({"kind":"circle","radius":1.5,"tags":["a","b"]})", R"({"kind":1})", "{}"});
+    check<casters::Request>({R"({"params":{"timeout":500},"terms":[[1.5,0,1],[2.0,1]]})", R"({"params":1})"});
+    check<casters::Config>({"{}", R"({"port":1})", R"({"port":"1"})"});
+    EXPECT_EQ(required_keys(definition<casters::Config>(true)), std::set<std::string>{"port"});
+    check<casters::Account>({R"({"id":"1f","password":"secret","keys":["c"]})",
+                             {R"({"id":"zz","password":"","keys":[],"level":0})", unchecked},
+                             R"({"id":31})",
+                             R"({"keys":[1]})",
+                             R"({"password":1})"});
+    check<casters::HexChoice>({R"({"v":"ff"})",
+                               R"({"v":true})",
+                               R"({"v":1})",
+                               R"({"v":"ff","o":"a"})",
+                               {R"({"v":true,"o":null})", lenient_null},
+                               R"({"v":true,"o":1})"});
+}
+
+TEST(Schema, Unconverted)
+{
+    namespace casters = schema_test::casters;
+    check_read<int*>({"null", "0", "{}"});
+    check_read<casters::Ctor>({"1", "1.5", "-1", R"("1")", "null", "true"});
+    check_read<casters::Number>({"1", "1.5", "null", R"("1")"});
+    check_read<std::chrono::seconds>(
+        {"5", "-5", {"5.0", integer_only}, "18446744073709551615", "-9223372036854775808", "1e308", R"("5")"});
+    check_read<std::chrono::duration<double>>({"5", "1.5", R"("5")"});
+    check_read<casters::Legacy>({R"({"p":null,"c":1,"n":1.5,"s":3})", R"({"p":1,"c":1,"n":1,"s":3})",
+                                 R"({"p":null,"c":"x","n":1,"s":3})", R"({"p":null,"c":1,"n":1,"s":0.5})"});
+    EXPECT_EQ(schema<int*>(), R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"null"})");
+    // the generator visits no field that the read and the write leave out
+    check<casters::Skipping>({R"({"a":1})", R"({"a":1,"f":1})"});
+    check<casters::Unlisted>({R"({"a":1})", R"({"a":1,"p":1})"});
+    EXPECT_FALSE(definition<casters::Skipping>(true)["properties"].contains("f"));
+    EXPECT_FALSE(definition<casters::Unlisted>(true)["properties"].contains("p"));
 }
 
 // NOLINTEND

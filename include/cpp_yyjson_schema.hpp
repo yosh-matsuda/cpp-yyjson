@@ -14,6 +14,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -81,6 +82,50 @@ namespace yyjson
         template <typename T>
         concept user_caster = (yyjson::detail::caster_names_from_json<T> || yyjson::detail::caster_names_to_json<T>) &&
                               !std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
+        // `with_caster` whose X has no `to_json`, so that its value is written as the library writes it.
+        template <typename T>
+        concept library_written = yyjson::detail::is_with_caster<T>::value &&
+                                  !yyjson::detail::converter_writes<typename T::value_type, typename T::caster_type>;
+
+        // The value that the caster of T reads, in the order that the library tries the forms of `from_json`: at a
+        // field of a struct the JSON value form that assigns in place, then the in-place translator, and at any
+        // position the returning translator unless a JSON value form returns the value.
+        enum class caster_source
+        {
+            library,
+            json,
+            in_place,
+            returning
+        };
+        template <typename T, bool Field>
+        consteval caster_source caster_source_of()
+        {
+            namespace yd = yyjson::detail;
+            using translator = yd::from_json_translator<T>;
+            if constexpr (!yd::caster_names_from_json<T>)
+                return caster_source::library;
+            else if constexpr (Field && yd::caster_assigns_from_json<T, reader::const_value_ref>)
+                return caster_source::json;
+            else if constexpr (Field && translator::in_place)
+                return caster_source::in_place;
+            else if constexpr (translator::castable)
+                return caster_source::returning;
+            else
+                return caster_source::json;
+        }
+        template <typename T>
+        consteval bool field_reads_otherwise()
+        {
+            constexpr auto field = caster_source_of<T, true>();
+            constexpr auto other = caster_source_of<T, false>();
+            if constexpr (field == caster_source::in_place && other == caster_source::returning)
+                return !std::same_as<yyjson::detail::from_json_source<T>, yyjson::detail::from_json_in_place_source<T>>;
+            else
+                return field != other;
+        }
+        // A caster whose field of a struct reads a value that differs from the one at any other position.
+        template <typename T>
+        concept two_sources = field_reads_otherwise<T>();
 
         template <typename T>
         concept variant_type = yyjson::detail::variant_json_kinds<T>::is_variant;
@@ -108,7 +153,8 @@ namespace yyjson
 
         // The types whose schemas are a single `type` with keywords that the type `null` ignores.
         template <typename T>
-        concept primitive_type = std::same_as<T, bool> || std::integral<T> || std::floating_point<T> || string_type<T>;
+        concept primitive_type =
+            (std::same_as<T, bool> || std::integral<T> || std::floating_point<T> || string_type<T>) && !user_caster<T>;
 
         class generator;
 
@@ -446,8 +492,8 @@ namespace yyjson
 
             [[nodiscard]] bool writing() const noexcept { return writing_; }
 
-            // Writes the schema of T into `out`.
-            template <typename T>
+            // Writes the schema of T into `out`, by the conversion of the library if not `User`.
+            template <typename T, bool User = true>
             void emit(object_ref out);
 
             // `write` gives a C array of `char` at the root as a string, but one inside a value as integers.
@@ -499,6 +545,11 @@ namespace yyjson
             // The transparent structs whose schemas the next value is the schema of, which a variant, a nullable
             // value and a transparent struct pass on as they pass `tags_`.
             std::vector<const void*> within_;
+            // The types with a caster of the user whose schemas the next value is inside, which have no name to refer
+            // to.
+            std::vector<const void*> casters_;
+            // Whether the next value is a field of a struct, which a caster reads by its in-place `from_json`.
+            bool field_ = false;
 
             // A transparent struct that holds itself at the same value never ends a read, and one inside another
             // has its schema there, so that no chain of references comes back to a schema without a value between.
@@ -539,6 +590,7 @@ namespace yyjson
                     auto saved = std::tuple(names_.types, names_.index, names_.order, names_.unnamed_tags);
                     auto g = *this;
                     g.closed_keys_.clear();
+                    g.casters_.clear();
                     g.tags_used_ = false;
                     auto doc = value(object());
                     emit_definition<T>(g, *doc.as_object(), tags);
@@ -580,6 +632,18 @@ namespace yyjson
             void emit_property_names(object_ref out);
             template <typename S>
             void emit_struct(object_ref out, const registry::tag_keys& tags);
+            template <typename T>
+            void emit_user(object_ref out);
+            template <typename T>
+            void emit_caster_read(object_ref out, const registry::tag_keys& tags, bool field);
+            template <typename T, bool Field>
+            void emit_caster_source(object_ref out);
+            template <typename T>
+            void emit_caster_write(object_ref out, const registry::tag_keys& tags);
+            template <typename T>
+            void emit_caster_keywords(object_ref out, const registry::tag_keys& tags);
+            template <typename T>
+            void emit_unconverted(object_ref out);
             template <typename S>
             void emit_adjacent_tags(object_ref out);
             template <typename S, std::size_t K>
@@ -672,13 +736,14 @@ namespace yyjson
             return i;
         }
 
-        template <typename T>
+        template <typename T, bool User>
         void generator::emit(object_ref out)
         {
             namespace yd = yyjson::detail;
             // a variant, a nullable value and a reference pass the keys of internal tags on to the value they hold
             auto tags = std::exchange(tags_, {});
             auto within = std::exchange(within_, {});
+            const auto field = std::exchange(field_, false);
             const auto pass = [&] {
                 tags_ = std::move(tags);
                 within_ = std::move(within);
@@ -686,6 +751,7 @@ namespace yyjson
             if constexpr (!std::same_as<T, std::remove_cv_t<T>>)
             {
                 pass();
+                field_ = field;
                 emit<std::remove_cv_t<T>>(out);
             }
             else if constexpr (std::same_as<T, json_view> || std::same_as<T, writer::value>)
@@ -697,10 +763,12 @@ namespace yyjson
                 out.emplace("type", "array");
             else if constexpr (std::same_as<T, std::nullptr_t> || std::same_as<T, std::monostate>)
                 out.emplace("type", "null");
-            else if constexpr (yd::is_with_caster<T>::value)
-                static_assert(yd::false_v<T>, "C7g: yyjson::with_caster is not emitted yet");
-            else if constexpr (user_caster<T>)
-                static_assert(yd::false_v<T>, "C7g: a type with a caster of the user is not emitted yet");
+            else if constexpr (User && user_caster<T>)
+            {
+                pass();
+                field_ = field;
+                emit_user<T>(out);
+            }
             else if constexpr (variant_type<T>)
             {
                 pass();
@@ -738,9 +806,7 @@ namespace yyjson
             else if constexpr (yd::tuple_like<T>)
                 emit_tuple<T>(out, std::make_index_sequence<std::tuple_size_v<T>>{}, tags);
             else
-                static_assert(yd::false_v<T>,
-                              "C7g: a type that is converted by its constructors or its conversions is not emitted "
-                              "yet");
+                emit_unconverted<T>(out);
             tags_.clear();
             within_.clear();
         }
@@ -1129,6 +1195,168 @@ namespace yyjson
             }
         }
 
+        // A direction that the caster does not cover takes the conversion of the library.  The schema of a type
+        // with a caster is inline, so that one which holds itself has no schema.
+        template <typename T>
+        void generator::emit_user(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            if (std::ranges::find(casters_, &type_identity_tag<T>) != casters_.end())
+                throw std::invalid_argument("json_schema: the caster of " + std::string(yd::type_name<T>()) +
+                                            " converts a value that holds the type again, which has no name in $defs");
+            const auto tags = std::exchange(tags_, {});
+            const auto field = std::exchange(field_, false);
+            within_.clear();
+            casters_.push_back(&type_identity_tag<T>);
+            if (writing_)
+                emit_caster_write<T>(out, tags);
+            else
+                emit_caster_read<T>(out, tags, field);
+            casters_.pop_back();
+            emit_caster_keywords<T>(out, tags);
+        }
+
+        // The source that the library gives to `from_json`, and `{}` for a JSON value.  A field of a struct reads by
+        // the in-place form if the caster has one, and any other position by the returning form.
+        template <typename T>
+        void generator::emit_caster_read(object_ref out, const registry::tag_keys& tags, bool field)
+        {
+            tags_ = tags;
+            if (field)
+                emit_caster_source<T, true>(out);
+            else
+                emit_caster_source<T, false>(out);
+            tags_.clear();
+        }
+        template <typename T, bool Field>
+        void generator::emit_caster_source(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            constexpr auto source = caster_source_of<T, Field>();
+            if constexpr (source == caster_source::library)
+                emit<T, false>(out);
+            else if constexpr (source == caster_source::in_place)
+                emit<yd::from_json_in_place_source<T>>(out);
+            else if constexpr (source == caster_source::returning)
+                emit<yd::from_json_source<T>>(out);
+        }
+
+        // What `to_json` returns or the kind of the reference or the emitter that it fills.  `with_caster` whose X
+        // has no `to_json` writes its value as the library does.
+        template <typename T>
+        void generator::emit_caster_write(object_ref out, const registry::tag_keys& tags)
+        {
+            namespace wd = yyjson::writer::detail;
+            tags_ = tags;
+            if constexpr (library_written<T>)
+                emit<typename T::value_type>(out);
+            else if constexpr (!yyjson::detail::caster_names_to_json<T>)
+                emit<T, false>(out);
+            else if constexpr (wd::to_json_obj_usr<const T&>)
+                out.emplace("type", "object");
+            else if constexpr (wd::to_json_arr_usr<const T&>)
+                out.emplace("type", "array");
+            else if constexpr (!wd::to_json_val_usr<const T&>)
+                emit<std::remove_cvref_t<decltype(wd::to_json_wrapper(std::declval<const T&>()))>>(out);
+            tags_.clear();
+        }
+
+        // The keywords of the object of T, which the read checks on the JSON that the caster reads and `validate` on
+        // the JSON that it writes.  Without `to_json`, the write reflects T and the keys of its fields pass.
+        template <typename T>
+        void generator::emit_caster_keywords(object_ref out, const registry::tag_keys& tags)
+        {
+            namespace yd = yyjson::detail;
+            constexpr bool reads = yd::caster_names_from_json<T> && yd::caster_checks_object<T>;
+            if constexpr (reads)
+            {
+                if (writing_ && !yd::caster_checks_written_object<T>) return;
+                constexpr bool closed = yd::struct_closed<T>;
+                constexpr bool names = yd::struct_property_names<T>;
+                constexpr bool counts = yd::struct_property_counts<T>;
+                const auto has = [&](std::initializer_list<std::string_view> keys) {
+                    return std::ranges::any_of(keys, [&](std::string_view k) { return out.contains(k); });
+                };
+                const bool apart = (closed && has({"properties", "patternProperties", "additionalProperties"})) ||
+                                   (names && has({"propertyNames"})) ||
+                                   (counts && has({"minProperties", "maxProperties"}));
+                auto target = apart ? conjunct(out) : out;
+                if constexpr (closed)
+                {
+                    auto keys = std::vector<std::string_view>(tags.begin(), tags.end());
+                    tags_used_ = tags_used_ || !tags.empty();
+                    if constexpr (!yd::caster_names_to_json<T> && yd::reflectable<T>)
+                    {
+                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                            (keys.emplace_back(yd::struct_field_key<T, Ks>), ...);
+                        }(std::make_index_sequence<yd::struct_field_count<T>>{});
+                        std::ranges::copy(adjacent_keys<T>(), std::back_inserter(keys));
+                    }
+                    if (!keys.empty())
+                    {
+                        auto properties = target.emplace("properties", empty_object);
+                        for (const auto key : keys) properties.emplace(key, empty_object, copy_string);
+                    }
+                    target.emplace("additionalProperties", false);
+                }
+                if constexpr (names)
+                    emit_node<yd::struct_names_schema<T>, std::string, T>(
+                        target.emplace("propertyNames", empty_object));
+                if constexpr (counts)
+                {
+                    constexpr const auto& c = yd::struct_count_schema<T>::constraints;
+                    if constexpr (c.template has<yyjson::min_properties>())
+                        tighten(target, "minProperties", c.min_properties, true);
+                    if constexpr (c.template has<yyjson::max_properties>())
+                        tighten(target, "maxProperties", c.max_properties, false);
+                }
+            }
+        }
+
+        // A type that the library reads by its constructors takes the kinds of JSON that they take.  No write
+        // reaches it, because `json_schema` takes only a T that `write` takes.
+        template <typename T>
+        void generator::emit_unconverted(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            if (writing_) return;
+            constexpr auto kinds = yd::accepted_json_kinds<T, reader::const_value_ref>();
+            if constexpr (kinds == 0)
+                out.emplace("not", empty_object);
+            else if constexpr ((kinds & yd::json_kind_all) != yd::json_kind_all)
+            {
+                auto types = std::vector<std::string_view>();
+                if constexpr ((kinds & yd::json_kind_null) != 0) types.emplace_back("null");
+                if constexpr ((kinds & yd::json_kind_bool) != 0) types.emplace_back("boolean");
+                constexpr bool real = (kinds & yd::json_kind_real) != 0;
+                constexpr auto integers = kinds & (yd::json_kind_uint | yd::json_kind_sint);
+                if constexpr (real || integers != 0) types.emplace_back(real ? "number" : "integer");
+                if constexpr ((kinds & yd::json_kind_string) != 0) types.emplace_back("string");
+                if constexpr ((kinds & yd::json_kind_array) != 0) types.emplace_back("array");
+                if constexpr ((kinds & yd::json_kind_object) != 0) types.emplace_back("object");
+                if (types.size() == 1)
+                    out.emplace("type", types.front());
+                else
+                {
+                    auto array = out.emplace("type", empty_array);
+                    for (const auto t : types) array.emplace_back(t);
+                }
+                if constexpr (real)
+                    emit_primitive_keywords<double>(out);
+                else if constexpr (integers != 0)
+                {
+                    if constexpr ((kinds & yd::json_kind_sint) != 0)
+                        out.emplace("minimum", std::numeric_limits<std::int64_t>::lowest());
+                    else
+                        out.emplace("minimum", 0);
+                    if constexpr ((kinds & yd::json_kind_uint) != 0)
+                        out.emplace("maximum", std::numeric_limits<std::uint64_t>::max());
+                    else
+                        out.emplace("maximum", -1);
+                }
+            }
+        }
+
         // Whether the read schema requires the key of the field K of S: the field declares no default.  The policies
         // do not change it, so that every read schema of S tells one contract.
         template <typename S, std::size_t K>
@@ -1157,8 +1385,11 @@ namespace yyjson
 
         // Whether the read schema takes the written value `v` where it is narrower than the read: a tuple of pairs
         // whose values differ in type.
-        template <typename T>
+        template <typename T, bool User = true>
         bool read_schema_takes(const T& v);
+        // Whether the read schema of a field of a struct takes `v`, which a caster reads by its in-place `from_json`.
+        template <typename F>
+        bool field_read_takes(const F& v);
         // Whether the read schema of E, the type of a pattern that does not keep the value, takes the written `v`.
         template <typename E, typename V>
         bool pattern_value_takes(const V& v)
@@ -1215,7 +1446,51 @@ namespace yyjson
                 }() && ...);
             }(std::make_index_sequence<yd::pattern_count<S>>{});
         }
-        template <typename T>
+        // Whether the read schema of S takes `json`, as a read of S gives it.
+        template <typename S, bool User = true>
+        bool read_back_takes(const yyjson::value& json)
+        {
+            if constexpr (!requires { json.template cast<S>(); })
+                return true;
+            else
+            {
+                try
+                {
+                    return read_schema_takes<S, User>(
+                        json.template cast<S>(yyjson::reject_missing_keys, yyjson::reject_null_as_missing));
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
+                catch (const std::exception&)
+                {
+                    return false;
+                }
+            }
+        }
+        // The read schema of a type with a caster is that of the value that the caster reads from the written JSON.
+        template <typename T, bool Field>
+        bool caster_read_takes(const T& v)
+        {
+            namespace yd = yyjson::detail;
+            if constexpr (!requires { yyjson::value(v); })
+                return true;
+            else
+            {
+                const auto json = yyjson::value(v);
+                constexpr auto source = caster_source_of<T, Field>();
+                if constexpr (source == caster_source::library)
+                    return read_back_takes<T, false>(json);
+                else if constexpr (source == caster_source::in_place)
+                    return read_back_takes<yd::from_json_in_place_source<T>>(json);
+                else if constexpr (source == caster_source::returning)
+                    return read_back_takes<yd::from_json_source<T>>(json);
+                else
+                    return true;
+            }
+        }
+        template <typename T, bool User>
         bool read_schema_takes(const T& v)
         {
             namespace yd = yyjson::detail;
@@ -1223,6 +1498,8 @@ namespace yyjson
                 return !v || read_schema_takes(*v);
             else if constexpr (yd::indirect_value<T>)
                 return v.valueless_after_move() || read_schema_takes(*v);
+            else if constexpr (User && user_caster<T>)
+                return caster_read_takes<T, false>(v);
             else if constexpr (struct_type<T>)
             {
                 const auto map_takes = [](const auto& map) {
@@ -1237,7 +1514,7 @@ namespace yyjson
                         return true;
                 }();
                 return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return (read_schema_takes(yd::struct_field<Ks>(v)) && ...);
+                    return (field_read_takes(yd::struct_field<Ks>(v)) && ...);
                 }(std::make_index_sequence<yd::struct_field_count<T>>{}) &&
                        std::apply([&](const auto&... maps) { return (map_takes(maps) && ...); }, yd::key_maps_of(v)) &&
                        patterns;
@@ -1272,22 +1549,36 @@ namespace yyjson
             else
                 return true;
         }
+        template <typename F>
+        bool field_read_takes(const F& v)
+        {
+            if constexpr (user_caster<F>)
+                return caster_read_takes<F, true>(v);
+            else
+                return read_schema_takes(v);
+        }
 
         // The JSON text that `write` with `yyjson::emit_defaults` gives for the default `d` of a field of F, which
-        // every schema of F takes, if the field is written and the read of F under every policy takes it back.
-        template <typename F, typename D>
+        // every schema of F takes, if the field is written and the read of F under every policy takes it back.  An
+        // alternative that an adjacent tag names is not a field.
+        template <typename F, bool Field, typename D>
         std::optional<std::string> default_text(const D& d)
         {
             namespace yd = yyjson::detail;
             decltype(auto) field = yd::writable_field(d);
             if constexpr (yd::omittable<decltype(field)>)
                 if (yd::should_omit_field(field)) return std::nullopt;
-            if constexpr (!readable<typename yd::read_back<std::remove_cv_t<F>>::type>)
+            if constexpr (!readable<typename yd::read_back<std::remove_cv_t<F>>::type> || !writable<decltype(field)>)
                 return std::nullopt;
             else
             {
                 auto text = yd::round_trip_text<F>(d);
-                if (text && !read_schema_takes(field)) text.reset();
+                if constexpr (Field)
+                {
+                    if (text && !field_read_takes(field)) text.reset();
+                }
+                else if (text && !read_schema_takes(field))
+                    text.reset();
                 return text;
             }
         }
@@ -1299,10 +1590,11 @@ namespace yyjson
             namespace yd = yyjson::detail;
             using F = yd::struct_field_type<S, K>;
             if constexpr (yd::adjacent_field<S, K> && internal_tagged_variant<F>)
-                return std::visit([](const auto& a) { return default_text<std::remove_cvref_t<decltype(a)>>(a); },
-                                  static_cast<const yd::variant_base_t<F>&>(d));
+                return std::visit(
+                    [](const auto& a) { return default_text<std::remove_cvref_t<decltype(a)>, false>(a); },
+                    static_cast<const yd::variant_base_t<F>&>(d));
             else
-                return default_text<F>(d);
+                return default_text<F, true>(d);
         }
 
         template <typename S>
@@ -1389,6 +1681,7 @@ namespace yyjson
                 emit<typename F::value_type>(out);
             else
             {
+                field_ = true;
                 emit<F>(out);
                 if constexpr (yd::transparent_struct<F> && yd::null_missing_field<F>)
                     place(out, "not").emplace("not", empty_object).emplace("type", "null");
@@ -1413,6 +1706,7 @@ namespace yyjson
             }
             else
             {
+                field_ = true;
                 emit<F>(out);
                 if constexpr (yd::has_constraints<S>)
                     emit_node<yd::field_schema<S, yd::struct_declared_index<S, 0>>, F, S>(out);
@@ -1673,7 +1967,7 @@ namespace yyjson
                     using T = std::variant_alternative_t<I, B>;
                     const bool bare = o.size() == 1 && o.contains("$ref");
                     auto target = bare ? o : conjunct(o);
-                    if (!(struct_type<T> && !yd::as_array_struct<T> && !yd::transparent_struct<T>))
+                    if (!(struct_type<T> && !user_caster<T> && !yd::as_array_struct<T> && !yd::transparent_struct<T>))
                         target.emplace("type", "object");
                     target.emplace("properties", empty_object)
                         .emplace(Tags::key, empty_object)
@@ -1934,7 +2228,9 @@ namespace yyjson
             using R = std::conditional_t<yd::constraint_string<C>, std::string, C>;
             const auto value = [this](std::size_t i) {
                 auto text = listed_text<N>(i);
-                if constexpr (!yd::dom_checked<C> && requires { yyjson::read<R>(std::string_view()); })
+                // the values of a caster are compared as the JSON that it reads and writes
+                if constexpr (!yd::dom_checked<C> && !user_caster<C> &&
+                              requires { yyjson::read<R>(std::string_view()); })
                 {
                     if (writing_ && N::values[i].kind != yd::json_scalar::kind_t::null)
                     {
