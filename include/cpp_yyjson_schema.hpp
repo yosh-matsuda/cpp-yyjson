@@ -321,6 +321,48 @@ namespace yyjson
             using key = std::string;
             using value = writer::value;
         };
+        // The elements of a struct annotated with `yyjson::as_array` have one C++ type only when all of its positions
+        // and its `yyjson::extra_items` share it.
+        template <typename S, bool = yyjson::detail::has_extra_items<S>>
+        struct array_struct_first
+        {
+            using type = std::remove_cv_t<std::ranges::range_value_t<yyjson::detail::extra_items_type<S>>>;
+        };
+        template <typename S>
+        struct array_struct_first<S, false>
+        {
+            using type = std::remove_cv_t<yyjson::detail::struct_field_type<S, 0>>;
+        };
+        template <typename S>
+        consteval auto array_struct_element()
+        {
+            namespace yd = yyjson::detail;
+            constexpr auto n = yd::array_position_count<S>;
+            if constexpr (n == 0 && !yd::has_extra_items<S>)
+                return std::type_identity<writer::value>{};
+            else
+            {
+                using T = typename array_struct_first<S>::type;
+                constexpr bool same = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return (std::same_as<std::remove_cv_t<yd::struct_field_type<S, Ks>>, T> && ...);
+                }(std::make_index_sequence<n>{});
+                if constexpr (same)
+                    return std::type_identity<T>{};
+                else
+                    return std::type_identity<writer::value>{};
+            }
+        }
+        template <typename V>
+        requires yyjson::detail::validated_struct<V> && yyjson::detail::as_array_struct<V> &&
+                 (!yyjson::detail::transparent_struct<V>)
+        struct position_types<V>
+        {
+            using element = typename decltype(array_struct_element<V>())::type;
+            template <std::size_t J>
+            using prefix = element;
+            using key = std::string;
+            using value = writer::value;
+        };
 
         // The named types that the schemas refer to.  A type has one schema per direction, or one for both
         // directions while the two are the same.
@@ -429,6 +471,10 @@ namespace yyjson
             {
                 if constexpr (std::is_enum_v<T>)
                     g.emit_enum<T>(out);
+                else if constexpr (yyjson::detail::transparent_struct<T>)
+                    g.emit_transparent<T>(out);
+                else if constexpr (yyjson::detail::as_array_struct<T>)
+                    g.emit_array_struct<T>(out);
                 else
                     g.emit_struct<T>(out);
             }
@@ -480,6 +526,14 @@ namespace yyjson
             void emit_struct(object_ref out);
             template <typename S, std::size_t K>
             void emit_field(object_ref properties, std::vector<std::string_view>& required);
+            template <typename S, std::size_t K>
+            void emit_field_value(object_ref out);
+            template <typename F>
+            void emit_member(object_ref out);
+            template <typename S>
+            void emit_transparent(object_ref out);
+            template <typename S>
+            void emit_array_struct(object_ref out);
             template <typename S, std::size_t R>
             void emit_map_values(object_ref out);
             template <typename S, std::size_t P>
@@ -560,10 +614,6 @@ namespace yyjson
                 emit_nullable<std::remove_cv_t<typename yd::is_owning_pointer<T>::value_type>>(out);
             else if constexpr (yd::indirect_value<T>)
                 emit<typename yd::is_indirect<T>::value_type>(out);
-            else if constexpr (yd::transparent_struct<T>)
-                static_assert(yd::false_v<T>, "C7e: yyjson::transparent is not emitted yet");
-            else if constexpr (yd::as_array_struct<T>)
-                static_assert(yd::false_v<T>, "C7e: yyjson::as_array is not emitted yet");
             else if constexpr (named_type<T>)
                 emit_named<T>(out);
             else if constexpr (primitive_type<T>)
@@ -1118,18 +1168,103 @@ namespace yyjson
         template <typename S, std::size_t K>
         void generator::emit_field(object_ref properties, std::vector<std::string_view>& required)
         {
+            constexpr auto key = yyjson::detail::struct_field_key<S, K>;
+            emit_field_value<S, K>(properties.emplace(key, empty_object));
+            if (writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>()) required.push_back(key);
+        }
+
+        // The schema of the field K of S at its key or at its element: its type, its keywords, and its `default`.
+        template <typename S, std::size_t K>
+        void generator::emit_field_value(object_ref out)
+        {
             namespace yd = yyjson::detail;
             using F = yd::struct_field_type<S, K>;
-            constexpr auto key = yd::struct_field_key<S, K>;
-            auto p = properties.emplace(key, empty_object);
-            if constexpr (yd::is_std_optional<F>::value)
-                emit<typename F::value_type>(p);
-            else
-                emit<F>(p);
+            emit_member<F>(out);
             if constexpr (yd::has_constraints<S>)
-                emit_node<yd::field_schema<S, yd::struct_declared_index<S, K>>, F, S>(p);
-            if (const auto& d = field_default<S, K>(names_)) p.emplace("default", yyjson::read(*d));
-            if (writing_ ? write_requires<S, K>(emit_defaults_) : read_requires<S, K>()) required.push_back(key);
+                emit_node<yd::field_schema<S, yd::struct_declared_index<S, K>>, F, S>(out);
+            if (const auto& d = field_default<S, K>(names_)) out.emplace("default", yyjson::read(*d));
+        }
+
+        // A field of F leaves out its key or its element when it has no value, and reads null as a missing one, or
+        // rejects it at an element: a `std::optional`, or a transparent struct over one.
+        template <typename F>
+        void generator::emit_member(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            if constexpr (yd::is_std_optional<F>::value)
+                emit<typename F::value_type>(out);
+            else
+            {
+                emit<F>(out);
+                if constexpr (yd::transparent_struct<F> && yd::null_missing_field<F>)
+                    place(out, "not").emplace("not", empty_object).emplace("type", "null");
+            }
+        }
+
+        // The struct reads and writes as the value of its only field, with the keywords of that field.  A
+        // `std::optional` field allows null here, because only a field of another struct leaves it out.
+        template <typename S>
+        void generator::emit_transparent(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using F = yd::struct_field_type<S, 0>;
+            if constexpr (yd::has_constraints<S> && yd::is_std_optional<F>::value)
+            {
+                // the keywords of a `std::optional` field check only the value that it holds
+                auto any = out.emplace("anyOf", empty_array);
+                auto held = any.emplace_back(empty_object);
+                emit<typename F::value_type>(held);
+                emit_node<yd::field_schema<S, yd::struct_declared_index<S, 0>>, F, S>(held);
+                any.emplace_back(empty_object).emplace("type", "null");
+            }
+            else
+            {
+                emit<F>(out);
+                if constexpr (yd::has_constraints<S>)
+                    emit_node<yd::field_schema<S, yd::struct_declared_index<S, 0>>, F, S>(out);
+            }
+        }
+
+        // The fields are the elements at their positions, and the field of `yyjson::extra_items` takes the elements
+        // after them.  A read takes an array that ends after the last required field and ignores the elements after
+        // the fields; a write leaves out the empty optional fields at the end and writes every default.
+        template <typename S>
+        void generator::emit_array_struct(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            constexpr auto n = yd::array_position_count<S>;
+            out.emplace("type", "array");
+            auto least = std::size_t{0};
+            if constexpr (n != 0)
+            {
+                auto prefix = out.emplace("prefixItems", empty_array);
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    (
+                        [&] {
+                            emit_field_value<S, Ks>(prefix.emplace_back(empty_object));
+                            if (writing_ ? !yd::omittable<yd::struct_field_type<S, Ks>> : read_requires<S, Ks>())
+                                least = Ks + 1;
+                        }(),
+                        ...);
+                }(std::make_index_sequence<n>{});
+            }
+            if (least != 0) out.emplace("minItems", least);
+            if constexpr (yd::has_extra_items<S>)
+            {
+                using E = std::remove_cv_t<std::ranges::range_value_t<yd::extra_items_type<S>>>;
+                auto items = out.emplace("items", empty_object);
+                emit<E>(items);
+                if constexpr (yd::has_constraints<S>)
+                {
+                    using schema = yd::field_schema<S, yd::struct_declared_index<S, n>>;
+                    if constexpr (schema::node.items != 0)
+                        emit_node<typename schema::template at<schema::node.items>, E, S>(items);
+                }
+            }
+            else if (yd::array_struct_table<S>.second ||
+                     (!writing_ && ((policies_ | yd::struct_policies<S>)&yd::unknown_keys_policy) != 0))
+                out.emplace("items", false);
+            if constexpr (yd::has_array_struct_keywords<S>) emit_node<yd::array_struct_schema<S>, S, S>(out);
         }
 
         // A range is written as an object when its elements are key-value pairs, and read from the forms that
@@ -1535,7 +1670,8 @@ namespace yyjson
             {
                 auto target = place(out, "contains");
                 auto contained = target.emplace("contains", empty_object);
-                if constexpr (!(yd::tuple_like<C> && !std::ranges::range<C>)) emit<typename P::element>(contained);
+                if constexpr (!(yd::tuple_like<C> && !std::ranges::range<C>) && !yd::as_array_struct<C>)
+                    emit<typename P::element>(contained);
                 emit_node<typename N::template at<n.contains>, typename P::element, S>(contained);
                 if constexpr (c.template has<yyjson::min_contains>()) target.emplace("minContains", c.min_contains);
                 if constexpr (c.template has<yyjson::max_contains>()) target.emplace("maxContains", c.max_contains);

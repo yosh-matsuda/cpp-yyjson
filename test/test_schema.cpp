@@ -411,6 +411,108 @@ namespace schema_test
         std::map<std::string, int> p;
         std::map<std::string, std::optional<int>> rest;
     };
+
+    // structs annotated with `yyjson::as_array`
+    namespace arrays
+    {
+        struct Rule
+        {
+            int level = 0;
+            std::optional<std::string> mode;
+            std::optional<int> limit;
+        };
+        struct Series
+        {
+            std::string label;
+            std::vector<double> values;
+        };
+        struct Node
+        {
+            std::string name;
+            std::vector<Node> children;
+        };
+        struct Banner
+        {
+            std::string name;
+            std::optional<std::string> tag;
+            std::vector<std::string> rest;
+        };
+        struct Ranks
+        {
+            int a = 0;
+            int b = 0;
+            std::vector<int> rest;
+        };
+        struct Sealed
+        {
+            int a = 0;
+            std::optional<int> b;
+        };
+        struct NullableAt
+        {
+            int a = 0;
+            yyjson::nullable<int> n;
+            std::unique_ptr<int> p;
+            std::optional<yyjson::nullable<int>> m;
+        };
+        struct SkippedAt
+        {
+            int a = 0;
+            int cache = 9;
+            std::optional<int> b;
+        };
+        struct LateRequired
+        {
+            int a = 1;
+            int b = 0;
+        };
+        struct RuleHolder
+        {
+            Rule rule;
+        };
+        struct Above
+        {
+            float f = 0.1f;
+            std::vector<float> rest;
+        };
+    }  // namespace arrays
+
+    // structs annotated with `yyjson::transparent`
+    struct UserId
+    {
+        std::int64_t value = 0;
+        auto operator<=>(const UserId&) const = default;
+    };
+    struct Order
+    {
+        UserId buyer;
+        std::vector<UserId> watchers;
+        std::map<std::string, UserId> roles;
+        std::map<UserId, int> ranks;
+    };
+    struct OptionalId
+    {
+        std::optional<int> value;
+    };
+    struct OptionalIds
+    {
+        OptionalId id;
+        std::vector<OptionalId> ids;
+        std::map<std::string, OptionalId> named;
+        arrays::Sealed sealed;
+    };
+    struct Count
+    {
+        int value = 0;
+    };
+    struct OptionalOne
+    {
+        std::optional<int> value;
+    };
+    struct Expr
+    {
+        std::vector<Expr> sub;
+    };
 }  // namespace schema_test
 
 template <>
@@ -572,6 +674,52 @@ inline constexpr auto yyjson::annotations<schema_test::KeyCountedExtra> = yyjson
     yyjson::min_properties(2), yyjson::max_properties(3), yyjson::property_names(yyjson::max_length(3)),
     yyjson::field("p", yyjson::pattern_properties("^p_")), yyjson::field("rest", yyjson::extra_keys));
 
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Rule> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("level", yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Series> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("values", yyjson::extra_items, yyjson::items(yyjson::minimum(0))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Node> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("children", yyjson::extra_items));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Banner> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::min_items(2));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Ranks> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::unique_items);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Sealed> =
+    yyjson::annotate(yyjson::as_array, yyjson::items(false));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::NullableAt> = yyjson::annotate(yyjson::as_array);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::SkippedAt> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("cache", yyjson::skip));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::LateRequired> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("a", yyjson::default_));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::RuleHolder> =
+    yyjson::annotate(yyjson::field("rule", yyjson::min_items(2)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::arrays::Above> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items),
+                     yyjson::contains(yyjson::minimum(0.10000000149011612)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::UserId> = yyjson::annotate(yyjson::transparent);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::OptionalId> = yyjson::annotate(yyjson::transparent);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Count> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::Expr> = yyjson::annotate(yyjson::transparent);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::OptionalOne> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::const_(1)));
+
 namespace
 {
     namespace jss = jsoncons::jsonschema;
@@ -700,6 +848,10 @@ namespace
             const auto policy = yyjson::detail::policies_of<Ps...>;
             EXPECT_EQ(valid && !accepted, less) << "valid, but not read: " << d.json << " under " << +policy;
             EXPECT_EQ(accepted && !valid, more) << "read, but not valid: " << d.json << " under " << +policy;
+            // `validate` takes no read policy, and a closed struct can make a `yyjson::one_of_variant` unambiguous
+            if (accepted && valid && (policies & yyjson::detail::unknown_keys_policy) == 0)
+                EXPECT_TRUE(meets_constraints(yyjson::read<T>(d.json, ps...)))
+                    << "valid, but the value read fails its check: " << d.json << " under " << +policy;
         }
     }
 
@@ -1449,6 +1601,73 @@ TEST(Schema, KeyMapForm)
               R"("additionalProperties":{"type":"integer","minimum":0,"maximum":2147483647},)"
               R"("propertyNames":{"anyOf":[{"enum":["name","t_x"]},{"pattern":"^t_"},{"maxLength":3}]}}},)"
               R"("$ref":"#/$defs/schema_test.ExtraKeyed"})");
+}
+
+TEST(Schema, ArrayStructs)
+{
+    using namespace schema_test::arrays;
+    check<Rule>({"[]", "[2]", R"([2,"always"])", R"([2,"always",3])", R"([2,"always",3,4])", "[-1]", "[2,null]",
+                 R"([2,"always",null])", R"([2,1])", R"({"level":2})", "null", R"(["2"])"});
+    check<Series>(
+        {R"(["cpu"])", R"(["cpu",0.5,0.75])", R"(["cpu",0.5,-1])", R"(["cpu",null])", "[]", "[1]", R"(["cpu","x"])"});
+    check<schema_test::arrays::Node>(
+        {R"(["a"])", R"(["a",["b"],["c",["d"]]])", R"(["a",["b",1]])", R"(["a","b"])", "[]", R"(["a",[]])"});
+    check<Banner>({R"(["kk","a"])", R"(["kk"])", R"(["kk",null])", R"(["kk","a","b","c"])", R"(["kk","a",1])", "[]"});
+    check<Ranks>({"[0]", "[0,1]", "[1,2,1]", "[1,1]", "[1,2,3]", "[]", "[1,2,null]"});
+    check<Sealed>({"[]", "[1]", "[1,2]", "[1,2,3]", "[1,null]", "[null]"});
+    check<NullableAt>({"[1]", "[1,null]", "[1,null,null]", "[1,null,null,null]", "[1,2,3,4]", "[null]", "[1,2,3,4,5]"});
+    check<SkippedAt>({"[1]", "[1,2]", "[1,2,3]", "[1,null]", "[]"});
+    check<LateRequired>({"[]", "[5]", "[5,6]", "[5,6,7]", "[null,6]"});
+    // `contains` checks each element as the float that it reads
+    check<Above>({"[0.1]", "[0.05]", "[0.05,0.1]", "[0.05,0.07]", "[]"});
+    check<RuleHolder>(
+        {R"({"rule":[1,"a"]})", R"({"rule":[1]})", R"({"rule":[1,"a",2]})", "{}", R"({"rule":[-1,"a"]})"});
+    EXPECT_EQ(schema<Rule>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.arrays.Rule":)"
+              R"({"type":"array","prefixItems":[{"type":"integer","minimum":0,"maximum":2147483647,"default":0},)"
+              R"({"type":"string"},{"type":"integer","minimum":-2147483648,"maximum":2147483647}],"minItems":1}},)"
+              R"("$ref":"#/$defs/schema_test.arrays.Rule"})");
+    // a read that rejects the elements after the fields
+    EXPECT_FALSE(definition_with<Rule>(yyjson::reject_unknown_keys)["items"].as<bool>());
+    EXPECT_FALSE(definition<Rule>(true).contains("items"));
+    EXPECT_FALSE(definition<Sealed>(true)["items"].as<bool>());
+    // an optional may be left out at the end, but a null of `nullable` or of a pointer is written
+    EXPECT_EQ(definition<NullableAt>(true)["minItems"].as<int>(), 3);
+    EXPECT_EQ(definition<NullableAt>(false)["minItems"].as<int>(), 3);
+    EXPECT_EQ(definition<LateRequired>(false)["minItems"].as<int>(), 2);
+    EXPECT_EQ(definition<LateRequired>(true)["minItems"].as<int>(), 2);
+    EXPECT_EQ(definition<SkippedAt>(false)["prefixItems"].size(), 2U);
+}
+
+TEST(Schema, TransparentStructs)
+{
+    check<UserId>({"42", "-1", "9223372036854775808", "null", R"("42")", R"({"value":42})"});
+    check<Order>({R"({"buyer":42,"watchers":[7],"roles":{"admin":1},"ranks":[[3,4]]})", R"({"buyer":"42"})",
+                  R"({"watchers":[null]})", R"({"roles":{"admin":"x"}})", R"({"ranks":{"3":4}})",
+                  R"({"ranks":[[3,"x"]]})", "{}"});
+    check<OptionalId>({"null", "1", R"("1")"});
+    check<OptionalIds>({"{}",
+                        R"({"id":1})",
+                        {R"({"id":null,"ids":[],"named":{},"sealed":[0]})", lenient_null},
+                        R"({"id":"x"})",
+                        R"({"ids":[null,1]})",
+                        R"({"named":{"a":null,"b":2}})",
+                        R"({"sealed":[1,2]})",
+                        R"({"sealed":[1,null]})"});
+    check<Count>({"0", "5", "-1", "null"});
+    check<OptionalOne>({"null", "1", "2", R"("1")"});
+    check<std::vector<OptionalOne>>({"[null,1]", "[2]", "[]"});
+    check<std::vector<Count>>({"[0,5]", "[-1]", "[]"});
+    check<Expr>({"[]", "[[],[[]]]", "[1]", "null", "{}"});
+    EXPECT_EQ(schema<UserId>(),
+              R"({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"schema_test.UserId":)"
+              R"({"type":"integer","minimum":-9223372036854775808,"maximum":9223372036854775807}},)"
+              R"("$ref":"#/$defs/schema_test.UserId"})");
+    // a field of a transparent struct over a `std::optional` may be left out, and is no null
+    const auto ids = definition<OptionalIds>(false);
+    EXPECT_FALSE(required_keys(ids).contains("id"));
+    EXPECT_EQ(ids["properties"]["id"]["not"]["type"].as<std::string>(), "null");
+    EXPECT_FALSE(required_keys(definition<OptionalIds>(true)).contains("id"));
 }
 
 // NOLINTEND
