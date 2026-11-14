@@ -94,6 +94,7 @@ auto table = rates.cast<std::map<std::string, double>>();  // the whole object a
 *   **Most standard types, nested in any combination.** `read<T>` and `write` convert structs, containers, maps, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types. `read_into` and `merge_into` read into an existing object, and `merge_into` applies the JSON as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396).
 *   **Tolerant reading.** Unknown keys are ignored, and missing keys keep their defaults. Values that do not fit throw `yyjson::bad_cast`, with the [path and the position](docs/validation.md#conversion-errors) of the value.
 *   **Constraints with the keywords of JSON Schema.** Settings such as `yyjson::minimum`, `yyjson::pattern`, `yyjson::items` and `yyjson::one_of` make a read reject the values that a field must not hold. Only the fields that have them pay the cost of the checks. See [Constraints](docs/validation.md#constraints).
+*   **JSON Schema from the C++ types.** `yyjson::json_schema<T>()` writes the JSON Schema 2020-12 of the JSON that `read<T>` reads or that `write` writes. `yyjson::schema_collection` collects the schemas of more than one type for OpenAPI 3.1. See [JSON Schema](docs/json-schema.md).
 *   **A DOM that builds JSON from C++ values.** `yyjson::object` and `yyjson::array` are built from containers and initializer lists. `emplace` adds a member to an object, and `emplace_back` adds an element to an array.
 
 ## Installation
@@ -125,7 +126,7 @@ find_package(cpp_yyjson CONFIG REQUIRED)
 
 Only `FetchContent` and `add_subdirectory` define `cpp_yyjson_enable_lto()`. It enables link-time optimization in the `Release` and `RelWithDebInfo` configurations only.
 
-Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from `include`, and compile `src/yyjson.c` as C together with your program; MSVC also needs `/Zc:preprocessor`. cpp-yyjson has no vcpkg or Conan package. To use the upstream yyjson instead of the bundled backend, install it, for example with `vcpkg install yyjson`, and configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`; without CMake, copy only the two cpp-yyjson headers.
+Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from `include`, and compile `src/yyjson.c` as C together with your program; MSVC also needs `/Zc:preprocessor`. cpp-yyjson has no vcpkg or Conan package. To use the upstream yyjson instead of the bundled backend, install it, for example with `vcpkg install yyjson`, and configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`; without CMake, copy only the two cpp-yyjson headers. To generate [JSON Schema](docs/json-schema.md), also copy `cpp_yyjson_schema.hpp`.
 
 ### Requirements
 

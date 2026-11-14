@@ -8,6 +8,10 @@ In short:
 
 *   The functions are in the header `cpp_yyjson_schema.hpp`, which includes `cpp_yyjson.hpp`.
 *   `json_schema<T>()` returns the schema as a [`yyjson::object`](reference.md#yyjsonobject). `write()` gives its text.
+*   The default dialect is JSON Schema 2020-12. The tag `yyjson::openapi_3_1` gives the schema objects of OpenAPI 3.1.
+*   [`yyjson::schema_collection`](#openapi-and-schema-collections) collects the schemas of more than one type, for example for the `components/schemas` of an OpenAPI document.
+*   JSON that is valid against the read schema is read by `read<T>`. JSON that `write` writes for a value that `yyjson::validate` accepts is valid against the write schema. A [short list of exceptions](#exceptions) applies.
+*   The library does not read a schema. It writes no other dialect, such as draft-07 or OpenAPI 3.0.
 
 This page describes:
 
@@ -169,8 +173,43 @@ yyjson::json_schema<Account>(yyjson::write_direction, yyjson::emit_defaults);
 
 The two directions also differ where the conversion is not symmetric. A [translator](conversions.md#translator) reads one type and writes another. Its read schema gives the type that `from_json` takes. Its write schema gives the type that `to_json` returns.
 
+## What the schema guarantees
+
+The schema gives two guarantees:
+
+*   JSON that is valid against the read schema is read by `yyjson::read<T>`. Give the same tags to `json_schema<T>` and to `read<T>`.
+*   For a value `t` that [`yyjson::validate`](validation.md#checking-a-value-before-writing) accepts, the JSON of `yyjson::write(t)` is valid against the write schema.
+
+A plain `write` does not check the constraints. Thus it can write a value outside the write schema. Use `yyjson::write(t, yyjson::with_validation)` to check the value and write it in one call.
+
+The read schema does not describe all of the JSON that `read<T>` accepts. A read accepts these forms, and the read schema rejects them:
+
+*   A missing key of a field that has no declared default. Without `yyjson::strict`, the read keeps the value of the field in `T()`.
+*   `null` in a `std::optional` field. The read reads it as a [missing key](validation.md#null-in-a-stdoptional).
+*   An element repeated in a `std::set`. The read schema has `uniqueItems`.
 *   An object read into a tuple or a `std::array` of key-value pairs whose value types differ. The read schema requires each value to satisfy every value type. For example, `std::tuple<std::pair<std::string, int>, std::pair<std::string, std::string>>` reads `{"a":1,"b":"x"}`, and its read schema rejects it.
+
+### Exceptions
+
+In these cases, JSON that is valid against the read schema is not read, or a written value is not valid against the write schema:
+
+*   A [declared schema](#declared-schemas). The library does not compare the declared text with the type. For example, `yyjson::schema_extend(R"({"type":"string"})")` on an `int` field accepts `"x"`, and the read rejects it.
+*   [`yyjson::satisfies<f>`](validation.md#constraints). The schema has no keyword for it. Inside `yyjson::not_`, the subschema becomes `{}`, so `"not": {}` rejects every value. The read applies `f` and can accept the value.
+*   A [format](#formats). The library checks only `yyjson::format_assertion`, and many validators check no format. Other validators check the formats of `yyjson::format` too. Then `yyjson::not_(yyjson::format("email"))` accepts `"abc"` in the validator, and the read rejects every string.
 *   A [caster](#casters) that rejects some values of the type that its `from_json` takes. The schema describes that type. For example, a `from_json(const std::string&)` that throws for `"abc"` gives `{"type":"string"}`, and the read rejects `"abc"`. Give the rest of the schema with [`yyjson::schema_extend`](#declared-schemas).
+*   A `pattern`. The program gives the [pattern matcher](validation.md#pattern-matcher) of the library. The validator matches the pattern with its own engine, and the two can disagree.
+*   A comparison of a `float`. The read rounds the JSON number to `float` before it compares. The validator compares the JSON numbers. These examples are valid against the read schema and are not read:
+    *   `0.10000000149011612` for `yyjson::not_(yyjson::const_(0.1))`
+    *   `[0.1,0.10000000149011612]` for a `std::vector<float>` with `yyjson::unique_items`
+    *   The same array for `yyjson::contains(yyjson::const_(0.1))` with `yyjson::max_contains(1)`
+    *   `16777221` for `yyjson::multiple_of(3)`, above 2^24.
+*   A struct with a `float` field that is written as a JSON array, with `yyjson::contains`. The check compares the `float` value, and `write` writes the shortest text of the `float`, such as `0.1`. A bound between the two values can reject the written array.
+*   A repeated key. `{"a":1,"a":2}` is valid against `yyjson::max_properties(1)`, because the validator keeps one member. The read counts two members and rejects the object. With `yyjson::reject_duplicates` or `yyjson::strict`, the read rejects each repeated key, and the schema accepts it.
+*   A `std::chrono::duration` with an integer count. JSON Schema takes `5.0` as an integer, and the read rejects it. `read<int>` reads `5.0`.
+*   The depth of a [recursive type](conversions.md#recursive-types). The read rejects JSON deeper than `CPPYYJSON_RECURSION_DEPTH_LIMIT`. The schema has no limit.
+
+`test/test_schema.cpp` checks the guarantees with the validator of [jsoncons](https://github.com/danielaparker/jsoncons).
+
 ## Required keys and defaults
 
 A field has a declared default when it has `yyjson::default_` or `yyjson::default_from<f>`, or when it is a `std::optional`. See [Default values and required keys](conversions.md#default-values-and-required-keys). A default member initializer, such as `double price = 0`, is not a declared default.
@@ -336,7 +375,108 @@ The schema of a type with a [user-defined caster](conversions.md#user-defined-ca
 
 In a subschema of `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of` or `yyjson::prefix_items`, the schema can find `T` only in two cases. `T` is a kind of JSON, such as `bool`, `double`, `std::string` or a DOM type. Or another setting of the same type has `yyjson::matches<T>` outside such a subschema. In other cases, `json_schema` is a compile error.
 
+## OpenAPI and schema collections
+
+`yyjson::schema_collection` collects the schemas of more than one type into one object of named schemas. Use it for the `components/schemas` of an OpenAPI document.
+
+*   The constructor takes the read policies, `yyjson::emit_defaults`, a dialect and `yyjson::schema_collection::options`. The read policies apply to the read schemas, and `yyjson::emit_defaults` applies to the write schemas. The default dialect is OpenAPI 3.1, and the default prefix of `$ref` is `#/components/schemas/`.
+*   `add<T>()` adds the read schema of `T`. `add<T>(yyjson::write_direction)` adds the write schema. In a template, write `c.template add<T>()`.
+*   `build()` returns a `result`. `result::schemas()` gives the object of all definitions, without `$schema`. `result::schema<T>()` gives the schema of an added type, usually a `$ref`.
+*   `result::schema<T>()` for a type that was not added throws `std::logic_error`. A type that the collection reaches only through another type is in `schemas()`, but it is not added.
+*   When the read and write schemas of a type differ, the definitions are `Name-Input` and `Name-Output`. When they are the same, the type has one definition.
+
+```cpp
+struct Point
+{
+    int x = 0;
+    int y = 0;
+};
+
+struct Marker
+{
+    std::string label;
+    Point at;
+    int size = 1;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Point> = yyjson::annotate(yyjson::schema_name("Point"));
+template <>
+inline constexpr auto yyjson::annotations<Marker> =
+    yyjson::annotate(yyjson::schema_name("Marker"), yyjson::field("size", yyjson::default_));
+
+const auto collected = yyjson::schema_collection(yyjson::emit_defaults)
+                           .add<Marker>()
+                           .add<Marker>(yyjson::write_direction)
+                           .add<Point>(yyjson::write_direction)
+                           .build();
+collected.schema<Marker>().write();
+// -> {"$ref":"#/components/schemas/Marker-Input"}
+collected.schema<Marker>(yyjson::write_direction).write();
+// -> {"$ref":"#/components/schemas/Marker-Output"}
+collected.schemas().write();
+// -> {"Marker-Input":{"type":"object","properties":{"label":{"type":"string","default":""},
+//       "at":{"$ref":"#/components/schemas/Point","default":{"x":0,"y":0}},
+//       "size":{"type":"integer","format":"int32","minimum":-2147483648,"maximum":2147483647,"default":1}},
+//       "required":["label","at"]},
+//     "Marker-Output":{..., "required":["label","at","size"]},
+//     "Point":{"type":"object","properties":{"x":{"type":"integer","format":"int32",...,"default":0},
+//       "y":{"type":"integer","format":"int32",...,"default":0}},"required":["x","y"]}}
+collected.schema<Point>();
+// throws std::logic_error: yyjson::schema_collection::result::schema: Point was not added for read
+```
+
+`yyjson::emit_defaults` changes only the write schemas. Thus `Marker` has two definitions, and `Point` has one.
+
+## Options
+
+`yyjson::schema_options` sets the options of `json_schema`:
+
+| Member | Default | Effect |
+| --- | --- | --- |
+| `id` | empty | The `$id` of the schema. An empty `id` gives no `$id`. |
+| `ref_prefix` | `"#/$defs/"` | The prefix of each `$ref` to a definition. The definitions stay in `$defs`. |
+
+```cpp
+yyjson::json_schema<shop::Item>(yyjson::schema_options{.id = "https://example.com/item.json"});
+```
+
+`yyjson::schema_collection::options` has the member `ref_prefix`, with the default `"#/components/schemas/"`.
+
+## Formats
+
+The dialect decides `$schema` and the `format` of number types:
+
+| Dialect | `$schema` | `format` of a number type |
+| --- | --- | --- |
+| `yyjson::json_schema_2020_12` (default of `json_schema`) | `https://json-schema.org/draft/2020-12/schema` | none |
+| `yyjson::openapi_3_1` (default of `schema_collection`) | none | `int32` for an integer type up to 31 value bits, `int64` up to 63 value bits, none for `std::uint64_t`. `float` for `float`, `double` for `double`. |
+
+`yyjson::format("name")` and `yyjson::format_assertion("name")` both give `"format": "name"`. The library checks only `yyjson::format_assertion`. A validator can check both or neither. See [Exceptions](#exceptions).
+
+## Limits
+
+*   The library writes JSON Schema 2020-12 and the schema objects of OpenAPI 3.1 only.
+*   Metadata is not allowed on an element, a key or a subschema.
+*   The library does not change a `$ref` in a [declared schema](#declared-schemas).
+*   The library does not read a schema, and it does not generate C++ types from a schema.
+
+## Errors
+
+`json_schema` and `build()` throw `std::invalid_argument` in these cases:
+
+*   The read rejects an example. The message is like `json_schema: the example "x" of Bad::a is not read: int is not constructible from JSON string (line 1, column 1, pos 0)`.
+*   A declared schema is not a JSON object or a boolean. The message is like `json_schema: the yyjson::schema of Bad2::a is not an object or a boolean`.
 *   The text of `yyjson::schema_extend` is not a JSON object. The message is like `json_schema: the yyjson::schema_extend of X1::a is not an object`.
 *   The text of a declared schema is not JSON. The message is like `json_schema: the yyjson::schema of X3::a is not JSON: Read JSON error: unexpected end of data at line 1, column 2, pos 1`.
 *   A field with `yyjson::adjacent_tag` has `yyjson::examples`. The message is like `json_schema: the example 1 of AT::v is not read: a field with yyjson::adjacent_tag reads its tag beside the value`.
 *   A [caster](#casters) converts a value that holds its own type again. The message is like `json_schema: the caster of T converts a value that holds the type again, which has no name in $defs`.
+*   Two types have the same name. The message is like `json_schema: t1::Same and t2::Same have the same yyjson::schema_name "Same"`.
+
+These are compile errors:
+
+*   A read policy with `yyjson::write_direction`, or `yyjson::emit_defaults` without it.
+*   `yyjson::write_direction`, `yyjson::emit_defaults` or `yyjson::schema_options` twice, or two dialects.
+*   A character other than `[A-Za-z0-9._-]` in `yyjson::schema_name`, or `yyjson::schema_name` on a field.
+*   `yyjson::schema` and `yyjson::schema_extend` on one field or one type.
+*   Metadata on a position that [does not take it](#metadata).

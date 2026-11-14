@@ -1,4 +1,4 @@
-// JSON Schema (2020-12) of the C++ types that cpp-yyjson reads and writes.
+// JSON Schema (2020-12, or the dialect of OpenAPI 3.1) of the C++ types that cpp-yyjson reads and writes.
 
 #pragma once
 
@@ -34,6 +34,19 @@ namespace yyjson
         explicit write_direction_t() = default;
     };
     inline constexpr write_direction_t write_direction{};
+
+    // The tags of `json_schema` and `schema_collection` that choose the dialect: JSON Schema 2020-12, or the one of
+    // OpenAPI 3.1, which adds `format` to the numbers and leaves `$schema` to the `jsonSchemaDialect` of the document.
+    struct json_schema_2020_12_t
+    {
+        explicit json_schema_2020_12_t() = default;
+    };
+    inline constexpr json_schema_2020_12_t json_schema_2020_12{};
+    struct openapi_3_1_t
+    {
+        explicit openapi_3_1_t() = default;
+    };
+    inline constexpr openapi_3_1_t openapi_3_1{};
 
     struct schema_options
     {
@@ -163,12 +176,13 @@ namespace yyjson
 
         class generator;
 
-        // What the call of `json_schema` asks for besides the direction: its read policies, and whether the write
-        // takes `yyjson::emit_defaults`.
+        // What the call of `json_schema` asks for besides the direction: its read policies, whether the write takes
+        // `yyjson::emit_defaults`, and whether the numbers take the `format` of OpenAPI.
         struct schema_mode
         {
             std::uint8_t policies = 0;
             bool emit_defaults = false;
+            bool number_formats = false;
         };
 
         // A new subschema in `allOf` of `out`, for a keyword that `out` already has with another value.
@@ -780,7 +794,8 @@ namespace yyjson
                   writing_(writing),
                   policies_(writing ? 0 : mode.policies),
                   read_policies_(mode.policies),
-                  emit_defaults_(writing && mode.emit_defaults)
+                  emit_defaults_(writing && mode.emit_defaults),
+                  number_formats_(mode.number_formats)
             {
             }
 
@@ -900,6 +915,7 @@ namespace yyjson
             // the policies that read the examples in both directions
             std::uint8_t read_policies_;
             bool emit_defaults_;
+            bool number_formats_;
             // The keys of the internal tags that the object of the next value holds besides its own members, which
             // a variant, a nullable value and a transparent struct pass on to the value that they hold.
             registry::tag_keys tags_;
@@ -994,6 +1010,8 @@ namespace yyjson
             // Writes the keywords of the primitive T other than `type`.
             template <typename T>
             static void emit_primitive_keywords(object_ref out);
+            template <typename T>
+            void emit_number_format(object_ref out) const;
             template <typename T>
             void emit_nullable(object_ref out);
             template <typename E>
@@ -1208,6 +1226,7 @@ namespace yyjson
             else if constexpr (primitive_type<T>)
             {
                 out.emplace("type", type_keyword<T>());
+                emit_number_format<T>(out);
                 emit_primitive_keywords<T>(out);
             }
             else if constexpr (std::same_as<T, std::vector<bool>>)
@@ -1257,6 +1276,42 @@ namespace yyjson
             }
         }
 
+        // The `format` of OpenAPI for the number T: the narrower of int32 and int64 that holds every value, or float
+        // and double.  A wider number has none.
+        template <typename T>
+        consteval std::string_view number_format() noexcept
+        {
+            using L = std::numeric_limits<T>;
+            if constexpr (std::same_as<T, bool> || !std::is_arithmetic_v<T>)
+                return {};
+            else if constexpr (std::integral<T>)
+            {
+                if constexpr (L::digits <= 31)
+                    return "int32";
+                else if constexpr (L::digits <= 63)
+                    return "int64";
+                else
+                    return {};
+            }
+            else if constexpr (std::same_as<T, float>)
+                return "float";
+            else if constexpr (std::same_as<T, double>)
+                return "double";
+            else
+                return {};
+        }
+        inline bool number_format_name(std::string_view name) noexcept
+        {
+            return name == "int32" || name == "int64" || name == "float" || name == "double";
+        }
+
+        template <typename T>
+        void generator::emit_number_format(object_ref out) const
+        {
+            if constexpr (constexpr auto name = number_format<T>(); !name.empty())
+                if (number_formats_) out.emplace("format", name);
+        }
+
         template <typename U>
         void generator::emit_nullable(object_ref out)
         {
@@ -1265,6 +1320,7 @@ namespace yyjson
                 auto types = out.emplace("type", empty_array);
                 types.emplace_back(type_keyword<U>());
                 types.emplace_back("null");
+                emit_number_format<U>(out);
                 emit_primitive_keywords<U>(out);
             }
             else
@@ -2450,6 +2506,7 @@ namespace yyjson
                             if constexpr (primitive_type<U>)
                             {
                                 types.emplace_back(type_keyword<U>());
+                                emit_number_format<U>(out);
                                 emit_primitive_keywords<U>(out);
                             }
                             else
@@ -3001,6 +3058,13 @@ namespace yyjson
             if constexpr (c.template has<yyjson::max_length>()) tighten(out, "maxLength", c.max_length, false);
             for (std::size_t i = 0; i < N::patterns.size(); ++i)
                 (i == 0 ? place(out, "pattern") : conjunct(out)).emplace("pattern", N::patterns[i], copy_string);
+            if constexpr (c.template has<yyjson::format<>>() || c.template has<yyjson::format_assertion<>>())
+            {
+                // a format of the node replaces the one of OpenAPI that the number has
+                if (auto it = out.find("format"); number_formats_ && it != out.end())
+                    if (const auto name = it->second.as_string(); name && number_format_name(*name))
+                        out.erase("format");
+            }
             if constexpr (c.template has<yyjson::format<>>())
                 place(out, "format").emplace("format", c.format_name.view(), copy_string);
             if constexpr (c.template has<yyjson::format_assertion<>>())
@@ -3386,6 +3450,19 @@ namespace yyjson
                                           names_->types[i].tags);
                 }
             }
+            // Calls `f(id, writing, schema)` with the schema of each root in the order of `add`.
+            template <typename F>
+            void emit_roots(F&& f)
+            {
+                settle();
+                for (const auto& r : roots_)
+                {
+                    auto doc = value(object());
+                    auto g = generator(*names_, r.writing, mode_);
+                    r.emit(g, *doc.as_object());
+                    f(r.id, r.writing, *std::move(doc).as_object());
+                }
+            }
 
         private:
             struct root
@@ -3456,14 +3533,22 @@ namespace yyjson
         };
 
         template <typename A>
+        inline constexpr bool dialect_tag = std::same_as<A, json_schema_2020_12_t> || std::same_as<A, openapi_3_1_t>;
+        template <typename A>
         inline constexpr bool schema_argument =
             std::same_as<A, write_direction_t> || std::same_as<A, emit_defaults_t> || std::same_as<A, schema_options> ||
-            yyjson::detail::read_policy<A>;
+            dialect_tag<A> || yyjson::detail::read_policy<A>;
+
+        struct collection_options
+        {
+            // The prefix of the references to the named types, where the program puts `result::schemas()`.
+            std::string_view ref_prefix = "#/components/schemas/";
+        };
     }  // namespace schema_detail
 
     // The JSON Schema (2020-12) of the JSON that `read<T>` takes, or with `yyjson::write_direction` of the JSON that
-    // `write` gives.  The other arguments are the tags of the read policies or `yyjson::emit_defaults`, and one
-    // `schema_options`.
+    // `write` gives.  The other arguments are the tags of the read policies, `yyjson::emit_defaults` and the dialect,
+    // and one `schema_options`.
     template <typename T, typename... Args>
     [[nodiscard]] object json_schema(const Args&... args)
     {
@@ -3471,13 +3556,15 @@ namespace yyjson
         constexpr bool writing = (std::same_as<Args, write_direction_t> || ...);
         constexpr bool policies = (yyjson::detail::read_policy<Args> || ...);
         constexpr bool defaults = (std::same_as<Args, emit_defaults_t> || ...);
+        constexpr bool openapi = (std::same_as<Args, openapi_3_1_t> || ...);
         static_assert((sd::schema_argument<Args> && ...),
                       "json_schema takes yyjson::write_direction, yyjson::emit_defaults, the read policies such as "
-                      "yyjson::strict, and yyjson::schema_options");
+                      "yyjson::strict, a dialect such as yyjson::openapi_3_1, and yyjson::schema_options");
         static_assert(yyjson::detail::count_true<std::same_as<Args, write_direction_t>...> <= 1 &&
                           yyjson::detail::count_true<std::same_as<Args, emit_defaults_t>...> <= 1 &&
-                          yyjson::detail::count_true<std::same_as<Args, schema_options>...> <= 1,
-                      "json_schema takes each of its tags and yyjson::schema_options once");
+                          yyjson::detail::count_true<std::same_as<Args, schema_options>...> <= 1 &&
+                          yyjson::detail::count_true<sd::dialect_tag<Args>...> <= 1,
+                      "json_schema takes each of its tags, one dialect and yyjson::schema_options once");
         static_assert(!(writing && policies),
                       "json_schema: a read policy, such as yyjson::strict, applies to the read schema, not to the "
                       "schema of yyjson::write_direction");
@@ -3492,11 +3579,11 @@ namespace yyjson
             if constexpr (std::same_as<A, schema_options>) options = a;
         };
         (take(args), ...);
-        auto b = sd::builder(options.ref_prefix, {yyjson::detail::policies_of<Args...>, defaults});
+        auto b = sd::builder(options.ref_prefix, {yyjson::detail::policies_of<Args...>, defaults, openapi});
         b.add<T>(writing);
         auto doc = value(object());
         auto root = *doc.as_object();
-        root.emplace("$schema", sd::dialect);
+        if constexpr (!openapi) root.emplace("$schema", sd::dialect);
         if (!options.id.empty()) root.emplace("$id", options.id, copy_string);
         auto defs = root.emplace("$defs", empty_object);
         b.emit_definitions(defs);
@@ -3504,4 +3591,134 @@ namespace yyjson
         b.emit_root<T>(root, writing);
         return *std::move(doc).as_object();
     }
+
+    // The schemas of several types, such as `components/schemas` of an OpenAPI 3.1 document.  A named type has one
+    // name while its read and write schemas are the same, and "Name-Input" and "Name-Output" otherwise, which
+    // `build()` settles when all the types are known.
+    class schema_collection
+    {
+    public:
+        using options = schema_detail::collection_options;
+
+        // The schemas that `build()` generates.
+        class result
+        {
+        public:
+            // The schema of T that `add<T>()` added: a reference for a named type, without `$schema`.
+            template <typename T>
+            [[nodiscard]] const object& schema() const
+            {
+                return find(&schema_detail::type_identity_tag<T>, false, yyjson::detail::type_name<T>());
+            }
+            template <typename T>
+            [[nodiscard]] const object& schema(write_direction_t) const
+            {
+                return find(&schema_detail::type_identity_tag<T>, true, yyjson::detail::type_name<T>());
+            }
+            // The schemas of the named types, by their names.
+            [[nodiscard]] const object& schemas() const noexcept { return schemas_; }
+
+        private:
+            friend class schema_collection;
+            struct root
+            {
+                const void* id;
+                bool writing;
+                object schema;
+            };
+            std::vector<root> roots_;
+            object schemas_;
+
+            explicit result(object schemas) : schemas_(std::move(schemas)) {}
+
+            [[nodiscard]] const object& find(const void* id, bool writing, std::string_view name) const
+            {
+                for (const auto& r : roots_)
+                    if (r.id == id && r.writing == writing) return r.schema;
+                throw std::logic_error("yyjson::schema_collection::result::schema: " + std::string(name) +
+                                       " was not added for " + (writing ? "yyjson::write_direction" : "read"));
+            }
+        };
+
+        // The arguments are those of `json_schema` but the direction and `schema_options`: the read policies apply to
+        // the read schemas, `yyjson::emit_defaults` to the write schemas.  The dialect is OpenAPI 3.1 by default.
+        template <typename... Args>
+        requires (!(sizeof...(Args) == 1 && (std::same_as<Args, schema_collection> && ...)))
+        explicit schema_collection(const Args&... args) : builder_(make_builder(args...))
+        {
+        }
+
+        // Adds the schema of what `read<T>` takes, or with `yyjson::write_direction` of what `write` gives.
+        template <typename T>
+        schema_collection& add() &
+        {
+            static_assert(yyjson::detail::read_castable<T>, "schema_collection::add<T>: yyjson::cast does not give T");
+            builder_.add<T>(false);
+            return *this;
+        }
+        template <typename T>
+        schema_collection& add(write_direction_t) &
+        {
+            static_assert(writable<T>,
+                          "schema_collection::add<T>(yyjson::write_direction): yyjson::write does not take T");
+            builder_.add<T>(true);
+            return *this;
+        }
+        template <typename T>
+        schema_collection&& add() &&
+        {
+            return std::move(add<T>());
+        }
+        template <typename T>
+        schema_collection&& add(write_direction_t w) &&
+        {
+            return std::move(add<T>(w));
+        }
+
+        // Generates the schemas of the types added.  Throws `std::invalid_argument` as `json_schema` does.
+        [[nodiscard]] result build() const&
+        {
+            auto b = builder_;
+            return build(b);
+        }
+        [[nodiscard]] result build() && { return build(builder_); }
+
+    private:
+        schema_detail::builder builder_;
+
+        template <typename... Args>
+        static schema_detail::builder make_builder(const Args&... args)
+        {
+            namespace sd = schema_detail;
+            static_assert((((sd::schema_argument<Args> && !std::same_as<Args, write_direction_t> &&
+                             !std::same_as<Args, schema_options>) ||
+                            std::same_as<Args, options>) &&
+                           ...),
+                          "schema_collection takes yyjson::emit_defaults, the read policies such as yyjson::strict, a "
+                          "dialect such as yyjson::json_schema_2020_12, and schema_collection::options");
+            static_assert(yyjson::detail::count_true<std::same_as<Args, emit_defaults_t>...> <= 1 &&
+                              yyjson::detail::count_true<std::same_as<Args, options>...> <= 1 &&
+                              yyjson::detail::count_true<sd::dialect_tag<Args>...> <= 1,
+                          "schema_collection takes each of its tags, one dialect and schema_collection::options once");
+            auto opts = options();
+            const auto take = [&]<typename A>(const A& a) {
+                if constexpr (std::same_as<A, options>) opts = a;
+            };
+            (take(args), ...);
+            return sd::builder(opts.ref_prefix,
+                               {yyjson::detail::policies_of<Args...>, (std::same_as<Args, emit_defaults_t> || ...),
+                                !(std::same_as<Args, json_schema_2020_12_t> || ...)});
+        }
+
+        static result build(schema_detail::builder& b)
+        {
+            auto defs = value(object());
+            b.emit_definitions(*defs.as_object());
+            auto r = result(*std::move(defs).as_object());
+            b.emit_roots([&](const void* id, bool writing, object schema) {
+                r.roots_.push_back({id, writing, std::move(schema)});
+            });
+            return r;
+        }
+    };
 }  // namespace yyjson

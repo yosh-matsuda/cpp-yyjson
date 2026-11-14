@@ -883,7 +883,7 @@ The check follows these rules:
         *   For a `yyjson::one_of_variant`, no other alternative can read the JSON of the alternative. The library compares the alternatives at compile time, as for the compile errors of `yyjson::one_of_variant`.
 
         In other cases, the check writes the variant and reads the JSON into a temporary document. Thus the check allocates memory.
-*   For a type with a [user-defined caster](#values-that-a-caster-reads), the check checks the constraints on the JSON value that the caster writes. These are the constraints of the field, and `yyjson::min_properties` and `yyjson::max_properties` of the type, of the element and of the subschema. In an internally tagged variant, the JSON object holds the key of the tag, as in a read.
+*   For a type with a [user-defined caster](#values-that-a-caster-reads), the check checks the constraints on the JSON value that the caster writes. These are the constraints of the field, and `yyjson::min_properties`, `yyjson::max_properties`, `yyjson::additional_properties(false)` and `yyjson::property_names` of the type, of the element and of the subschema. In an internally tagged variant, the JSON object holds the key of the tag, as in a read.
     *   For each such value, the check calls `to_json` of the caster. When `to_json` returns a `bool`, an integer, a `double` or a string, the check checks that value without a document.
     *   In other cases, the check writes the value and reads the JSON into a temporary document. Thus the check allocates memory for this value. It also does this when it finds a violation, and when the write flags change the form of a `double`. Then it calls `to_json` again.
     *   When a struct around the value already needs the written object, the check uses that document.
@@ -1019,7 +1019,7 @@ A `yyjson::format_assertion` without the specialization that it needs is a compi
 
 ## JSON Schema keywords
 
-The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value. They give the settings and the types of cpp-yyjson that read the same JSON. The library does not read a schema. To write the C++ types of a schema, translate it by hand with the tables.
+The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value. They give the settings and the types of cpp-yyjson that read the same JSON. The library does not read a schema. To write the C++ types of a schema, translate it by hand with the tables. To write the schema of a C++ type, use [`yyjson::json_schema<T>`](json-schema.md).
 
 ### Numbers and strings
 

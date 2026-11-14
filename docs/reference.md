@@ -19,6 +19,8 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::validate`, `yyjson::with_validation`](#yyjsonvalidate-yyjsonwith_validation)
     *   [`yyjson::read`](#yyjsonread)
     *   [`yyjson::cast`](#yyjsoncast)
+    *   [`yyjson::json_schema`, `yyjson::schema_options`](#yyjsonjson_schema-yyjsonschema_options)
+    *   [`yyjson::schema_collection`](#yyjsonschema_collection)
 *   [DOM classes](#dom-classes)
     *   [`yyjson::reader::value`](#yyjsonreadervalue)
     *   [`yyjson::reader::array`, `yyjson::reader::const_array_ref`](#yyjsonreaderarray-yyjsonreaderconst_array_ref)
@@ -58,6 +60,8 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of`](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [`yyjson::matches<T>`](#yyjsonmatchest)
+    *   [Schema metadata](#schema-metadata)
+    *   [`yyjson::schema`, `yyjson::schema_extend`, `yyjson::schema_name`](#yyjsonschema-yyjsonschema_extend-yyjsonschema_name)
     *   [`yyjson::pattern_matcher<>`, `yyjson::format_checker<>`](#yyjsonpattern_matcher-yyjsonformat_checker)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
 *   [Casters](#casters)
@@ -113,6 +117,8 @@ The member functions of the DOM classes often return *reference classes*, such a
 | [`yyjson::validate`](#yyjsonvalidate-yyjsonwith_validation) | data binding | Checks a C++ object against the constraints before it is written |
 | [`yyjson::read`](#yyjsonread) | DOM | Reads a JSON string into an immutable document |
 | [`yyjson::cast<T>`](#yyjsoncast) | DOM | Converts a JSON value to a C++ object of type `T` |
+| [`yyjson::json_schema<T>`](#yyjsonjson_schema-yyjsonschema_options) | data binding | Writes the JSON Schema of the JSON that `read<T>` reads or that `write` writes |
+| [`yyjson::schema_collection`](#yyjsonschema_collection) | data binding | Collects the JSON Schemas of more than one type, such as for OpenAPI |
 
 The *data binding API* converts between JSON text and C++ types without building a JSON document in between. The *DOM API* reads JSON into a document of immutable values, and builds documents of mutable values with the [DOM classes](#dom-classes). Use the DOM API in these cases:
 
@@ -427,6 +433,110 @@ T cast(const Json& json, Policies... policies);
 auto doc = yyjson::read(R"({"x":1,"y":2})");
 auto point = yyjson::cast<std::map<std::string, int>>(doc);
 // -> {{"x", 1}, {"y", 2}}
+```
+
+### `yyjson::json_schema`, `yyjson::schema_options`
+
+Writes the [JSON Schema](json-schema.md) of a C++ type. The header is `cpp_yyjson_schema.hpp`.
+
+```cpp
+template <typename T, typename... Args>
+object json_schema(const Args&... args);
+
+inline constexpr write_direction_t write_direction{};
+inline constexpr json_schema_2020_12_t json_schema_2020_12{};
+inline constexpr openapi_3_1_t openapi_3_1{};
+
+struct schema_options
+{
+    std::string_view id = {};
+    std::string_view ref_prefix = "#/$defs/";
+};
+```
+
+`json_schema<T>()` returns the read schema: the JSON that `yyjson::read<T>` reads. `args` are these:
+
+*   `yyjson::write_direction` selects the write schema: the JSON that `yyjson::write` writes.
+*   The [read policies](#read-policies) apply to the read schema. `yyjson::emit_defaults` applies to the write schema.
+*   `yyjson::json_schema_2020_12` or `yyjson::openapi_3_1` selects the dialect. The default is JSON Schema 2020-12.
+*   `yyjson::schema_options` gives the `$id` and the prefix of each `$ref`.
+
+Any other argument is a compile error. `yyjson::write_direction`, `yyjson::emit_defaults`, `yyjson::schema_options` and a dialect are a compile error when they are given twice. A read policy with `yyjson::write_direction` is a compile error, and so is `yyjson::emit_defaults` without it.
+
+`json_schema` throws `std::invalid_argument` in these cases:
+
+*   The read rejects an example of [`yyjson::examples`](#schema-metadata).
+*   A [`yyjson::schema`](#yyjsonschema-yyjsonschema_extend-yyjsonschema_name) is not a JSON object or a boolean.
+*   Two types have the same `yyjson::schema_name`.
+
+See [JSON Schema](json-schema.md) for the guarantees and the keywords.
+
+```cpp
+struct Account
+{
+    std::string id;
+    int level = 1;
+};
+template <>
+inline constexpr auto yyjson::annotations<Account> = yyjson::annotate(yyjson::field("level", yyjson::default_));
+
+yyjson::json_schema<Account>().write();
+// -> {"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"Account":{"type":"object","properties":
+//     {"id":{"type":"string","default":""},"level":{"type":"integer","minimum":-2147483648,"maximum":2147483647,
+//     "default":1}},"required":["id"]}},"$ref":"#/$defs/Account"}
+```
+
+### `yyjson::schema_collection`
+
+Collects the JSON Schemas of more than one type, such as for the `components/schemas` of an OpenAPI 3.1 document. The header is `cpp_yyjson_schema.hpp`.
+
+```cpp
+class schema_collection
+{
+public:
+    struct options
+    {
+        std::string_view ref_prefix = "#/components/schemas/";
+    };
+
+    template <typename... Args>
+    explicit schema_collection(const Args&... args);
+
+    template <typename T>
+    schema_collection& add() &;
+    template <typename T>
+    schema_collection& add(write_direction_t) &;
+    template <typename T>
+    schema_collection&& add() &&;
+    template <typename T>
+    schema_collection&& add(write_direction_t) &&;
+
+    result build() const&;
+    result build() &&;
+
+    class result
+    {
+    public:
+        template <typename T>
+        const object& schema() const;
+        template <typename T>
+        const object& schema(write_direction_t) const;
+        const object& schemas() const noexcept;
+    };
+};
+```
+
+*   `args` are the [read policies](#read-policies), `yyjson::emit_defaults`, a dialect and `schema_collection::options`. The read policies apply to the read schemas, and `yyjson::emit_defaults` applies to the write schemas. The default dialect is OpenAPI 3.1.
+*   `add<T>()` adds the read schema of `T`, and `add<T>(yyjson::write_direction)` adds the write schema. In a template, write `c.template add<T>()`.
+*   `build()` generates the schemas. It throws `std::invalid_argument` as `json_schema` does.
+*   `result::schemas()` gives the definitions of the named types, by their names, without `$schema`. When the read and write schemas of a type differ, the type has the names `Name-Input` and `Name-Output`.
+*   `result::schema<T>()` gives the schema of a type that `add<T>()` added. For a named type, it is a `$ref`. For a type that was not added in that direction, it throws `std::logic_error`.
+
+See [OpenAPI and schema collections](json-schema.md#openapi-and-schema-collections).
+
+```cpp
+const auto collected = yyjson::schema_collection().add<Account>().add<Account>(yyjson::write_direction).build();
+collected.schema<Account>().write();  // -> {"$ref":"#/components/schemas/Account"}
 ```
 
 ## DOM classes
@@ -1493,6 +1603,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 | a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::property`](#yyjsonproperty), [`yyjson::required("key", ...)`](#yyjsonrequired), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array` and `yyjson::items(false)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)` and `yyjson::property_names(s...)`, the [read policies](#read-policies), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) and [`yyjson::dependent_required`](#yyjsondependent_required), and with `yyjson::as_array` the [settings of the whole array](#constraints-of-elements) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
+| each of the above, and a type with a caster | the [schema metadata](#schema-metadata), [`yyjson::schema`, `yyjson::schema_extend` and `yyjson::schema_name`](#yyjsonschema-yyjsonschema_extend-yyjsonschema_name) |
 
 See [Annotations](conversions.md#annotations).
 
@@ -1521,7 +1632,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::pattern_properties`](#yyjsonpattern_properties), the [constraints](#constraints), the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::pattern_properties`](#yyjsonpattern_properties), the [constraints](#constraints), the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). They can also be the [schema metadata](#schema-metadata), `yyjson::schema` and [`yyjson::schema_extend`](#yyjsonschema-yyjsonschema_extend-yyjsonschema_name). Any other setting is a compile error.
 
 `yyjson::field` is valid only directly in `yyjson::annotate`. It is a compile error in a combinator, in `yyjson::alt`, in `yyjson::items`, in `yyjson::property` and in another `yyjson::field`. `yyjson::field("member", values...)` is the same as the settings of the member in `values` and [`yyjson::property("key", s...)`](#yyjsonproperty) for the other settings `s...`. When `values` has `yyjson::required`, it also gives [`yyjson::required("key")`](#yyjsonrequired). `"key"` is the JSON key of the member.
 
@@ -2141,7 +2252,66 @@ auto doc = yyjson::read(R"({"x":1,"y":2})");
 bool b = yyjson::matches<Point>(doc);  // -> true
 ```
 
+### Schema metadata
+
+The annotation keywords of the [JSON Schema](json-schema.md#metadata) that `yyjson::json_schema` writes. They change no read and no write.
+
+```cpp
+consteval explicit title(std::string_view text);
+consteval explicit description(std::string_view text);
+inline constexpr deprecated_t deprecated{};
+inline constexpr read_only_t read_only{};
+inline constexpr write_only_t write_only{};
+template <typename... Ss>
+consteval examples_t<...> examples(const Ss&... texts);
+```
+
+*   `yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::read_only` and `yyjson::write_only` give `title`, `description`, `"deprecated": true`, `"readOnly": true` and `"writeOnly": true`.
+*   `yyjson::examples` takes the JSON text of each example and gives `examples`. `yyjson::json_schema` throws `std::invalid_argument` when the read rejects an example.
+*   In `yyjson::annotate`, they are settings of a struct, an enumeration, a variant and a type with a caster. They are also settings of [`yyjson::field`](#yyjsonfield) and of an alternative of [`yyjson::alt`](#yyjsonany_of_variant-yyjsonalt). On a field of `yyjson::extra_keys` or `yyjson::pattern_properties`, and in a subschema, they are a compile error.
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Price> = yyjson::annotate(
+    yyjson::title("Price"), yyjson::field("legacy_code", yyjson::deprecated, yyjson::read_only),
+    yyjson::field("currency", yyjson::examples(R"("USD")", R"("EUR")")));
+```
+
+### `yyjson::schema`, `yyjson::schema_extend`, `yyjson::schema_name`
+
+The settings that give a part of the [JSON Schema](json-schema.md#declared-schemas) by hand. They change no read and no write.
+
+```cpp
+struct schema
+{
+    struct directions
+    {
+        std::string_view read = {};
+        std::string_view write = {};
+    };
+    consteval explicit schema(std::string_view text);
+    consteval explicit schema(directions d);
+};
+consteval explicit schema_extend(std::string_view text);
+consteval explicit schema_name(std::string_view text);
+```
+
+*   `yyjson::schema(text)` replaces the generated schema in both directions. `yyjson::schema({.read = ..., .write = ...})` replaces it in each direction that has a text. The text is a JSON object or a boolean.
+*   `yyjson::schema_extend(text)` adds the members of a JSON object to the generated schema. A member replaces the keyword of the same key.
 *   On a field, `yyjson::schema` also replaces the generated `default`. `yyjson::schema_extend` keeps it, unless the text has a `default`.
+*   A field takes `yyjson::schema` or `yyjson::schema_extend`, but not both. They are settings of a type in `yyjson::annotate`, of [`yyjson::field`](#yyjsonfield) and of an alternative of `yyjson::alt`.
+*   `yyjson::schema_name(text)` gives the name of a struct, an enumeration, a variant or a type with a caster in `$defs`. It is a setting of `yyjson::annotate` only. A name that is empty or has a character other than `[A-Za-z0-9._-]` is a compile error.
+*   The library does not check the text against the type. A schema that accepts more than the read is an [exception to the guarantees](json-schema.md#exceptions).
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Rgb> = yyjson::annotate(
+    yyjson::schema_name("Rgb"), yyjson::schema(R"({"type":"string","pattern":"^#[0-9a-f]{6}$"})"));
+template <>
+inline constexpr auto yyjson::annotations<Theme> =
+    yyjson::annotate(yyjson::field("width", yyjson::schema_extend(R"({"maximum":200})")));
+```
+
 ### `yyjson::pattern_matcher<>`, `yyjson::format_checker<>`
 
 The engines that the program gives to `yyjson::pattern` and `yyjson::format_assertion`.
