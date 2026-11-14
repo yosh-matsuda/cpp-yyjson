@@ -54,7 +54,7 @@ A set such as `std::set<int>` or `std::unordered_set<std::string>` converts to a
 
 A `float` is written with the shortest digits that read back as the same `float`: `0.1f` becomes `0.1`, while the `double` of the same value becomes `0.10000000149011612`. With an external yyjson older than 0.11.0, a `float` is written as that `double`.
 
-A conversion that fails throws `yyjson::bad_cast`, which [names the value](validation.md#conversion-errors) that failed. A field of `yyjson::object` or `yyjson::array` that gets another kind of JSON value is an exception: the message does not tell where that value is. A type that cannot be converted at all is a [compile error](validation.md#compile-errors).
+A conversion that fails throws `yyjson::bad_cast`, which [names the value](validation.md#conversion-errors) that failed. A field of `yyjson::object` or `yyjson::array` that gets another kind of JSON value is an exception. `read<T>`, `read_into` and `merge_into` give the path and the position of that value, but no note with the C++ type. `cast<T>` of a document gives no path for it. A type that cannot be converted at all is a [compile error](validation.md#compile-errors).
 
 ### Values that do not convert
 

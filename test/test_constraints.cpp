@@ -65,18 +65,32 @@ inline constexpr auto yyjson::annotations<MixedBounds> = yyjson::annotate(
     yyjson::field("quarter", yyjson::multiple_of(0.25)), yyjson::field("cents", yyjson::multiple_of(0.01)),
     yyjson::field("tenths", yyjson::multiple_of(0.1)));
 
-// bounds of a float field, which compares with them rounded to a float
+// bounds of a float field, which compares the JSON number that the field is read from
 struct FloatBounds
 {
     float tenth = 0;
     float under = 0;
     float big = 16777216.0F;
+    float step = 0;
     bool operator==(const FloatBounds&) const = default;
 };
 template <>
 inline constexpr auto yyjson::annotations<FloatBounds> = yyjson::annotate(
     yyjson::field("tenth", yyjson::maximum(0.1)), yyjson::field("under", yyjson::exclusive_maximum(0.1)),
-    yyjson::field("big", yyjson::minimum(16777217)));
+    yyjson::field("big", yyjson::minimum(16777217)), yyjson::field("step", yyjson::multiple_of(0.1)));
+
+// floats in elements, in values of a map and in an alternative of a variant
+struct FloatElements
+{
+    std::vector<float> v;
+    std::map<std::string, float> m;
+    std::variant<float, std::string> u = 0.0F;
+    bool operator==(const FloatElements&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<FloatElements> = yyjson::annotate(
+    yyjson::field("v", yyjson::items(yyjson::maximum(0.1))),
+    yyjson::field("m", yyjson::additional_properties(yyjson::maximum(0.1))), yyjson::field("u", yyjson::maximum(0.1)));
 
 struct Texts
 {
@@ -3132,14 +3146,30 @@ TEST(Constraints, Numbers)
 
 TEST(Constraints, FloatBounds)
 {
-    expect_accepted<FloatBounds>(R"({"tenth":0.1,"under":0.099999994,"big":16777217})",
-                                 {0.1F, 0.099999994F, 16777216.0F});
-    expect_rejected<FloatBounds>(R"({"tenth":0.10000001})",
-                                 R"(the value of the key "tenth" of FloatBounds is greater than the maximum 0.1)",
-                                 "/tenth");
+    // the JSON number is compared before the read rounds it to a float
+    expect_accepted<FloatBounds>(R"({"tenth":0.1,"under":0.09999999,"big":16777217,"step":0.3})",
+                                 {0.1F, 0.09999999F, 16777216.0F, 0.3F});
+    for (const auto* json : {R"({"tenth":0.10000001})", R"({"tenth":0.10000000149011612})"})
+        expect_rejected<FloatBounds>(
+            json, R"(the value of the key "tenth" of FloatBounds is greater than the maximum 0.1)", "/tenth");
     expect_rejected<FloatBounds>(
         R"({"under":0.1})", R"(the value of the key "under" of FloatBounds is not less than the exclusive maximum 0.1)",
         "/under");
+    expect_rejected<FloatBounds>(R"({"big":16777216})",
+                                 R"(the value of the key "big" of FloatBounds is less than the minimum 16777217)",
+                                 "/big");
+    expect_rejected<FloatBounds>(R"({"step":0.30000001})",
+                                 R"(the value of the key "step" of FloatBounds is not a multiple of 0.1)", "/step");
+
+    expect_accepted<FloatElements>(R"({"v":[0.1,0.05],"m":{"a":0.1},"u":0.1})", {{0.1F, 0.05F}, {{"a", 0.1F}}, 0.1F});
+    expect_rejected<FloatElements>(
+        R"({"v":[0.1,0.10000001]})",
+        R"(an element of the value of the key "v" of FloatElements is greater than the maximum 0.1)", "/v/1");
+    expect_rejected<FloatElements>(
+        R"({"m":{"a":0.1,"b":0.10000001}})",
+        R"(an element of the value of the key "m" of FloatElements is greater than the maximum 0.1)", "/m/b");
+    expect_rejected<FloatElements>(
+        R"({"u":0.10000001})", R"(the value of the key "u" of FloatElements is greater than the maximum 0.1)", "/u");
 }
 
 TEST(Constraints, NaN)
@@ -6528,6 +6558,17 @@ TEST(Constraints, OneOfBounds)
     static_assert(one_of_overlapping<Steps, 0, 1> && !one_of_contained<Steps>);
     expect_accepted<Steps>("4", Steps(std::in_place_index<0>, 4), false);
     expect_rejected<Steps>("6", read_by_two<Steps>(0, 1), "");
+    // a float compares a JSON integer exactly, also from 2^53, where a double rounds it
+    using BigFloat = yyjson::one_of_variant<yyjson::alt<float, yyjson::exclusive_minimum(9007199254740992)>,
+                                            yyjson::alt<std::uint64_t, yyjson::maximum(9007199254740993U)>>;
+    static_assert(one_of_overlapping<BigFloat, 0, 1>);
+    expect_rejected<BigFloat>("9007199254740993", read_by_two<BigFloat>(0, 1), "");
+    using FloatOrBig =
+        yyjson::one_of_variant<yyjson::alt<float, yyjson::maximum(9007199254740992)>,
+                               yyjson::alt<std::uint64_t, yyjson::const_(std::uint64_t{9007199254740993U})>>;
+    static_assert(!one_of_contained<FloatOrBig>);
+    expect_alternative<FloatOrBig>("9007199254740993", 1);
+    expect_alternative<FloatOrBig>("9007199254740992", 0);
 
     // an alternative whose values another reads all of is a compile error
     static_assert(one_of_contained<yyjson::one_of_variant<int, double>>);

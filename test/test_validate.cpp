@@ -76,6 +76,54 @@ TEST(Validate, ValueKeywordsOfFields)
                    R"(the value of the key "day" of VdFields does not have the format "date")", "/day");
 }
 
+// a float takes the keywords on numbers as the number of the text that write gives for it
+struct VdFloat
+{
+    float f = 0.1F;
+    std::vector<float> v = {0.1F};
+};
+template <>
+inline constexpr auto yyjson::annotations<VdFloat> =
+    yyjson::annotate(yyjson::field("f", yyjson::maximum(0.1)), yyjson::field("v", yyjson::items(yyjson::maximum(0.1))));
+struct VdFloatBelow
+{
+    float f = 0.1F;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdFloatBelow> =
+    yyjson::annotate(yyjson::field("f", yyjson::maximum(0.099999999)));
+struct VdFloatRow
+{
+    int id = 0;
+    std::vector<float> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdFloatRow> = yyjson::annotate(
+    yyjson::as_array, yyjson::field("rest", yyjson::extra_items, yyjson::items(yyjson::minimum(0.12))));
+
+TEST(Validate, FloatNumberKeywords)
+{
+    expect_valid(VdFloat{});
+    expect_invalid(with<VdFloat>([](auto& t) { t.v = {0.1F, std::nextafter(0.1F, 1.0F)}; }),
+                   R"(an element of the value of the key "v" of VdFloat is greater than the maximum 0.1)", "/v/1");
+    expect_valid(VdFloatBelow{std::nextafter(0.1F, 0.0F)});
+    expect_invalid(VdFloatBelow{},
+                   R"(the value of the key "f" of VdFloatBelow is greater than the maximum 0.099999999)", "/f");
+#if YYJSON_VERSION_HEX >= 0x000C00
+    // the extra items take the numbers as the flags write them
+    const auto fixed = static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(1));
+    expect_valid(VdFloatRow{0, {0.5F, 0.14F}});
+    EXPECT_EQ(std::string(validation_error([&] {
+                              (void)yyjson::write(VdFloatRow{0, {0.5F, 0.14F}}, fixed, yyjson::with_validation);
+                          }).what()),
+              "an element of the value of VdFloatRow is less than the minimum 0.12 at /2");
+    EXPECT_EQ(std::string(validation_error([&] {
+                              (void)yyjson::write(std::vector{VdFloatRow{0, {0.14F}}}, fixed, yyjson::with_validation);
+                          }).what()),
+              "an element of the value of VdFloatRow is less than the minimum 0.12 at /0/1");
+#endif
+}
+
 // the values in containers, in tuples and in other structs, with the path to each
 struct VdInner
 {

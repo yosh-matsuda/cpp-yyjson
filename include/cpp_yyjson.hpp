@@ -7385,6 +7385,43 @@ namespace yyjson
         inline constexpr bool null_takes_default =
             null_missing_field<declared_field_type<S, R>> && presence_of<S, R>.from.has_value();
 
+        // A floating-point type with a smaller range than `double`, such as `float`.
+        template <typename T>
+        concept narrower_than_double =
+            std::floating_point<T> && (std::numeric_limits<T>::max() < std::numeric_limits<double>::max());
+        // The number format in the upper half of the tag of a yyjson value that holds a `T`: a `float` is written
+        // with the shortest digits that read back as the same `float`, not those of the `double` of its value.
+        template <std::floating_point T>
+        inline constexpr std::uint64_t real_format = 0;
+#if YYJSON_VERSION_HEX >= 0x000B00
+        template <>
+        inline constexpr std::uint64_t real_format<float> = std::uint64_t{YYJSON_WRITE_FP_TO_FLOAT} << 32;
+#endif
+        // The JSON number that `write` gives for `v`: the shortest text of the float, read back as a double.
+        template <narrower_than_double V>
+        double written_real(V v) noexcept
+        {
+            const auto d = static_cast<double>(v);
+            if constexpr (real_format<V> == 0)
+                return d;
+            else
+            {
+                if (!std::isfinite(d)) return d;
+                auto buf = std::array<char, 48>{};
+#if YYJSON_VERSION_HEX >= 0x000C00
+                auto num = yyjson_val{};
+                num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL | real_format<V>;
+                num.uni.f64 = d;
+                *yyjson_write_number(&num, buf.data()) = '\0';
+#else
+                *std::to_chars(buf.data(), buf.data() + buf.size() - 1, v).ptr = '\0';
+#endif
+                auto read = yyjson_val{};
+                if (yyjson_read_number(buf.data(), &read, 0, nullptr, nullptr) == nullptr) return d;
+                return yyjson_get_num(&read);
+            }
+        }
+
         // Compares the integer `v` with the number `b` exactly.
         template <std::integral I>
         constexpr std::partial_ordering compare_integer_real(I v, double b) noexcept
@@ -7403,7 +7440,8 @@ namespace yyjson
             return d == b ? std::partial_ordering::equivalent
                           : (d < b ? std::partial_ordering::less : std::partial_ordering::greater);
         }
-        // Compares the number `v` with the bound `b`, of 64-bit integers exactly.
+        // Compares the number `v` with the bound `b`, of 64-bit integers exactly. A float compares as its exact
+        // value, so a check gives the JSON number that the float is read from or written as instead.
         template <typename V>
         constexpr std::partial_ordering compare_bound(const V& v, const bound_number& b) noexcept
         {
@@ -7421,15 +7459,6 @@ namespace yyjson
                            : std::cmp_greater(x, b.uint) ? std::partial_ordering::greater
                                                          : std::partial_ordering::equivalent;
                 return compare_integer_real(x, b.real);
-            }
-            else if constexpr (sizeof(V) < sizeof(double))
-            {
-                // A float is compared with the bound rounded to a float, as the JSON number is rounded when it is
-                // read: `yyjson::maximum(0.1)` takes the float read from 0.1.
-                const auto bound = b.kind == kind::sint   ? static_cast<V>(b.sint)
-                                   : b.kind == kind::uint ? static_cast<V>(b.uint)
-                                                          : static_cast<V>(b.real);
-                return v <=> bound;
             }
             else if constexpr (sizeof(V) > sizeof(double))
             {
@@ -7505,12 +7534,11 @@ namespace yyjson
             }
             else if constexpr (decimal.exact)
             {
-                // v·10^k within the rounding error of a float or a double of an integer that n divides
-                using F = std::conditional_t<std::same_as<V, float>, float, double>;
+                // v·10^k within the rounding error of a double of an integer that n divides
                 const auto x = static_cast<double>(v) * decimal.scale;
                 if (!std::isfinite(x)) return false;
                 const auto r = std::nearbyint(x);
-                return std::fabs(x - r) <= 4 * std::numeric_limits<F>::epsilon() * std::fabs(x) &&
+                return std::fabs(x - r) <= 4 * std::numeric_limits<double>::epsilon() * std::fabs(x) &&
                        std::fmod(r, static_cast<double>(decimal.n)) == 0;
             }
             else
@@ -10253,9 +10281,42 @@ namespace yyjson
             constexpr bool checked[] = {true, check_alternative<As>()...};
             return std::ranges::all_of(checked, std::identity{});
         }
+        // The keyword of `Schema` on numbers that the number `v` does not satisfy.
+        template <typename Schema, typename V>
+        constraint_kind number_violation(const V& v)
+        {
+            constexpr const field_constraints& c = Schema::constraints;
+            if constexpr (c.template has<minimum>())
+                if (!std::is_gteq(compare_bound(v, c.minimum))) return constraint_kind::minimum;
+            if constexpr (c.template has<maximum>())
+                if (!std::is_lteq(compare_bound(v, c.maximum))) return constraint_kind::maximum;
+            if constexpr (c.template has<exclusive_minimum>())
+                if (!std::is_gt(compare_bound(v, c.exclusive_minimum))) return constraint_kind::exclusive_minimum;
+            if constexpr (c.template has<exclusive_maximum>())
+                if (!std::is_lt(compare_bound(v, c.exclusive_maximum))) return constraint_kind::exclusive_maximum;
+            if constexpr (c.template has<multiple_of>())
+                if (!multiple_of_bound<Schema>(v)) return constraint_kind::multiple_of;
+            return constraint_kind::none;
+        }
+        // The keyword of `Schema` on numbers that the JSON number `number` does not satisfy.
+        template <typename Schema, typename N>
+        requires std::same_as<N, yyjson_val>
+        constraint_kind json_number_violation(const N& number)
+        {
+            if (yyjson_is_real(&number)) return number_violation<Schema>(yyjson_get_real(&number));
+            if (yyjson_is_uint(&number)) return number_violation<Schema>(yyjson_get_uint(&number));
+            return number_violation<Schema>(yyjson_get_sint(&number));
+        }
+        // Whether the keywords of `Schema` on numbers compare a value of V as the JSON number that it is read from
+        // or written as, which V rounds.
+        template <typename Schema, typename V>
+        inline constexpr bool checks_json_number =
+            narrower_than_double<V> && (Schema::constraints.bits & numeric_constraints) != 0;
+
         // The keyword of `Schema` that the value `v`, which is not null, does not satisfy, other than
-        // `yyjson::satisfies`, and other than `yyjson::const_` and `yyjson::enum_` unless `Listed`.
-        template <typename Schema, bool Listed = true, typename V>
+        // `yyjson::satisfies`, and other than `yyjson::const_` and `yyjson::enum_` unless `Listed`.  A float takes
+        // the keywords on numbers, unless not `Numbers`, as the JSON number that `write` gives.
+        template <typename Schema, bool Listed = true, bool Numbers = true, typename V>
         constraint_kind value_violation(const V& v)
         {
             constexpr const field_constraints& c = Schema::constraints;
@@ -10268,20 +10329,15 @@ namespace yyjson
                     if (!equals_any_listed<Schema, 0, true>(v)) return constraint_kind::const_;
                 if constexpr (c.template has<enum_<0>>() && Listed)
                     if (!equals_any_listed<Schema, constants, false>(v)) return constraint_kind::enum_;
-                if constexpr ((c.bits & numeric_constraints) != 0 && std::is_arithmetic_v<V> && !std::same_as<V, bool>)
+                if constexpr ((c.bits & numeric_constraints) != 0 && std::is_arithmetic_v<V> &&
+                              !std::same_as<V, bool> && Numbers)
                 {
-                    if constexpr (c.template has<minimum>())
-                        if (!std::is_gteq(compare_bound(v, c.minimum))) return constraint_kind::minimum;
-                    if constexpr (c.template has<maximum>())
-                        if (!std::is_lteq(compare_bound(v, c.maximum))) return constraint_kind::maximum;
-                    if constexpr (c.template has<exclusive_minimum>())
-                        if (!std::is_gt(compare_bound(v, c.exclusive_minimum)))
-                            return constraint_kind::exclusive_minimum;
-                    if constexpr (c.template has<exclusive_maximum>())
-                        if (!std::is_lt(compare_bound(v, c.exclusive_maximum)))
-                            return constraint_kind::exclusive_maximum;
-                    if constexpr (c.template has<multiple_of>())
-                        if (!multiple_of_bound<Schema>(v)) return constraint_kind::multiple_of;
+                    constraint_kind kind;
+                    if constexpr (narrower_than_double<V>)
+                        kind = number_violation<Schema>(written_real(v));
+                    else
+                        kind = number_violation<Schema>(v);
+                    if (kind != constraint_kind::none) return kind;
                 }
                 if constexpr ((c.bits & string_constraints & checked_constraints) != 0 && constraint_string<V>)
                 {
@@ -10500,6 +10556,25 @@ namespace yyjson
         template <typename Schema, typename V>
         bool dom_reference_matches(const V& v);
 
+        // The keyword of `Schema` on numbers that the float `v`, read from `input`, does not satisfy.  Defined
+        // after the DOM.
+        template <typename Schema, typename V, typename Input>
+        constraint_kind input_number_violation(const V& v, Input input);
+        // `value_violation<Schema, Listed>(v)`, but a float read from `input` takes the keywords on numbers as the
+        // JSON number that it was read from.
+        template <typename Schema, bool Listed = true, typename V, typename Input>
+        constraint_kind read_value_violation(const V& v, Input input)
+        {
+            if constexpr (checks_json_number<Schema, V> && !std::same_as<Input, no_input>)
+            {
+                if (const auto kind = value_violation<Schema, Listed, false>(v); kind != constraint_kind::none)
+                    return kind;
+                return input_number_violation<Schema>(v, input);
+            }
+            else
+                return value_violation<Schema, Listed>(v);
+        }
+
         // The keyword of `Schema` that the field `field` does not satisfy.  An empty `std::optional` is a missing
         // key, which no keyword checks, but an element that is one is null.
         template <typename Schema, bool Element = false, typename F, typename Input = no_input>
@@ -10531,7 +10606,7 @@ namespace yyjson
                 if (const auto kind = variant_violation<Schema>(*value, input); kind != constraint_kind::none)
                     return kind;
             }
-            else if (const auto kind = value_violation<Schema>(*value); kind != constraint_kind::none)
+            else if (const auto kind = read_value_violation<Schema>(*value, input); kind != constraint_kind::none)
                 return kind;
             if constexpr (struct_object_node<Schema> && !dom_checked<V> && !variant_value<V> && !caster_json)
                 if constexpr (object_struct_value<V>())
@@ -12783,18 +12858,6 @@ namespace yyjson
         // `name_or_integer`.
         template <typename T>
         concept integer_like = enum_by_integer<T> || (std::integral<T> && !std::same_as<T, bool>);
-        // A floating-point type with a smaller range than `double`, such as `float`.
-        template <typename T>
-        concept narrower_than_double =
-            std::floating_point<T> && (std::numeric_limits<T>::max() < std::numeric_limits<double>::max());
-        // The number format in the upper half of the tag of a yyjson value that holds a `T`: a `float` is written
-        // with the shortest digits that read back as the same `float`, not those of the `double` of its value.
-        template <std::floating_point T>
-        inline constexpr std::uint64_t real_format = 0;
-#if YYJSON_VERSION_HEX >= 0x000B00
-        template <>
-        inline constexpr std::uint64_t real_format<float> = std::uint64_t{YYJSON_WRITE_FP_TO_FLOAT} << 32;
-#endif
         template <typename T>
         struct integer_of
         {
@@ -19064,6 +19127,7 @@ namespace yyjson
             using V = constrained_value_t<F>;
             constexpr const schema_node& n = Schema::node;
             if constexpr (checks_caster_json<Schema, F>()) return false;
+            if constexpr (checks_json_number<Schema, V>) return true;
             if constexpr (n.combinators != 0)
                 if (combinators_count_input<Schema, n.combinators, F>()) return true;
             if constexpr (dom_checked<V>)
@@ -19103,14 +19167,14 @@ namespace yyjson
         }
 
         // Whether the keywords can count a part of the JSON value that V does not keep, which `input_record<V>`
-        // then keeps: a set or a map drops repeated elements or keys, and a struct annotated with
-        // `yyjson::as_array` does not tell how many positions the array gave.
+        // then keeps: a set or a map drops repeated elements or keys, a struct annotated with `yyjson::as_array`
+        // does not tell how many positions the array gave, and a float rounds its number.
         template <typename V>
         consteval bool input_sensitive()
         {
             if constexpr (dom_checked<V>)
                 return false;
-            else if constexpr (as_array_struct<V> || object_struct_value<V>())
+            else if constexpr (as_array_struct<V> || object_struct_value<V>() || narrower_than_double<V>)
                 return true;
             else if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
@@ -19726,6 +19790,24 @@ namespace yyjson
             return value_violation<Schema, false>(yyjson_get_sint(&number));
         }
 
+        template <typename Schema, typename V, typename Input>
+        constraint_kind input_number_violation(const V& v, Input input)
+        {
+            if constexpr (json_input<Input>)
+            {
+                const auto& json = *input;
+                if (json.is_real()) return number_violation<Schema>(*json.as_real());
+                if (json.is_uint()) return number_violation<Schema>(*json.as_uint());
+                if (json.is_sint()) return number_violation<Schema>(*json.as_int());
+                if (const auto raw = json.as_raw(); raw.has_value()) return raw_number_violation<Schema>(*raw);
+            }
+            else if constexpr (record_input<Input>)
+            {
+                if (yyjson_is_num(&input->number)) return json_number_violation<Schema>(input->number);
+            }
+            return number_violation<Schema>(written_real(v));
+        }
+
         template <typename Schema, bool Listed, typename V>
         constraint_kind dom_violation(const V& v)
         {
@@ -19982,7 +20064,7 @@ namespace yyjson
                 return dom_violation<Schema, false>(*value);
             else
             {
-                if (const auto kind = value_violation<Schema, false>(*value); kind != constraint_kind::none)
+                if (const auto kind = read_value_violation<Schema, false>(*value, input); kind != constraint_kind::none)
                     return kind;
                 if constexpr ((c.bits & array_constraints) != 0 && as_array_struct<V>)
                     return array_struct_violation<Schema>(*value, input);
@@ -22232,6 +22314,12 @@ namespace yyjson
             E value;
             record_t<E> record;
         };
+        // A float keeps the JSON number that it was read from.
+        template <narrower_than_double V>
+        struct input_record<V>
+        {
+            yyjson_val number{};
+        };
         // A range keeps the number of the elements of the array, and each element as read, in their order.
         template <typename V>
         requires (input_sensitive<V>() && array_written_range<V>)
@@ -23731,8 +23819,8 @@ namespace yyjson
         {
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool integral = std::integral<T>;
-            // other floating-point types round the JSON number or the settings, which the bound does not follow
-            if constexpr (std::floating_point<T> && !std::same_as<T, double>)
+            // a long double compares in its own precision, which the bound does not follow
+            if constexpr (std::floating_point<T> && !std::same_as<T, double> && !narrower_than_double<T>)
                 return all_numbers(false, bound_extent::partial);
             else
             {
@@ -23742,6 +23830,17 @@ namespace yyjson
                     using limits = std::numeric_limits<T>;
                     n.low = std::is_signed_v<T> ? sint_number(limits::min()) : uint_number(limits::min());
                     n.high = std::is_signed_v<T> ? sint_number(limits::max()) : uint_number(limits::max());
+                }
+                else if constexpr (narrower_than_double<T>)
+                {
+                    // the doubles that round to a finite T: those below the midpoint of its maximum and the next
+                    // power of 2, which rounds to infinity
+                    using limits = std::numeric_limits<T>;
+                    auto half_ulp = 1.0;
+                    for (int i = 0; i < limits::max_exponent - limits::digits - 1; ++i) half_ulp *= 2;
+                    const auto edge = static_cast<double>(limits::max()) + half_ulp;
+                    n.low = real_number(-edge);
+                    n.high = real_number(edge);
                 }
                 bool empty = false;
                 const auto bound = [&](const bound_number& b, bool up, bool open) {
@@ -23771,7 +23870,26 @@ namespace yyjson
                 if constexpr (c.has<exclusive_maximum>()) bound(c.exclusive_maximum, false, true);
                 const auto order = compare_bounds(n.low, n.high);
                 if (empty || std::is_gt(order) || (std::is_eq(order) && (n.low_open || n.high_open))) return {};
-                if constexpr ((c.bits & listing_settings) != 0)
+                if constexpr (narrower_than_double<T>)
+                {
+                    // a float compares a JSON integer exactly, so an end where doubles skip integers widens to
+                    // the closed double nearest to it, which holds the doubles of the integers that it takes
+                    const auto widen = [&n](bound_number& end, bool& open) {
+                        constexpr auto beyond = real_number(18446744073709551616.0);
+                        if (double_exact_range(end) || number_less(beyond, end) ||
+                            number_less(end, real_number(-beyond.real)))
+                            return;
+                        end = real_number(bound_to_double(end));
+                        open = false;
+                        n.extent = bound_extent::partial;
+                    };
+                    widen(n.low, n.low_open);
+                    widen(n.high, n.high_open);
+                }
+                // a float compares the listed values as floats
+                if constexpr (narrower_than_double<T> && (c.bits & listing_settings) != 0)
+                    n.extent = bound_extent::partial;
+                else if constexpr ((c.bits & listing_settings) != 0)
                 {
                     // an integer type equals a value of its own, and a double the double nearest to it
                     const auto value_of = [](const json_scalar& s, bound_number& v) {
@@ -34951,6 +35069,8 @@ namespace yyjson
                     records.push_back(C{R(e), std::move(rec)});
                 else if constexpr (std::is_empty_v<decltype(C::record)>)
                     records.push_back(C{R(e), {}});
+                else if constexpr (requires { rec.number; })
+                    records.push_back(C{R(e), {rec.number}});
                 else
                     records.push_back(C{R(e), {std::move(rec.doc), std::move(rec.root)}});
             }
@@ -34978,6 +35098,39 @@ namespace yyjson
                 }
             }
 
+            // Reads the value at `cur_` into the float V as `read_value` does, and keeps in `number` the JSON number.
+            template <typename V>
+            V read_recorded_number(yyjson_val& number)
+            {
+                using dc = yyjson::detail::default_caster<V>;
+                [[maybe_unused]] const char* const start = cur_;
+                switch (*cur_)
+                {
+                    case '{':
+                    case '[':
+                    case '"':
+                    case 't':
+                    case 'f':
+                    case 'n':
+                        return read_value<V>();
+                    default:
+                        break;
+                }
+                number = scan_number();
+                if constexpr (!yyjson::detail::reads_by_default<V>)
+                {
+                    // a caster of the user reads the number again
+                    cur_ = start;
+                    return read_value<V>();
+                }
+                else if (yyjson_is_real(&number))
+                    return dc::from_json_real(yyjson_get_real(&number));
+                else if (yyjson_is_uint(&number))
+                    return dc::from_json_uint(yyjson_get_uint(&number));
+                else
+                    return dc::from_json_sint(yyjson_get_sint(&number));
+            }
+
             // Reads the value at `cur_` into a new F as `read_value` does, and keeps in `rec` what the keywords count
             // of the JSON value that F does not keep: the number of the elements or members, and each of them.
             template <typename F>
@@ -35003,6 +35156,8 @@ namespace yyjson
                 }
                 else if constexpr (d::as_array_struct<V>)
                     return read_array_fields<V>(&rec);
+                else if constexpr (requires { rec.number; })
+                    return read_recorded_number<V>(rec.number);
                 else if constexpr (requires { rec.root; })
                 {
                     const char* const start = cur_;
@@ -39540,6 +39695,30 @@ namespace yyjson
             });
         }
 
+        // Checks the keywords of `extra`, the field K of `s` of `yyjson::extra_items`, that count a part of the JSON
+        // value on the elements after the positions of `json`, the JSON array of `s`, or if none, of a write of `s`.
+        template <typename S, std::size_t K, typename X>
+        CPPYYJSON_NOINLINE void validate_counted_extra_items(const S& s, const X& extra, WriteFlag flag,
+                                                             const reader::const_value_ref* json)
+        {
+            const auto check = [&](const reader::const_value_ref& value) {
+                const auto arr = value.as_array();
+                if (!arr.has_value()) return;
+                using A = std::remove_cvref_t<decltype(*arr)>;
+                if (const auto kind = field_violation<S, K>(extra, input_tail<A>{&*arr, K});
+                    kind != constraint_kind::none) [[unlikely]]
+                    throw_extra_items_violation<S, K>(*arr, value, kind);
+            };
+            if (json != nullptr)
+            {
+                throw_in_document(*json, check);
+                return;
+            }
+            const auto text = validated_text_allowing(s, flag);
+            if (!text.has_value()) return;
+            throw_in_written_json(*text, flag, check);
+        }
+
         // Throws as read with `yyjson::reject_null_as_missing` throws for the field K of S, `field`, if write gives
         // it null for an infinity or a NaN: the policy rejects null for a `std::optional` field.
         template <typename S, std::size_t K, typename F>
@@ -40190,8 +40369,13 @@ namespace yyjson
                         }
                     }
                     if constexpr (constrained_field<S, n>)
-                        if (const auto kind = field_violation<S, n>(extra); kind != constraint_kind::none) [[unlikely]]
+                    {
+                        if constexpr (field_checks_written_json<S, n, std::remove_cvref_t<decltype(extra)>>)
+                            validate_counted_extra_items<S, n>(s, extra, flag, json_of(written...));
+                        else if (const auto kind = field_violation<S, n>(extra); kind != constraint_kind::none)
+                            [[unlikely]]
                             throw_validated_extra_items<S, n>(s, kind, flag);
+                    }
                 }();
             if constexpr (checks_written_array<S>())
                 validate_written_array<AsNull>(s, count, flag, json_of(written...));

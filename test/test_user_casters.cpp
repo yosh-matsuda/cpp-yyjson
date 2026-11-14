@@ -1,5 +1,5 @@
 // Casters of the user for the types that the library otherwise reads by itself, in a program of their own:
-// the specialization of `yyjson::caster<std::string>` applies to every use of the type.
+// the specializations of `yyjson::caster<std::string>` and `yyjson::caster<float>` apply to every use of the types.
 #include <gtest/gtest.h>
 #include <cctype>
 #include <map>
@@ -19,6 +19,22 @@ struct yyjson::caster<std::string>
         return result;
     }
 };
+
+template <>
+struct yyjson::caster<float>
+{
+    static float from_json(double d) { return static_cast<float>(d * 2); }
+};
+
+// the floats of a map whose members a keyword counts
+struct CountedFloats
+{
+    std::map<std::string, float> m;
+    bool operator==(const CountedFloats&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedFloats> =
+    yyjson::annotate(yyjson::field("m", yyjson::max_properties(2)));
 
 struct Strings
 {
@@ -46,4 +62,13 @@ TEST(UserCaster, String)
     yyjson::merge_into(json, merged);
     EXPECT_EQ(merged, expected);
     EXPECT_EQ(yyjson::read<std::vector<std::string>>(R"(["a","b"])"), (std::vector<std::string>{"A", "B"}));
+}
+
+TEST(UserCaster, Float)
+{
+    // the reader without a document keeps the members, and the caster still reads each value
+    const auto json = std::string_view(R"({"m":{"a":0.25}})");
+    const auto expected = CountedFloats{{{"a", 0.5F}}};
+    EXPECT_EQ(yyjson::read(json).cast<CountedFloats>(), expected);
+    EXPECT_EQ(yyjson::read<CountedFloats>(json), expected);
 }

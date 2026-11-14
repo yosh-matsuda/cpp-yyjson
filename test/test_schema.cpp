@@ -297,6 +297,18 @@ namespace schema_test
         unsigned u;
         Level l;
     };
+    struct FloatAbove
+    {
+        float f;
+    };
+    struct FloatNotAbove
+    {
+        float f;
+    };
+    struct FloatUnder
+    {
+        float f;
+    };
     struct Texts
     {
         std::string s;
@@ -843,6 +855,15 @@ inline constexpr auto yyjson::annotations<schema_test::Numbers> = yyjson::annota
     yyjson::field("f", yyjson::minimum(0.1), yyjson::exclusive_maximum(1.5)),
     yyjson::field("d", yyjson::exclusive_minimum(-0.5), yyjson::maximum(2.5), yyjson::multiple_of(0.5)),
     yyjson::field("u", yyjson::maximum(7)), yyjson::field("l", yyjson::minimum(0)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::FloatAbove> =
+    yyjson::annotate(yyjson::field("f", yyjson::minimum(0.1)));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::FloatNotAbove> =
+    yyjson::annotate(yyjson::field("f", yyjson::not_(yyjson::minimum(0.1))));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::FloatUnder> =
+    yyjson::annotate(yyjson::field("f", yyjson::exclusive_maximum(0.1)));
 template <>
 inline constexpr auto yyjson::annotations<schema_test::Texts> = yyjson::annotate(
     yyjson::field("s", yyjson::min_length(2), yyjson::max_length(4), yyjson::pattern("^a"), yyjson::pattern("b$")),
@@ -1563,6 +1584,8 @@ namespace
         unchecked = 32,
         // the read rejects an integer written as a real, such as `5.0`, which a schema cannot tell from `5`
         integer_only = 64,
+        // the read takes a number that rounds to a float whose text the keywords on numbers reject
+        rounded = 128,
     };
 
     struct doc
@@ -1670,9 +1693,12 @@ namespace
             EXPECT_EQ(accepted && !valid, more) << "read, but not valid: " << d.json << " under " << +policy;
             // `validate` takes no read policy, and a closed struct can make a `yyjson::one_of_variant` unambiguous
             if constexpr (yyjson::writable<T>)
-                if (accepted && valid && (policies & yyjson::detail::unknown_keys_policy) == 0)
+                if (accepted && valid && (policies & yyjson::detail::unknown_keys_policy) == 0 &&
+                    (d.diff & rounded) == 0)
+                {
                     EXPECT_TRUE(meets_constraints(yyjson::read<T>(d.json, ps...)))
                         << "valid, but the value read fails its check: " << d.json << " under " << +policy;
+                }
         }
     }
 
@@ -2260,11 +2286,24 @@ TEST(Schema, NumberKeywords)
     check<Numbers>({R"({"i":-2,"f":0.1,"d":-0.0,"u":7,"l":0})", R"({"i":8})", R"({"i":-4})", R"({"i":10})",
                     R"({"i":3})", R"({"f":1.4999999})", R"({"f":1.5})", R"({"f":0.09})", R"({"d":-0.5})",
                     R"({"d":2.5})", R"({"d":2.6})", R"({"d":0.25})", R"({"u":8})", R"({"l":-1})", R"({"l":1})"});
-    // a bound of a float is the float nearest to it inside, as the read compares the value as a float
-    EXPECT_NE(schema<Numbers>().find(R"("f":{"type":"number","minimum":0.1,"maximum":1.4999999})"), std::string::npos);
+    // the type range of a float stays beside an exclusive bound
+    EXPECT_NE(schema<Numbers>().find(R"("f":{"type":"number","minimum":0.1,"maximum":3.4028235e38,)"
+                                     R"("exclusiveMaximum":1.5})"),
+              std::string::npos);
     EXPECT_NE(schema<Numbers>().find(R"("i":{"type":"integer","minimum":-2,"maximum":2147483647,"exclusiveMaximum":10,)"
                                      R"("multipleOf":2,"default":0})"),
               std::string::npos);
+}
+
+// the read compares the JSON number with the bound of a float, as the validator does
+TEST(Schema, FloatNumberKeywords)
+{
+    check<FloatAbove>({R"({"f":0.099999999})", R"({"f":0.0999999})", R"({"f":0.1})"});
+    // `0.099999999` reads as the float of `0.1`, which `write` gives as `0.1`
+    check<FloatNotAbove>({{R"({"f":0.099999999})", rounded}, R"({"f":0.0999999})", R"({"f":0.1})"});
+    check<FloatUnder>({R"({"f":0.1})", R"({"f":0.09999999})", {R"({"f":0.099999999})", rounded}});
+    EXPECT_NE(schema<FloatAbove>().find(R"("f":{"type":"number","minimum":0.1,)"), std::string::npos);
+    EXPECT_NE(schema<FloatUnder>().find(R"("maximum":3.4028235e38,"exclusiveMaximum":0.1,)"), std::string::npos);
 }
 
 TEST(Schema, TextKeywords)
@@ -2439,7 +2478,7 @@ TEST(Schema, ArrayStructs)
     check<NullableAt>({"[1]", "[1,null]", "[1,null,null]", "[1,null,null,null]", "[1,2,3,4]", "[null]", "[1,2,3,4,5]"});
     check<SkippedAt>({"[1]", "[1,2]", "[1,2,3]", "[1,null]", "[]"});
     check<LateRequired>({"[]", "[5]", "[5,6]", "[5,6,7]", "[null,6]"});
-    // `contains` checks each element as the float that it reads
+    // `contains` checks each element as the JSON number that the float reads
     check<Above>({"[0.1]", "[0.05]", "[0.05,0.1]", "[0.05,0.07]", "[]"});
     check<RuleHolder>(
         {R"({"rule":[1,"a"]})", R"({"rule":[1]})", R"({"rule":[1,"a",2]})", "{}", R"({"rule":[-1,"a"]})"});

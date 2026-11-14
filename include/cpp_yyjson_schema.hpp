@@ -270,13 +270,6 @@ namespace yyjson
             b.uint = n;
             tighten(out, key, b, lower);
         }
-        inline yyjson::detail::bound_number real_bound(double d)
-        {
-            auto b = yyjson::detail::bound_number();
-            b.kind = yyjson::detail::bound_number::kind_t::real;
-            b.real = d;
-            return b;
-        }
 
         // The metadata of the schema of a field, a type or an alternative of a union, which views the settings.
         // `read` reads an example as the read of the value does, and gives the text that `write` gives for it.
@@ -2844,46 +2837,16 @@ namespace yyjson
             }
         }
 
-        // The bound `b` of a float F as the checker compares it, rounded to F, and an exclusive one as the adjacent
-        // float inside, both written as their shortest text; none if F cannot hold it.
-        template <typename F>
-        std::optional<double> float_bound(const yyjson::detail::bound_number& b, bool lower, bool exclusive)
-        {
-            using kind = yyjson::detail::bound_number::kind_t;
-            auto f = b.kind == kind::sint   ? static_cast<F>(b.sint)
-                     : b.kind == kind::uint ? static_cast<F>(b.uint)
-                                            : static_cast<F>(b.real);
-            if (!std::isfinite(f)) return std::nullopt;
-            if (exclusive)
-                f = std::nextafter(f, lower ? std::numeric_limits<F>::infinity() : -std::numeric_limits<F>::infinity());
-            if (!std::isfinite(f)) return std::nullopt;
-            return yyjson::read(yyjson::write(f)).template cast<double>();
-        }
-
         template <typename N, typename C>
         void generator::emit_bounds(object_ref out)
         {
-            namespace yd = yyjson::detail;
             constexpr const auto& c = N::constraints;
-            using Num = typename std::conditional_t<yd::enum_integer_only<C>, std::underlying_type<C>,
-                                                    std::type_identity<C>>::type;
-            const auto bound = [&](std::string_view key, const yd::bound_number& b, bool lower, bool exclusive) {
-                if constexpr (std::floating_point<Num> && yd::narrower_than_double<Num>)
-                {
-                    if (const auto f = float_bound<Num>(b, lower, exclusive); f.has_value())
-                    {
-                        tighten(out, lower ? "minimum" : "maximum", real_bound(*f), lower);
-                        return;
-                    }
-                }
-                tighten(out, key, b, lower);
-            };
-            if constexpr (c.template has<yyjson::minimum>()) bound("minimum", c.minimum, true, false);
+            if constexpr (c.template has<yyjson::minimum>()) tighten(out, "minimum", c.minimum, true);
             if constexpr (c.template has<yyjson::exclusive_minimum>())
-                bound("exclusiveMinimum", c.exclusive_minimum, true, true);
-            if constexpr (c.template has<yyjson::maximum>()) bound("maximum", c.maximum, false, false);
+                tighten(out, "exclusiveMinimum", c.exclusive_minimum, true);
+            if constexpr (c.template has<yyjson::maximum>()) tighten(out, "maximum", c.maximum, false);
             if constexpr (c.template has<yyjson::exclusive_maximum>())
-                bound("exclusiveMaximum", c.exclusive_maximum, false, true);
+                tighten(out, "exclusiveMaximum", c.exclusive_maximum, false);
             if constexpr (c.template has<yyjson::multiple_of>())
                 emplace_bound(place(out, "multipleOf"), "multipleOf", c.multiple_of);
         }
