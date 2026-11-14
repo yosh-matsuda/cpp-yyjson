@@ -154,6 +154,71 @@ TEST(Reader, NullToStrings)
 
 namespace
 {
+    struct FromString
+    {
+        std::string s;
+        FromString() = default;
+        FromString(int) {}
+        FromString(std::string str) : s(std::move(str)) {}
+    };
+    struct FromStringOrNullopt
+    {
+        bool empty = false;
+        FromStringOrNullopt() = default;
+        FromStringOrNullopt(std::string) {}
+        FromStringOrNullopt(std::nullopt_t) : empty(true) {}
+    };
+    struct FromPointer
+    {
+        const int* p = &p_default;
+        static constexpr int p_default = 0;
+        FromPointer(const int* q) : p(q) {}
+        FromPointer(std::string) {}
+    };
+    struct FromBoolOrString
+    {
+        FromBoolOrString() = default;
+        FromBoolOrString(bool) {}
+        FromBoolOrString(std::string) {}
+    };
+    struct FromNullOnly
+    {
+        bool null = false;
+        FromNullOnly() = default;
+        template <std::same_as<std::nullptr_t> N>
+        FromNullOnly(N) : null(true)
+        {
+        }
+    };
+    struct WithFromString
+    {
+        FromBoolOrString f;
+    };
+}  // namespace
+
+TEST(Reader, NullToClassesFromStrings)
+{
+    using namespace yyjson;
+
+    // `nullptr` converts to a class through `std::string` only as a C string, which JSON null is not
+    const auto null = read("null");
+    EXPECT_THROW((void)null.cast<FromString>(), bad_cast);
+    EXPECT_THROW((void)read<FromString>("null"), bad_cast);
+    EXPECT_EQ(read<FromString>(R"("a")").s, "a");
+    EXPECT_TRUE(null.cast<FromStringOrNullopt>().empty);
+    EXPECT_TRUE(read<FromStringOrNullopt>("null").empty);
+    EXPECT_EQ(null.cast<FromPointer>().p, nullptr);
+    EXPECT_EQ(read<FromPointer>("null").p, nullptr);
+    EXPECT_THROW((void)null.cast<FromBoolOrString>(), bad_cast);
+    EXPECT_THROW((void)read<FromBoolOrString>("null"), bad_cast);
+    EXPECT_THROW((void)read(R"({"f":null})").cast<WithFromString>(), bad_cast);
+    EXPECT_THROW((void)read<WithFromString>(R"({"f":null})"), bad_cast);
+    EXPECT_TRUE(null.cast<FromNullOnly>().null);
+    EXPECT_TRUE(read<FromNullOnly>("null").null);
+}
+
+namespace
+{
     struct SingleField
     {
         int a = 0;

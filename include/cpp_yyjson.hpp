@@ -8155,12 +8155,29 @@ namespace yyjson
                  ? std::same_as<T, bool> || (std::is_class_v<T> && scalar_constructible<T, bool_probe>)
                  : !std::same_as<T, bool> && !bool_only_class<T> && scalar_constructible<T, Arg>);
 
+        // The probe converts only to pointers, so it rejects a constructor that takes `nullptr` through a class
+        // such as `std::string`.  A constructor template for `std::nullptr_t` alone fails the probe but is kept.
+        struct null_probe
+        {
+            template <typename P>
+            requires std::is_pointer_v<P> || std::is_member_pointer_v<P> || std::is_null_pointer_v<P>
+            operator P() const noexcept;
+        };
+        template <typename T>
+        concept char_pointer_constructible =
+            std::constructible_from<T, const char*> || std::constructible_from<T, const wchar_t*> ||
+            std::constructible_from<T, const char8_t*> || std::constructible_from<T, const char16_t*> ||
+            std::constructible_from<T, const char32_t*>;
+        template <typename T>
+        concept null_pointer_constructible = std::constructible_from<T, std::nullptr_t> &&
+                                             (std::constructible_from<T, null_probe> || !char_pointer_constructible<T>);
+
         // `default_caster<T>::from_json_null` gives a T.  A string of any character type takes `nullptr` as a
         // pointer to characters, which it must not be given.
         template <typename T>
         concept json_null_constructible =
             (!json_aggregate<T>) && (!std::same_as<T, bool>) && (!accepts_any_type<T>) &&
-            ((std::constructible_from<T, std::nullptr_t> && !std::constructible_from<T, std::string_view> &&
+            ((null_pointer_constructible<T> && !std::constructible_from<T, std::string_view> &&
               !is_basic_string<T>::value && !is_basic_string_view<T>::value) ||
              std::constructible_from<T, std::nullopt_t> || std::constructible_from<T, std::monostate>);
 
@@ -8420,8 +8437,7 @@ namespace yyjson
             // reads the null pointer as a C string.
             if constexpr (!json_null_constructible<U>)
                 detail::throw_bad_cast("{} is not constructible from JSON null", detail::type_name<U>());
-            else if constexpr (std::constructible_from<U, std::nullptr_t> &&
-                               !std::constructible_from<U, std::string_view>)
+            else if constexpr (detail::null_pointer_constructible<U> && !std::constructible_from<U, std::string_view>)
             {
                 return U(nullptr);
             }
