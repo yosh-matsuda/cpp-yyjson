@@ -687,6 +687,96 @@ TEST(DirectReader, ElementsInPlace)
               (std::vector<TakesAny>{TakesAny(1), TakesAny(2), TakesAny(3)}));
 }
 
+// The capacity of `BoundedVector`, given as `boost::container::static_vector` gives it, or as
+// `std::inplace_vector` does
+template <std::size_t N, bool Boost>
+struct BoundedCapacity
+{
+    static constexpr std::size_t static_capacity = N;
+    static std::size_t capacity() noexcept { return N; }
+};
+template <std::size_t N>
+struct BoundedCapacity<N, false>
+{
+    static constexpr std::size_t capacity() noexcept { return N; }
+};
+
+// A range that throws, as those two do, when it would grow past N
+template <typename T, std::size_t N, bool Boost>
+class BoundedVector : public BoundedCapacity<N, Boost>
+{
+    std::array<T, N> data_{};
+    std::size_t size_ = 0;
+
+    void grow(std::size_t n) const
+    {
+        if (n <= N) return;
+        if constexpr (Boost)
+            throw std::length_error("full");
+        else
+            throw std::bad_alloc();
+    }
+
+public:
+    using value_type = T;
+
+    T* begin() noexcept { return data_.data(); }
+    T* end() noexcept { return data_.data() + size_; }
+    const T* begin() const noexcept { return data_.data(); }
+    const T* end() const noexcept { return data_.data() + size_; }
+    std::size_t size() const noexcept { return size_; }
+    T& operator[](std::size_t i) noexcept { return data_[i]; }
+    void reserve(std::size_t n) const { grow(n); }
+    void push_back(const T& v)
+    {
+        grow(size_ + 1);
+        data_[size_++] = v;
+    }
+    T& emplace_back()
+    {
+        grow(size_ + 1);
+        return data_[size_++] = T();
+    }
+    T* erase(T* first, T* last) noexcept
+    {
+        size_ = static_cast<std::size_t>(std::move(last, end(), first) - begin());
+        return first;
+    }
+};
+
+template <bool Boost>
+void expect_bounded_reads()
+{
+    using ints = BoundedVector<int, 2, Boost>;
+    const auto exceeds = [](const std::string& error) {
+        return error.starts_with("bad cast: the size of JSON array exceeds the capacity of ");
+    };
+    EXPECT_TRUE(expect_direct_read<ints>("[]"));
+    EXPECT_TRUE(expect_direct_read<ints>("[1,2]"));
+    EXPECT_TRUE(expect_direct_read<std::vector<ints>>("[[1],[2,3]]"));
+    EXPECT_TRUE(expect_read_into(ints(), "[1,2]"));
+
+    // the direct read fails before the range throws, and the cast of the document gives the `bad_cast`
+    EXPECT_FALSE(expect_direct_read<ints>("[1,2,3]"));
+    EXPECT_FALSE(expect_direct_read<std::vector<ints>>("[[1],[2,3,4]]"));
+    EXPECT_TRUE(exceeds(read_or_error([] { return yyjson::read<ints>("[1,2,3]"); })));
+    EXPECT_TRUE(exceeds(read_or_error([] { return yyjson::read<std::vector<ints>>("[[1],[2,3,4]]"); })));
+    auto full = ints();
+    full.push_back(1);
+    full.push_back(2);
+    EXPECT_FALSE(expect_read_into(full, "[3,4,5]"));
+    EXPECT_TRUE(exceeds(read_or_error([&] {
+        yyjson::read_into("[3,4,5]", full);
+        return full;
+    })));
+}
+
+TEST(DirectReader, BoundedRanges)
+{
+    expect_bounded_reads<true>();
+    expect_bounded_reads<false>();
+}
+
 #endif
 
 // NOLINTEND

@@ -2880,6 +2880,21 @@ namespace yyjson
         concept back_insertable =
             std::ranges::range<T> && requires(T& t, std::ranges::range_value_t<T> v) { t.push_back(v); };
 
+        // A back insertable range that cannot grow past a capacity known at compile time, such as
+        // `boost::container::static_vector` and `std::inplace_vector`.  Neither throws `bad_cast` when it is full,
+        // so that the size of the JSON array is checked first, and neither may reserve more than its capacity.
+        template <typename T>
+        concept bounded_range =
+            back_insertable<T> && (requires { std::integral_constant<std::size_t, T::static_capacity>{}; } ||
+                                   requires { std::integral_constant<std::size_t, T::capacity()>{}; });
+        template <bounded_range T>
+        inline constexpr std::size_t bounded_capacity = [] {
+            if constexpr (requires { std::integral_constant<std::size_t, T::static_capacity>{}; })
+                return std::size_t{T::static_capacity};
+            else
+                return std::size_t{T::capacity()};
+        }();
+
         template <typename... Args>
         concept copy_string_args =
             ((sizeof...(Args) == 1 && (std::same_as<Args, copy_string_t> && ...)) || sizeof...(Args) == 0);
@@ -8329,6 +8344,11 @@ namespace yyjson
         requires array_castable_range<T, Json>
         static dependent_t<T, Json> from_json(const Json& arr)
         {
+            if constexpr (bounded_range<T>)
+            {
+                if (arr.size() > bounded_capacity<T>)
+                    detail::throw_bad_cast("the size of JSON array exceeds the capacity of {}", detail::type_name<T>());
+            }
             auto result = T();
 
             using value_type = std::ranges::range_value_t<T>;
@@ -16631,10 +16651,11 @@ namespace yyjson
             }
 
             template <typename T>
-            static constexpr bool reserves_elements = requires(T& t, std::size_t n) {
-                t.reserve(n);
-                { t.capacity() } -> std::convertible_to<std::size_t>;
-            };
+            static constexpr bool reserves_elements =
+                !yyjson::detail::bounded_range<T> && requires(T& t, std::size_t n) {
+                    t.reserve(n);
+                    { t.capacity() } -> std::convertible_to<std::size_t>;
+                };
 
             // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, or the
             // first of the root array, and reserves room for them, rather than growing the range, which moves every
@@ -16725,6 +16746,11 @@ namespace yyjson
                 {
                     if constexpr (yyjson::detail::back_insertable<T>)
                     {
+                        if constexpr (yyjson::detail::bounded_range<T>)
+                        {
+                            if (std::ranges::size(result) == yyjson::detail::bounded_capacity<T>) [[unlikely]]
+                                fail();
+                        }
                         if constexpr (Root)
                         {
                             if (!estimated && result.size() == result.capacity() && result.size() >= 512) [[unlikely]]
@@ -17270,6 +17296,11 @@ namespace yyjson
                 {
                     for (;;)
                     {
+                        if constexpr (yyjson::detail::bounded_range<T>)
+                        {
+                            if (i == yyjson::detail::bounded_capacity<T>) [[unlikely]]
+                                fail();
+                        }
                         if (i < size)
                             read_value_into(result[i]);
                         else if constexpr (std::is_arithmetic_v<value_type>)
