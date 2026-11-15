@@ -769,6 +769,22 @@ void expect_bounded_reads()
         yyjson::read_into("[3,4,5]", full);
         return full;
     })));
+
+    // a variant passes over the range for an array beyond its capacity
+    EXPECT_TRUE((expect_direct_read<std::vector<std::variant<ints, std::vector<int>>>>("[[1],[1,2,3],[]]")));
+}
+
+TEST(DirectReader, VariantsBySize)
+{
+    // a variant passes over a tuple or a `std::array` of another size
+    using term = std::variant<std::tuple<double, std::uint32_t>, std::tuple<double, std::uint32_t, std::uint32_t>,
+                              std::array<std::string, 3>, std::vector<double>>;
+    EXPECT_TRUE(expect_direct_read<std::vector<term>>(R"([[1.5,0],[1.5,0,3],["a","b","c"],[1.5,0,3,4],[]])"));
+    expect_direct_read<std::vector<term>>(R"([[1.5,"0"],[1.5,0,"3"]])");
+
+    // an array that holds a container is not counted before the alternative is tried
+    using nested = std::variant<std::tuple<std::vector<int>, int>, std::vector<std::vector<int>>>;
+    EXPECT_TRUE(expect_direct_read<std::vector<nested>>("[[[1,2],3],[[1],[2],[3]],[[1],[2]]]"));
 }
 
 TEST(DirectReader, BoundedRanges)

@@ -624,7 +624,7 @@ auto json = yyjson::write(project);
 
 A `std::variant` is read by trying its alternatives, unless a member of the JSON object names the alternative, as in a [tagged variant](#tagged-variants).
 
-A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
+A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. If a JSON array has another number of elements than a tuple or a `std::array`, the variant skips that alternative in the same way. If the array is longer than the [fixed capacity](#conversion-rules) of a range, the variant skips the range too. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
 
 A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
 

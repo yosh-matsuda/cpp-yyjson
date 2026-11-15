@@ -9114,11 +9114,9 @@ namespace yyjson
             }
         };
 
-        // The values nested in a JSON value that `cast<T>` reads as types of their own, which `may_cast<T>` checks
-        // in turn: the value of an optional or a shared pointer that is not null, the source of a translator, the
-        // first element of a range read from an array, and the first value of a map read from an object, with its
-        // key if the keys are enumerations.  The values of a struct, a tuple, a variant and a user-defined caster
-        // are not checked.
+        // The nested values that `may_cast<T>` checks: the value of an optional or a non-null shared pointer, the
+        // source of a translator, the first element of an array, and the first value and the enumeration key of a
+        // map.  It does not check the values of a struct, a tuple, a variant and a user-defined caster.
         template <typename T, bool Elements, bool Values>
         struct nested_cast_types
         {
@@ -9159,6 +9157,28 @@ namespace yyjson
                 else
                     return false;
             }();
+            // the number of the elements of an array that a tuple or a `std::array` takes, or `npos`
+            static constexpr auto npos = std::numeric_limits<std::size_t>::max();
+            static constexpr auto size = [] {
+                if constexpr (std::derived_from<caster<T>, builtin_caster> && tuple_like<T> &&
+                              (std_array<T> || !std::ranges::range<T>))
+                    return std::tuple_size_v<T>;
+                else
+                    return npos;
+            }();
+            // the largest number of the elements of an array that a range of bounded size takes, or `npos`
+            static constexpr auto capacity = [] {
+                if constexpr (elements && bounded_range<T>)
+                    return bounded_capacity<T>;
+                else
+                    return npos;
+            }();
+            static constexpr bool sized = size != npos || capacity != npos;
+            // whether an array of `n` elements has a size that T takes
+            static constexpr bool takes_size(std::size_t n) noexcept
+            {
+                return (size == npos || n == size) && (capacity == npos || n <= capacity);
+            }
             // the types of the elements and of the values, or void
             using element_type = typename nested_cast_types<T, elements, values>::element_type;
             using value_type = typename nested_cast_types<T, elements, values>::value_type;
@@ -9190,7 +9210,7 @@ namespace yyjson
                 return may_reject_nested<from_json_source<T>>();
             else
             {
-                auto result = false;
+                auto result = n::sized;
                 if constexpr (n::elements) result = result || may_reject<typename n::element_type>();
                 if constexpr (n::values) result = result || n::enum_keys || may_reject<typename n::value_type>();
                 return result;
@@ -9220,6 +9240,10 @@ namespace yyjson
                 return may_cast<from_json_source<T>>(json, kind);
             else
             {
+                if constexpr (n::sized)
+                {
+                    if (kind == json_kind_array && !n::takes_size(json.as_array()->size())) return false;
+                }
                 if constexpr (n::elements)
                 {
                     if constexpr (may_reject<typename n::element_type>())
@@ -13436,6 +13460,10 @@ namespace yyjson
             // `as_uint()`.
             const char* view_number_at_ = nullptr;
             yyjson_val view_number_{};
+            // The array whose elements `may_read` counted last, which the next alternative of a variant asks for
+            // again.
+            const char* counted_at_ = nullptr;
+            std::size_t counted_ = 0;
             // The members of the objects that views looked up, as far as they were scanned.  A member whose value
             // a lookup read past is in a document if the value is an array or an object.
             struct view_index
@@ -15481,6 +15509,24 @@ namespace yyjson
                     return may_read<d::from_json_source<T>>();
                 else
                 {
+                    if constexpr (n::sized)
+                    {
+                        if (kind == d::json_kind_array)
+                        {
+                            // the size of an array that holds a container is not checked, for which
+                            // `count_elements` gives 0, as is the empty array
+                            if (cur_ != counted_at_)
+                            {
+                                const char* const open = cur_;
+                                ++cur_;
+                                skip_ws();
+                                counted_ = *cur_ == ']' ? std::size_t{0} : count_elements();
+                                counted_at_ = open;
+                                cur_ = open;
+                            }
+                            if (counted_ != 0 && !n::takes_size(counted_)) return false;
+                        }
+                    }
                     if constexpr (n::elements)
                     {
                         if constexpr (d::may_reject<typename n::element_type>())
