@@ -13412,6 +13412,10 @@ namespace yyjson
             // every view, so that they are kept as long as the reader.
             std::array<std::pair<const char*, const char*>, 8> view_ends_{};
             unsigned view_ends_next_ = 0;
+            // The number that a view read last, which a caster often asks for again, as in `is_uint()` and then
+            // `as_uint()`.
+            const char* view_number_at_ = nullptr;
+            yyjson_val view_number_{};
             // The members of the objects that views looked up, as far as they were scanned.  A member whose value
             // a lookup read past is in a document if the value is an array or an object.
             struct view_index
@@ -15151,8 +15155,29 @@ namespace yyjson
                 return result;
             }
 
-            // The number at `p` as a value of a document.
-            yyjson_val view_number(const char* p)
+            // The number at `p` as a value of a document.  A decimal fraction is read here and inline, which keeps
+            // `as_num()` as fast as `cast<double>()`.
+            CPPYYJSON_ALWAYS_INLINE yyjson_val view_number(const char* p)
+            {
+                if (p == view_number_at_) return view_number_;
+#if defined(CPPYYJSON_READ_DECIMAL)
+                const char* const saved = cur_;
+                cur_ = p;
+                // yyjson types a decimal fraction as a real number
+                if (auto d = 0.0; read_decimal(d))
+                {
+                    auto val = yyjson_val{};
+                    val.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                    val.uni.f64 = d;
+                    view_add_number(p, val);
+                    cur_ = saved;
+                    return val;
+                }
+                cur_ = saved;
+#endif
+                return view_other_number(p);
+            }
+            yyjson_val view_other_number(const char* p)
             {
                 const auto guard = cursor_guard{*this, cur_};
                 cur_ = p;
@@ -15174,7 +15199,15 @@ namespace yyjson
                         val.uni.f64 = v;
                     }
                 });
+                view_add_number(p, val);
                 return val;
+            }
+            // Records the end of the number at `p`, at `cur_`, and keeps its value for the next call at `p`.
+            void view_add_number(const char* p, const yyjson_val& val) noexcept
+            {
+                view_add_end(p, cur_);
+                view_number_at_ = p;
+                view_number_ = val;
             }
 
             // The value at `p` in a document that is kept until the outermost caster that takes a view returns,
