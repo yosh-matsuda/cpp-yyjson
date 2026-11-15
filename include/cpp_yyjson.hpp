@@ -12989,7 +12989,7 @@ namespace yyjson
     {
         // Thrown by the direct reader at text that is not valid JSON and at a value that the type cannot be cast
         // from.  `read<T>` then reads the text into a document and casts it, which gives the result or the
-        // exception that the cast gives, as it does for any other exception.
+        // exception that the cast gives.
         struct direct_read_failure
         {
         };
@@ -13487,6 +13487,21 @@ namespace yyjson
 #endif
                 --last;
                 return true;
+            }
+
+            // Whether the root that `find_root` found is valid JSON, checked as `skip_value` checks it.
+            [[nodiscard]] static bool is_valid_root(const char* first, const char* last, ReadFlag flg) noexcept
+            {
+                try
+                {
+                    auto r = direct_reader(first, last, flg);
+                    r.skip_value();
+                    return r.cur_ == last + 1;
+                }
+                catch (...)
+                {
+                    return false;
+                }
             }
 
             // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
@@ -16243,11 +16258,90 @@ namespace yyjson
                 target = read_value<T>();
             }
 
+            // Counts the members or the elements of the container at `open`, checking it as `skip_value` does.
+            std::size_t count_values(const char* open)
+            {
+                const auto end = *open == '{' ? '}' : ']';
+                cur_ = open + 1;
+                skip_ws();
+                if (*cur_ == end) return 0;
+                for (auto n = std::size_t{1};; ++n)
+                {
+                    if (end == '}')
+                    {
+                        if (*cur_ != '"') fail();
+                        skip_value();
+                        skip_ws();
+                        if (*cur_ != ':') fail();
+                        ++cur_;
+                        skip_ws();
+                    }
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ == end) return n;
+                    if (*cur_ != ',') fail();
+                    ++cur_;
+                    skip_ws();
+                }
+            }
+
+            // Whether reading T calls no caster that may throw an exception of its own.
+            template <typename T>
+            static constexpr bool library_value =
+                (std::is_arithmetic_v<T> || std::same_as<T, std::string> || std::same_as<T, std::nullptr_t>) &&
+                yyjson::detail::reads_by_default<T>;
+
+            // Returns `read()`, which reads the values of the container at `open` into a type of fixed or bounded
+            // size.  The cast of a document checks the number of the values before it casts them, so an exception
+            // that a caster throws is passed on only if `accepts` takes that number.
+            template <typename Accepts, typename Read>
+            decltype(auto) read_counted(const char* open, Accepts accepts, Read read)
+            {
+                try
+                {
+                    return read();
+                }
+                catch (const direct_read_failure&)
+                {
+                    throw;
+                }
+                catch (const direct_read_unsupported&)
+                {
+                    throw;
+                }
+                catch (const yyjson::detail::recursion_limit_error&)
+                {
+                    throw;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
+                catch (const bad_cast&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                    if (!accepts(count_values(open))) fail();
+                    throw;
+                }
+            }
+
             // Reads the value at `cur_` into the tuple T as its caster reads it from a document: the members of an
             // object or the values of an array into the elements in order, as many as T has.
-            template <typename T>
+            template <typename T, bool Counted = false>
             T read_tuple()
             {
+                if constexpr (!Counted && ![]<std::size_t... I>(std::index_sequence<I...>) {
+                                  return (library_value<std::remove_cv_t<std::tuple_element_t<I, T>>> && ...);
+                              }(std::make_index_sequence<std::tuple_size_v<T>>{}))
+                {
+                    if (*cur_ == '{' || *cur_ == '[')
+                        return read_counted(
+                            cur_, [](std::size_t n) { return n == std::tuple_size_v<T>; },
+                            [&] { return read_tuple<T, true>(); });
+                }
                 constexpr auto size = std::tuple_size_v<T>;
                 auto result = T();
                 // reads the element I if `i` is I
@@ -16705,9 +16799,24 @@ namespace yyjson
             // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.  The
             // root array of trivially copyable elements is read with `Root`, which estimates the rest of them once
             // the range is full at 512 or more.
-            template <typename T, bool Root = false>
+            template <typename T, bool Root = false, bool Counted = false>
             void read_array_into(T& result)
             {
+                if constexpr (Counted || library_value<yyjson::detail::array_element_t<T>>)
+                {
+                }
+                else if constexpr (yyjson::detail::fixed_size_range<T>)
+                {
+                    return read_counted(
+                        cur_, [&](std::size_t n) { return n == std::ranges::size(result); },
+                        [&] { read_array_into<T, Root, true>(result); });
+                }
+                else if constexpr (yyjson::detail::bounded_range<T>)
+                {
+                    return read_counted(
+                        cur_, [](std::size_t n) { return n <= yyjson::detail::bounded_capacity<T>; },
+                        [&] { read_array_into<T, Root, true>(result); });
+                }
                 using value_type = yyjson::detail::array_element_t<T>;
                 const char* const open = cur_;
                 ++cur_;
@@ -17283,9 +17392,16 @@ namespace yyjson
             }
 
             // Reads the elements of the array at `cur_` over those of `result`, appending or erasing the rest.
-            template <typename T>
+            template <typename T, bool Counted = false>
             void read_array_over(T& result)
             {
+                if constexpr (!Counted && yyjson::detail::bounded_range<T> &&
+                              !library_value<std::ranges::range_value_t<T>>)
+                {
+                    return read_counted(
+                        cur_, [](std::size_t n) { return n <= yyjson::detail::bounded_capacity<T>; },
+                        [&] { read_array_over<T, true>(result); });
+                }
                 using value_type = std::ranges::range_value_t<T>;
                 const char* const open = cur_;
                 ++cur_;
@@ -17325,13 +17441,18 @@ namespace yyjson
             }
 
             // Reads the array at `cur_` into a C array as `assign_c_array` reads it from a document.
-            template <typename F>
+            template <typename F, bool Counted = false>
             void read_c_array(F& field)
             {
                 using element_type = std::remove_extent_t<F>;
                 constexpr auto size = std::extent_v<F>;
                 if (*cur_ != '[') [[unlikely]]
                     fail();
+                if constexpr (!Counted && !library_value<std::remove_cv_t<std::remove_all_extents_t<F>>>)
+                {
+                    return read_counted(
+                        cur_, [](std::size_t n) { return n == size; }, [&] { read_c_array<F, true>(field); });
+                }
                 const char* const open = cur_;
                 ++cur_;
                 skip_ws();
@@ -18222,11 +18343,9 @@ namespace yyjson
         };
     }  // namespace detail
 
-    // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
-    // and the same exception if it fails, but without building a document for the parts of T that the default
-    // casters read.  Those that a `caster` specialization reads are read through a document of their own, and
-    // when T holds them in a range or a map, the whole text is read into one document first.  If reading without
-    // a document fails, the text is read into a document for the exception, unless it is `std::bad_alloc`.
+    // Reads JSON text into T as `yyjson::read(json, read_flag).cast<T>()` does, without a document for the parts
+    // that the default casters read.  If that read fails, a document gives the exception, except for `bad_alloc`
+    // and for an exception other than `bad_cast` that a caster throws in valid text, which are passed on.
     template <typename T>
     requires (!std::is_reference_v<T>) && std::move_constructible<std::remove_cv_t<T>> &&
              castable<reader::const_value_ref, T>
@@ -18251,8 +18370,22 @@ namespace yyjson
                 {
                     throw;
                 }
+                catch (const reader::detail::direct_read_failure&)
+                {
+                }
+                catch (const reader::detail::direct_read_unsupported&)
+                {
+                }
+                catch (const detail::recursion_limit_error&)
+                {
+                }
+                catch (const bad_cast&)
+                {
+                }
                 catch (...)
                 {
+                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
+                    if (reader::detail::direct_reader::is_valid_root(first, last, read_flag)) throw;
                 }
             }
         }
@@ -18287,8 +18420,22 @@ namespace yyjson
                 {
                     throw;
                 }
+                catch (const reader::detail::direct_read_failure&)
+                {
+                }
+                catch (const reader::detail::direct_read_unsupported&)
+                {
+                }
+                catch (const detail::recursion_limit_error&)
+                {
+                }
+                catch (const bad_cast&)
+                {
+                }
                 catch (...)
                 {
+                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
+                    if (reader::detail::direct_reader::is_valid_root(first, last, read_flag)) throw;
                 }
             }
             t = reader::read(json, read_flag).template cast<T>();
@@ -18322,8 +18469,22 @@ namespace yyjson
                 {
                     throw;
                 }
+                catch (const reader::detail::direct_read_failure&)
+                {
+                }
+                catch (const reader::detail::direct_read_unsupported&)
+                {
+                }
+                catch (const detail::recursion_limit_error&)
+                {
+                }
+                catch (const bad_cast&)
+                {
+                }
                 catch (...)
                 {
+                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
+                    if (reader::detail::direct_reader::is_valid_root(first, last, read_flag)) throw;
                 }
             }
         }

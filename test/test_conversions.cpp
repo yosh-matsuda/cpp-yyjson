@@ -944,6 +944,95 @@ TEST(DirectReader, BadAllocIsNotRetried)
     EXPECT_EQ(caster<AllocationFails>::calls, 3);
 }
 
+struct RejectsNegative
+{
+    int v = 0;
+    bool operator==(const RejectsNegative&) const = default;
+};
+
+template <>
+struct yyjson::caster<RejectsNegative>
+{
+    static inline auto calls = 0;
+    static RejectsNegative from_json(int v)
+    {
+        ++calls;
+        if (v == -1) throw std::invalid_argument("negative");
+        if (v == -2) throw yyjson::bad_cast("negative -2");
+        return {v};
+    }
+    static int to_json(const RejectsNegative& x) { return x.v; }
+};
+
+struct RejectsNegativeField
+{
+    std::vector<int> big;
+    RejectsNegative last;
+};
+
+TEST(DirectReader, CasterExceptionIsNotRetried)
+{
+    // an exception that a caster throws in valid text is thrown as it is, instead of reading the text again into a
+    // document, which calls the caster again
+    using yyjson::caster;
+    const auto calls = [](auto&& f) {
+        caster<RejectsNegative>::calls = 0;
+        auto error = std::string();
+        try
+        {
+            error = read_or_error(f);
+        }
+        catch (const std::invalid_argument& e)
+        {
+            error = std::format("invalid argument: {}", e.what());
+        }
+        return std::pair(error, caster<RejectsNegative>::calls);
+    };
+    const auto negative = std::pair(std::string("invalid argument: negative"), 1);
+    EXPECT_EQ(calls([] { return yyjson::read<RejectsNegativeField>(R"({"big":[1,2],"last":-1})"); }), negative);
+    EXPECT_EQ(calls([] {
+                  auto t = RejectsNegativeField();
+                  yyjson::read_into(R"({"big":[1,2],"last":-1})", t);
+                  return t;
+              }),
+              negative);
+    EXPECT_EQ(calls([] {
+                  auto t = RejectsNegativeField();
+                  yyjson::merge_into(R"({"big":[1,2],"last":-1})", t);
+                  return t;
+              }),
+              negative);
+
+    // the cast of a document checks the size of a type of fixed size before its elements, and so does the reader
+    // when a caster throws
+    const auto by_document = [&](auto json, auto type) {
+        return calls([&] { return yyjson::read(json).template cast<typename decltype(type)::type>(); }).first;
+    };
+    using array = std::array<RejectsNegative, 2>;
+    using tuple = std::tuple<RejectsNegative, int>;
+    EXPECT_EQ(calls([] { return yyjson::read<array>("[-1,1,1]"); }).first,
+              by_document("[-1,1,1]", std::type_identity<array>()));
+    EXPECT_EQ(calls([] { return yyjson::read<array>("[[-1],1]"); }).first,
+              by_document("[[-1],1]", std::type_identity<array>()));
+    EXPECT_EQ(calls([] { return yyjson::read<array>("[-1,1]"); }), negative);
+    EXPECT_EQ(calls([] { return yyjson::read<tuple>("[-1,1,1]"); }).first,
+              by_document("[-1,1,1]", std::type_identity<tuple>()));
+    EXPECT_EQ(calls([] { return yyjson::read<tuple>("[-1,1]"); }), negative);
+    EXPECT_EQ(calls([] { return yyjson::read<std::array<array, 1>>("[[-1,1],[1,1]]"); }).first,
+              by_document("[[-1,1],[1,1]]", std::type_identity<std::array<array, 1>>()));
+
+    // `bad_cast` still reads the text into a document, which gives the message of the cast of the document
+    EXPECT_EQ(calls([] { return yyjson::read<std::vector<RejectsNegative>>("[1,-2,3]"); }),
+              std::pair(std::string("bad cast: negative -2"), 4));
+
+    // invalid text after the exception gives the `read_error` of the document; before yyjson 0.12, `read<T>` reads
+    // the document first and calls no caster
+    const auto expected = read_or_error([] { return yyjson::read(R"({"last":-1,"big":[1,,2]})"); });
+    EXPECT_TRUE(expected.starts_with("read error"));
+    EXPECT_EQ(calls([] { return yyjson::read<RejectsNegativeField>(R"({"last":-1,"big":[1,,2]})"); }),
+              std::pair(expected, YYJSON_VERSION_HEX >= 0x000C00 ? 1 : 0));
+}
+
 TEST(Variant, BadAllocIsNotPassedOn)
 {
     // `std::bad_alloc` from an alternative is thrown as it is, instead of trying the next alternative
