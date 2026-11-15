@@ -756,7 +756,7 @@ void expect_bounded_reads()
     EXPECT_TRUE(expect_direct_read<std::vector<ints>>("[[1],[2,3]]"));
     EXPECT_TRUE(expect_read_into(ints(), "[1,2]"));
 
-    // the direct read fails before the range throws, and the cast of the document gives the `bad_cast`
+    // the direct reader fails before the range throws, and `read<T>` throws the `bad_cast` that the cast gives
     EXPECT_FALSE(expect_direct_read<ints>("[1,2,3]"));
     EXPECT_FALSE(expect_direct_read<std::vector<ints>>("[[1],[2,3,4]]"));
     EXPECT_TRUE(exceeds(read_or_error([] { return yyjson::read<ints>("[1,2,3]"); })));

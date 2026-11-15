@@ -970,6 +970,13 @@ struct RejectsNegativeField
     RejectsNegative last;
 };
 
+template <typename T>
+struct CallsBefore
+{
+    RejectsNegative first;
+    T then;
+};
+
 TEST(DirectReader, CasterExceptionIsNotRetried)
 {
     // an exception that a caster throws in valid text is thrown as it is, instead of reading the text again into a
@@ -1021,9 +1028,30 @@ TEST(DirectReader, CasterExceptionIsNotRetried)
     EXPECT_EQ(calls([] { return yyjson::read<std::array<array, 1>>("[[-1,1],[1,1]]"); }).first,
               by_document("[[-1,1],[1,1]]", std::type_identity<std::array<array, 1>>()));
 
-    // `bad_cast` still reads the text into a document, which gives the message of the cast of the document
+    // so is a `bad_cast` of a caster, and the `bad_cast` of a value that the type cannot be cast from
     EXPECT_EQ(calls([] { return yyjson::read<std::vector<RejectsNegative>>("[1,-2,3]"); }),
-              std::pair(std::string("bad cast: negative -2"), 4));
+              std::pair(std::string("bad cast: negative -2"), 2));
+    const auto once = [&]<typename T>(std::string_view json, std::type_identity<T>) {
+        const auto text = std::format(R"({{"first":1,"then":{}}})", json);
+        const auto expected = calls([&] { return yyjson::read(text).cast<CallsBefore<T>>(); });
+        EXPECT_TRUE(expected.first.starts_with("bad cast")) << expected.first;
+        EXPECT_EQ(calls([&] { return yyjson::read<CallsBefore<T>>(text); }), expected) << text;
+        EXPECT_EQ(calls([&] {
+                      auto t = CallsBefore<T>();
+                      yyjson::read_into(text, t);
+                      return t;
+                  }),
+                  expected)
+            << text;
+    };
+    once("[1,2,3]", std::type_identity<std::tuple<int, int>>());
+    once(R"({"a":1})", std::type_identity<std::tuple<int, int>>());
+    once("[1]", std::type_identity<std::array<int, 2>>());
+    once(R"(["x",1,2])", std::type_identity<std::array<int, 2>>());
+    once("{}", std::type_identity<std::vector<int>>());
+    once("[1]", std::type_identity<std::variant<int, std::string>>());
+    once("1", std::type_identity<int[2]>());
+    once("[1]", std::type_identity<int[2]>());
 
     // invalid text after the exception gives the `read_error` of the document; before yyjson 0.12, `read<T>` reads
     // the document first and calls no caster

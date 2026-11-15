@@ -13012,10 +13012,48 @@ namespace yyjson
     namespace reader::detail
     {
         // Thrown by the direct reader at text that is not valid JSON and at a value that the type cannot be cast
-        // from.  `read<T>` then reads the text into a document and casts it, which gives the result or the
-        // exception that the cast gives.
+        // from.  If the text is valid and `what` names the mismatch, `read<T>` throws its `bad_cast`; otherwise a
+        // document gives the exception.
         struct direct_read_failure
         {
+            enum class mismatch : unsigned char
+            {
+                unknown,
+                kind,
+                value,
+                object_size,
+                array_size,
+                capacity,
+                c_array_kind,
+                c_array_size
+            };
+            mismatch what = mismatch::unknown;
+            std::string_view type = {};
+            char first = 0;  // the first character of the value, for `kind`
+
+            // throws the `bad_cast` that the cast of a document throws for the mismatch
+            [[noreturn]] CPPYYJSON_COLD void throw_bad_cast() const
+            {
+                using yyjson::detail::throw_bad_cast;
+                switch (what)
+                {
+                    case mismatch::kind:
+                        throw_bad_cast("{} is not constructible from JSON {}", type, first == '{' ? "object" : "array");
+                    case mismatch::value:
+                        throw_bad_cast("{} is not constructible from JSON", type);
+                    case mismatch::object_size:
+                        throw_bad_cast("the size of JSON object differs from the size of {}", type);
+                    case mismatch::array_size:
+                        throw_bad_cast("the size of JSON array differs from the size of {}", type);
+                    case mismatch::capacity:
+                        throw_bad_cast("the size of JSON array exceeds the capacity of {}", type);
+                    case mismatch::c_array_kind:
+                        throw_bad_cast("a C array of {} is not constructible from JSON other than array", type);
+                    case mismatch::c_array_size:
+                    default:
+                        throw_bad_cast("the size of JSON array differs from the size of a C array of {}", type);
+                }
+            }
         };
 
         // Thrown by the direct reader at text that it leaves to yyjson, which a document may read: a number
@@ -13810,6 +13848,14 @@ namespace yyjson
 
         private:
             [[noreturn]] CPPYYJSON_COLD static void fail() { throw direct_read_failure{}; }
+            [[noreturn]] CPPYYJSON_COLD static void fail(direct_read_failure::mismatch what, std::string_view type,
+                                                         char first = 0)
+            {
+                throw direct_read_failure{what, type, first};
+            }
+            using mismatch = direct_read_failure::mismatch;
+            template <typename T>
+            static constexpr std::string_view name = yyjson::detail::type_name<std::remove_cv_t<T>>();
             [[noreturn]] CPPYYJSON_COLD static void unsupported() { throw direct_read_unsupported{}; }
 
             CPPYYJSON_ALWAYS_INLINE static bool is_digit(char c) noexcept
@@ -15582,11 +15628,13 @@ namespace yyjson
                         }
                     }
                     if (*cur_ != '{') [[unlikely]]
-                        fail();
+                        yyjson::detail::throw_bad_cast("{} is not constructible from JSON other than an object",
+                                                       name<T>);
                     const char* const start = cur_;
                     const auto index = find_variant_tag<T>(start);
                     if (index == std::variant_npos) [[unlikely]]
-                        fail();
+                        yyjson::detail::throw_variant_tag_missing(
+                            yyjson::detail::variant_tags<std::remove_cv_t<T>>::key, name<T>);
                     read_tagged_alternative<T>(make, index, start);
                 }
                 else
@@ -15627,23 +15675,24 @@ namespace yyjson
             {
                 using tags = Tags;
                 if (*cur_ != '"') [[unlikely]]
-                    fail();
-                const auto i = tags::alternative(read_short_string(buf));
+                    yyjson::detail::throw_variant_tag_not_string(tags::key, name<T>);
+                const auto id = read_short_string(buf);
+                const auto i = tags::alternative(id);
                 if (i == std::variant_npos) [[unlikely]]
-                    fail();
+                    yyjson::detail::throw_variant_tag_unknown(tags::key, id, name<T>);
                 return i;
             }
 
             // The alternative of a variant tagged by `adjacent_tag` whose value has no tag: `std::monostate` for a
             // null, which `is_null` tells.
-            template <typename Tags>
+            template <typename V, typename Tags>
             static std::size_t untagged_adjacent_alternative(bool is_null)
             {
                 if constexpr (Tags::monostate != std::variant_npos)
                 {
                     if (is_null) return Tags::monostate;
                 }
-                fail();
+                yyjson::detail::throw_variant_tag_missing(Tags::key, name<V>);
             }
 
             // The string at `cur_`, from the text itself unless it has escapes.
@@ -15708,10 +15757,42 @@ namespace yyjson
                 {
                     if constexpr (yyjson::detail::holds_adjacent_tag<T, I>)
                     {
-                        if (adjacent.at[I] == nullptr) adjacent.at[I] = cur_;
+                        if (adjacent.at[I] == nullptr)
+                        {
+                            adjacent.at[I] = cur_;
+                            check_tag_of_skipped_fields<T, I>(adjacent);
+                        }
                     }
                     std::forward<Read>(read)(struct_field<I>(t));
                 }
+            }
+
+            // Reads the tag at `cur_` of the fields that came before it, before the field J that holds the tag, as
+            // the cast of a document reads the tag with each field.
+            template <typename T, std::size_t J>
+            void check_tag_of_skipped_fields(adjacent_fields<T>& adjacent)
+            {
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (
+                        [&] {
+                            if constexpr (yyjson::detail::adjacent_field<T, Is>)
+                            {
+                                if constexpr (yyjson::detail::adjacent_tag_field<T, Is> == J)
+                                {
+                                    if (adjacent.docs[Is] != nullptr) [[unlikely]]
+                                    {
+                                        const char* const start = cur_;
+                                        auto buf = std::string();
+                                        static_cast<void>(read_variant_tag<
+                                                          std::remove_cvref_t<yyjson::detail::struct_field_type<T, Is>>,
+                                                          yyjson::detail::struct_field_tags<T, Is>>(buf));
+                                        cur_ = start;
+                                    }
+                                }
+                            }
+                        }(),
+                        ...);
+                }(std::make_index_sequence<struct_field_count<T>>{});
             }
 
             // Reads the value at `cur_` into the field I tagged by `adjacent_tag`, or into a document until the end
@@ -15833,7 +15914,8 @@ namespace yyjson
                     index = find_variant_tag<V, tags>(adjacent.open);
                 cur_ = end;
                 if (index != std::variant_npos && index != struct_field<I>(t).index()) [[unlikely]]
-                    fail();
+                    yyjson::detail::throw_variant_tag_without_value(tags::key, tags::ids[index],
+                                                                    yyjson::detail::struct_field_key<T, I>, name<T>);
             }
 
             // Merges the value at `cur_` into the alternative that the variant `v` tagged by Tags holds, which
@@ -15876,7 +15958,7 @@ namespace yyjson
                     merge_tagged<tags>(struct_field<I>(t), index, value);
                 else
                 {
-                    if (index == std::variant_npos) index = untagged_adjacent_alternative<tags>(value.is_null());
+                    if (index == std::variant_npos) index = untagged_adjacent_alternative<V, tags>(value.is_null());
                     struct_field<I>(t) = yyjson::detail::cast_alternative<V>(index, value);
                 }
                 cur_ = end;
@@ -15940,7 +16022,7 @@ namespace yyjson
                              read_alternative<T, Is>(make, start, (later[Is] & kind) != 0, rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found) fail();
+                if (!found) fail(mismatch::value, name<T>);
             }
 
             // Ranks the keys of the object at `cur_` as `untagged_key_ranking` does, and moves past the object.
@@ -16065,7 +16147,7 @@ namespace yyjson
                              read_alternative<T, Is>(make, start, ranked.others_after(Is), rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found) fail();
+                if (!found) fail(mismatch::value, name<T>);
             }
 
             // Reads the object at `cur_` into the keyed alternative I of the variant T, recording its keys in
@@ -16153,7 +16235,7 @@ namespace yyjson
                 if (!found)
                 {
                     cur_ = start;
-                    fail();
+                    fail(mismatch::value, name<T>);
                 }
             }
 
@@ -16331,25 +16413,15 @@ namespace yyjson
                 }
             }
 
-            // Whether reading T calls no caster that may throw an exception of its own.
-            template <typename T>
-            static constexpr bool library_value =
-                (std::is_arithmetic_v<T> || std::same_as<T, std::string> || std::same_as<T, std::nullptr_t>) &&
-                yyjson::detail::reads_by_default<T>;
-
             // Returns `read()`, which reads the values of the container at `open` into a type of fixed or bounded
-            // size.  The cast of a document checks the number of the values before it casts them, so an exception
-            // that a caster throws is passed on only if `accepts` takes that number.
-            template <typename Accepts, typename Read>
-            decltype(auto) read_counted(const char* open, Accepts accepts, Read read)
+            // size.  The cast of a document checks the number of the values before it casts them, so a failure of
+            // a value is passed on only if `accepts` takes that number, and `mismatch()` is called otherwise.
+            template <typename Accepts, typename Mismatch, typename Read>
+            decltype(auto) read_counted(const char* open, Accepts accepts, Mismatch mismatch, Read read)
             {
                 try
                 {
                     return read();
-                }
-                catch (const direct_read_failure&)
-                {
-                    throw;
                 }
                 catch (const direct_read_unsupported&)
                 {
@@ -16363,15 +16435,17 @@ namespace yyjson
                 {
                     throw;
                 }
-                catch (const bad_cast&)
-                {
-                    throw;
-                }
                 catch (...)
                 {
-                    if (!accepts(count_values(open))) fail();
+                    if (!accepts(count_values(open))) mismatch();
                     throw;
                 }
+            }
+
+            template <typename T>
+            static auto size_mismatch(mismatch what)
+            {
+                return [what] { fail(what, name<T>); };
             }
 
             // Reads the value at `cur_` into the tuple T as its caster reads it from a document: the members of an
@@ -16379,13 +16453,12 @@ namespace yyjson
             template <typename T, bool Counted = false>
             T read_tuple()
             {
-                if constexpr (!Counted && ![]<std::size_t... I>(std::index_sequence<I...>) {
-                                  return (library_value<std::remove_cv_t<std::tuple_element_t<I, T>>> && ...);
-                              }(std::make_index_sequence<std::tuple_size_v<T>>{}))
+                if constexpr (!Counted)
                 {
-                    if (*cur_ == '{' || *cur_ == '[')
+                    if ((*cur_ == '{' && tuple_from_object<T>) || (*cur_ == '[' && tuple_from_array<T>))
                         return read_counted(
                             cur_, [](std::size_t n) { return n == std::tuple_size_v<T>; },
+                            size_mismatch<T>(*cur_ == '{' ? mismatch::object_size : mismatch::array_size),
                             [&] { return read_tuple<T, true>(); });
                 }
                 constexpr auto size = std::tuple_size_v<T>;
@@ -16433,7 +16506,7 @@ namespace yyjson
                     else if constexpr (tuple_from_object<T>)
                         return read_by_document<T>();
                     else
-                        fail();
+                        fail(mismatch::value, name<T>);
                 }
                 if constexpr (tuple_from_array<T>)
                 {
@@ -16473,7 +16546,7 @@ namespace yyjson
                         return result;
                     }
                 }
-                fail();
+                fail(mismatch::value, name<T>);
             }
 
             // Reads the value at `cur_` as `cast<T>` reads it from a document.
@@ -16565,12 +16638,12 @@ namespace yyjson
                             if constexpr (from_json_def_obj_defined<T>)
                                 return read_object<T>();
                             else
-                                fail();
+                                fail(mismatch::kind, name<T>, '{');
                         case '[':
                             if constexpr (from_json_def_arr_defined<T>)
                                 return read_array<T>();
                             else
-                                fail();
+                                fail(mismatch::kind, name<T>, '[');
                         case '"':
                             if constexpr (std::same_as<T, std::string>)
                             {
@@ -16848,20 +16921,20 @@ namespace yyjson
             template <typename T, bool Root = false, bool Counted = false>
             void read_array_into(T& result)
             {
-                if constexpr (Counted || library_value<yyjson::detail::array_element_t<T>>)
+                if constexpr (Counted)
                 {
                 }
                 else if constexpr (yyjson::detail::fixed_size_range<T>)
                 {
                     return read_counted(
                         cur_, [&](std::size_t n) { return n == std::ranges::size(result); },
-                        [&] { read_array_into<T, Root, true>(result); });
+                        size_mismatch<T>(mismatch::array_size), [&] { read_array_into<T, Root, true>(result); });
                 }
                 else if constexpr (yyjson::detail::bounded_range<T>)
                 {
                     return read_counted(
                         cur_, [](std::size_t n) { return n <= yyjson::detail::bounded_capacity<T>; },
-                        [&] { read_array_into<T, Root, true>(result); });
+                        size_mismatch<T>(mismatch::capacity), [&] { read_array_into<T, Root, true>(result); });
                 }
                 using value_type = yyjson::detail::array_element_t<T>;
                 const char* const open = cur_;
@@ -17441,12 +17514,11 @@ namespace yyjson
             template <typename T, bool Counted = false>
             void read_array_over(T& result)
             {
-                if constexpr (!Counted && yyjson::detail::bounded_range<T> &&
-                              !library_value<std::ranges::range_value_t<T>>)
+                if constexpr (!Counted && yyjson::detail::bounded_range<T>)
                 {
                     return read_counted(
                         cur_, [](std::size_t n) { return n <= yyjson::detail::bounded_capacity<T>; },
-                        [&] { read_array_over<T, true>(result); });
+                        size_mismatch<T>(mismatch::capacity), [&] { read_array_over<T, true>(result); });
                 }
                 using value_type = std::ranges::range_value_t<T>;
                 const char* const open = cur_;
@@ -17493,11 +17565,13 @@ namespace yyjson
                 using element_type = std::remove_extent_t<F>;
                 constexpr auto size = std::extent_v<F>;
                 if (*cur_ != '[') [[unlikely]]
-                    fail();
-                if constexpr (!Counted && !library_value<std::remove_cv_t<std::remove_all_extents_t<F>>>)
+                    fail(mismatch::c_array_kind, name<std::remove_all_extents_t<F>>);
+                if constexpr (!Counted)
                 {
                     return read_counted(
-                        cur_, [](std::size_t n) { return n == size; }, [&] { read_c_array<F, true>(field); });
+                        cur_, [](std::size_t n) { return n == size; },
+                        size_mismatch<std::remove_all_extents_t<F>>(mismatch::c_array_size),
+                        [&] { read_c_array<F, true>(field); });
                 }
                 const char* const open = cur_;
                 ++cur_;
@@ -18390,8 +18464,8 @@ namespace yyjson
     }  // namespace detail
 
     // Reads JSON text into T as `yyjson::read(json, read_flag).cast<T>()` does, without a document for the parts
-    // that the default casters read.  If that read fails, a document gives the exception, except for `bad_alloc`
-    // and for an exception other than `bad_cast` that a caster throws in valid text, which are passed on.
+    // that the default casters read.  The exception of a value in valid text is passed on, and a document gives
+    // that of invalid text.
     template <typename T>
     requires (!std::is_reference_v<T>) && std::move_constructible<std::remove_cv_t<T>> &&
              castable<reader::const_value_ref, T>
@@ -18416,8 +18490,11 @@ namespace yyjson
                 {
                     throw;
                 }
-                catch (const reader::detail::direct_read_failure&)
+                catch (const reader::detail::direct_read_failure& e)
                 {
+                    using enum reader::detail::direct_read_failure::mismatch;
+                    if (e.what != unknown && reader::detail::direct_reader::is_valid_root(first, last, read_flag))
+                        e.throw_bad_cast();
                 }
                 catch (const reader::detail::direct_read_unsupported&)
                 {
@@ -18425,12 +18502,10 @@ namespace yyjson
                 catch (const detail::recursion_limit_error&)
                 {
                 }
-                catch (const bad_cast&)
-                {
-                }
                 catch (...)
                 {
-                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
+                    // a `bad_cast` or the exception of a caster, which the cast of a document throws too unless the
+                    // text is invalid
                     if (reader::detail::direct_reader::is_valid_root(first, last, read_flag)) throw;
                 }
             }
@@ -18466,8 +18541,11 @@ namespace yyjson
                 {
                     throw;
                 }
-                catch (const reader::detail::direct_read_failure&)
+                catch (const reader::detail::direct_read_failure& e)
                 {
+                    using enum reader::detail::direct_read_failure::mismatch;
+                    if (e.what != unknown && reader::detail::direct_reader::is_valid_root(first, last, read_flag))
+                        e.throw_bad_cast();
                 }
                 catch (const reader::detail::direct_read_unsupported&)
                 {
@@ -18475,12 +18553,10 @@ namespace yyjson
                 catch (const detail::recursion_limit_error&)
                 {
                 }
-                catch (const bad_cast&)
-                {
-                }
                 catch (...)
                 {
-                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
+                    // a `bad_cast` or the exception of a caster, which the cast of a document throws too unless the
+                    // text is invalid
                     if (reader::detail::direct_reader::is_valid_root(first, last, read_flag)) throw;
                 }
             }
@@ -18515,8 +18591,11 @@ namespace yyjson
                 {
                     throw;
                 }
-                catch (const reader::detail::direct_read_failure&)
+                catch (const reader::detail::direct_read_failure& e)
                 {
+                    using enum reader::detail::direct_read_failure::mismatch;
+                    if (e.what != unknown && reader::detail::direct_reader::is_valid_root(first, last, read_flag))
+                        e.throw_bad_cast();
                 }
                 catch (const reader::detail::direct_read_unsupported&)
                 {
@@ -18524,12 +18603,10 @@ namespace yyjson
                 catch (const detail::recursion_limit_error&)
                 {
                 }
-                catch (const bad_cast&)
-                {
-                }
                 catch (...)
                 {
-                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
+                    // a `bad_cast` or the exception of a caster, which the cast of a document throws too unless the
+                    // text is invalid
                     if (reader::detail::direct_reader::is_valid_root(first, last, read_flag)) throw;
                 }
             }
