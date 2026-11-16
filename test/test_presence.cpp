@@ -431,8 +431,9 @@ namespace presence_rules
     static_assert(type_key_error(field("v", yyjson::rename("x")), required("x")) == none);
     static_assert(type_key_error(field("v", yyjson::rename("x")), required("v")) == unknown_property_key);
     static_assert(type_key_error(field("v", yyjson::skip), property("v")) == unknown_property_key);
-    static_assert(type_key_error(field("v", yyjson::adjacent_tag("k", {"x"})), required("k")) == unknown_property_key);
-    static_assert(type_key_error(field("t", yyjson::extra_keys), required("t")) == unknown_property_key);
+    // the key of an adjacent tag, and any key of the map of `yyjson::extra_keys`, is a key that the struct writes
+    static_assert(type_key_error(field("v", yyjson::adjacent_tag("k", {"x"})), required("k")) == none);
+    static_assert(type_key_error(field("t", yyjson::extra_keys), required("t")) == none);
     static_assert(type_key_error(yyjson::as_array, required("v")) == as_array_object_keyword);
     static_assert(type_key_error(yyjson::as_array, property("v")) == as_array_object_keyword);
 }  // namespace presence_rules

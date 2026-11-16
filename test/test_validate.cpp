@@ -2496,4 +2496,196 @@ TEST(Validate, Plain)
     expect_valid(42);
 }
 
+// the keywords check the JSON that `write` gives at their position, and those of another JSON kind check nothing
+enum class VdKjColor
+{
+    red,
+    green
+};
+struct VdKjRect
+{
+    int w = 0;
+    int h = 0;
+};
+struct VdKjCircle
+{
+    double r = 0;
+};
+using VdKjShape = std::variant<VdKjCircle, VdKjRect>;
+template <>
+inline constexpr auto yyjson::annotations<VdKjShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+// read from a string and written as one
+class VdKjName
+{
+    std::string s_;
+
+public:
+    VdKjName() = default;
+    explicit VdKjName(std::string s) : s_(std::move(s)) {}
+    const std::string& str() const { return s_; }
+};
+template <>
+struct yyjson::caster<VdKjName>
+{
+    static VdKjName from_json(std::string s) { return VdKjName(std::move(s)); }
+    static std::string to_json(const VdKjName& n) { return n.str(); }
+};
+// written as a string, and read as an object by its field
+struct VdKjText
+{
+    std::string s;
+};
+template <>
+struct yyjson::caster<VdKjText>
+{
+    static std::string to_json(const VdKjText& t) { return t.s; }
+};
+struct VdKjValues
+{
+    VdKjRect r;
+    VdKjShape s;
+    std::variant<VdKjColor, std::string> v;
+    VdKjColor c{};
+    std::variant<int, std::string> w = std::string();
+    std::tuple<int, double, std::string> t = {0, 1, ""};
+    std::vector<VdKjName> names;
+    std::map<std::string, VdKjName> map;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdKjValues> =
+    yyjson::annotate(yyjson::field("r", yyjson::additional_properties(yyjson::minimum(0))),
+                     yyjson::field("s", yyjson::max_properties(2)), yyjson::field("v", yyjson::max_length(3)),
+                     yyjson::field("c", yyjson::max_length(3)), yyjson::field("w", yyjson::not_(yyjson::min_length(1))),
+                     yyjson::field("t", yyjson::unique_items, yyjson::items(yyjson::minimum(0))),
+                     yyjson::field("names", yyjson::items(yyjson::max_length(2))),
+                     yyjson::field("map", yyjson::additional_properties(yyjson::max_length(2))));
+struct VdKjText1
+{
+    VdKjText text;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdKjText1> = yyjson::annotate(yyjson::field("text", yyjson::max_length(1)));
+struct VdKjExtra
+{
+    int a = 0;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdKjExtra> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys), yyjson::property("b", yyjson::minimum(0)), yyjson::required("b"));
+struct VdKjEvent
+{
+    int id = 0;
+    std::variant<VdKjRect, int> data;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdKjEvent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"rect", "count"})),
+                     yyjson::property("kind", yyjson::const_("count")));
+
+TEST(Validate, JsonKinds)
+{
+    const auto value = [](std::string_view key, std::string_view what) {
+        return std::format(R"(the value of the key "{}" of VdKjValues {})", key, what);
+    };
+    const auto element = [](std::string_view key, std::string_view what) {
+        return std::format(R"(an element of the value of the key "{}" of VdKjValues {})", key, what);
+    };
+    expect_valid(VdKjValues{});
+    expect_valid(VdKjValues{{1, 2},
+                            VdKjCircle{1},
+                            VdKjColor::red,
+                            VdKjColor::red,
+                            std::string(),
+                            {1, 2.0, "x"},
+                            {VdKjName("ab")},
+                            {{"k", VdKjName("ab")}}});
+    expect_invalid(with<VdKjValues>([](auto& t) { t.r.h = -1; }),
+                   value("r", "has a value that does not satisfy the constraints of yyjson::additional_properties"),
+                   "/r");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.s = VdKjRect{1, 2}; }),
+                   value("s", "has more properties than the maximum 2"), "/s");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.v = VdKjColor::green; }),
+                   value("v", "is longer than the maximum length 3"), "/v");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.c = VdKjColor::green; }),
+                   value("c", "is longer than the maximum length 3"), "/c");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.w = 1; }), value("w", "satisfies the settings of yyjson::not_"),
+                   "/w");
+    expect_invalid(with<VdKjValues>([](auto& t) { std::get<0>(t.t) = -1; }), element("t", "is less than the minimum 0"),
+                   "/t/0");
+    expect_invalid(with<VdKjValues>([](auto& t) { std::get<0>(t.t) = 1; }),
+                   element("t", "is equal to an earlier element"), "/t/1");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.names = {VdKjName("a"), VdKjName("abc")}; }),
+                   element("names", "is longer than the maximum length 2"), "/names/1");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.map = {{"k", VdKjName("abc")}}; }),
+                   element("map", "is longer than the maximum length 2"), "/map/k");
+
+    // the read takes the object of the field, and the check the string that `to_json` returns
+    EXPECT_NO_THROW(yyjson::validate(VdKjText1{{"a"}}));
+    expect_invalid(VdKjText1{{"ab"}}, R"(the value of the key "text" of VdKjText1 is longer than the maximum length 1)",
+                   "/text", read_leg::skipped);
+
+    // the struct writes any key with the map of `yyjson::extra_keys`, and the key of an adjacent tag
+    expect_valid(VdKjExtra{1, {{"b", 0}}});
+    expect_invalid(VdKjExtra{1, {{"b", -1}}}, R"(the value of the key "b" of VdKjExtra is less than the minimum 0)",
+                   "/b");
+    expect_valid(VdKjEvent{1, 5});
+    expect_invalid(VdKjEvent{1, VdKjRect{}},
+                   R"(the value of the key "kind" of VdKjEvent is not equal to the constant "count")", "/kind");
+}
+
+// a cast inside a callback of validate reads its JSON as read does, though write gave that JSON
+struct VdCastLetter
+{
+    std::string s;
+    auto operator<=>(const VdCastLetter&) const = default;
+};
+template <>
+struct yyjson::caster<VdCastLetter>
+{
+    static VdCastLetter from_json(const std::string& s) { return {s}; }
+    static std::string to_json(const VdCastLetter& c) { return c.s; }
+};
+inline bool vd_cast_is_a(const VdCastLetter& c) { return c.s == "a"; }
+struct VdCastLetters
+{
+    std::set<VdCastLetter> v;
+};
+template <>
+inline constexpr auto yyjson::annotations<VdCastLetters> = yyjson::annotate(
+    yyjson::field("v", yyjson::items(yyjson::any_of(yyjson::max_length(1), yyjson::satisfies<vd_cast_is_a>))));
+inline bool vd_casts_letters(const yyjson::reader::const_value_ref& json)
+{
+    try
+    {
+        (void)yyjson::cast<VdCastLetters>(json);
+        return true;
+    }
+    catch (const yyjson::bad_cast&)
+    {
+        return false;
+    }
+}
+struct VdCastHolder
+{
+};
+using VdCastJson = std::map<std::string, std::map<std::string, std::vector<std::string>>>;
+template <>
+struct yyjson::caster<VdCastHolder>
+{
+    static VdCastHolder from_json(const VdCastJson&) { return {}; }
+    static VdCastJson to_json(const VdCastHolder&) { return {{"data", {{"v", {"long", "a"}}}}}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<VdCastHolder> =
+    yyjson::annotate(yyjson::property("data", yyjson::satisfies<vd_casts_letters>));
+
+TEST(Validate, CastInsideCallback)
+{
+    EXPECT_THROW((void)yyjson::read<VdCastHolder>(R"({"data":{"v":["long","a"]}})"), yyjson::bad_cast);
+    expect_invalid(VdCastHolder{},
+                   "VdCastHolder does not have the keys and the values that yyjson::property and required give", "");
+}
+
 // NOLINTEND

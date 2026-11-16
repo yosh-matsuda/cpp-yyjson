@@ -1041,6 +1041,8 @@ namespace yyjson
             void emit_array_struct(object_ref out);
             template <typename S, std::size_t R>
             void emit_map_values(object_ref out);
+            template <typename S>
+            void emit_struct_values(object_ref out);
             template <typename S, std::size_t P>
             void emit_pattern_values(object_ref out, const std::vector<std::string_view>& tags);
             template <typename S>
@@ -1533,7 +1535,29 @@ namespace yyjson
                 for (const auto key : adjacent_keys<S>()) closed_keys_.emplace_back(key, false);
                 emit_node<yd::node_schema<yd::struct_tree<S>, 0>, S, S>(out);
                 closed_keys_.clear();
+                if constexpr (yd::struct_tree<S>::tree.nodes[0].properties != 0) emit_struct_values<S>(out);
             }
+        }
+
+        // `yyjson::additional_properties` on the struct S checks the members that its `yyjson::property` does not
+        // name, the fields too: a conjunct of its own, whose `properties` name only those keys.
+        template <typename S>
+        void generator::emit_struct_values(object_ref out)
+        {
+            namespace yd = yyjson::detail;
+            using N = yd::node_schema<yd::struct_tree<S>, 0>;
+            auto own = conjunct(out);
+            auto named = own.emplace("properties", empty_object);
+            for (std::size_t k = 0; k < yd::struct_field_count<S>; ++k)
+                if (yd::type_property_fields<S>[k])
+                    named.emplace(yd::struct_field_keys<S>[k], empty_object, copy_string);
+            const auto& nodes = N::tree.nodes;
+            for (auto m = N::node.members; m != 0; m = nodes[m].next)
+                if (nodes[m].named && !named.contains(nodes[m].key.view()))
+                    named.emplace(nodes[m].key.view(), empty_object, copy_string);
+            if (named.empty()) own.erase("properties");
+            emit_node<typename N::template at<N::node.properties>, yyjson::value, S>(
+                own.emplace("additionalProperties", empty_object));
         }
 
         // The values of the map of the field R of S, by its index among all the fields, that receives keys of no
@@ -1677,6 +1701,10 @@ namespace yyjson
                 emit_caster_read<T>(out, tags, field);
             casters_.pop_back();
             emit_caster_keywords<T>(out, tags);
+            // the keywords on the type check the JSON that the caster reads or writes; the library checks its own
+            if constexpr (yd::caster_type_keywords<T>)
+                if (writing_ ? yd::caster_names_to_json<T> : yd::caster_names_from_json<T>)
+                    emit_node<yd::caster_type_schema<T>, yyjson::value, T>(conjunct(out));
         }
 
         // The source that the library gives to `from_json`, and `{}` for a JSON value.  A field of a struct reads by
@@ -1731,9 +1759,9 @@ namespace yyjson
         {
             namespace yd = yyjson::detail;
             constexpr bool reads = yd::caster_names_from_json<T> && yd::caster_checks_object<T>;
-            if constexpr (reads)
+            if constexpr (reads || yd::caster_writes_checked_object<T>)
             {
-                if (writing_ && !yd::caster_checks_written_object<T>) return;
+                if (writing_ ? !yd::caster_checks_written_object<T> : !reads) return;
                 constexpr bool closed = yd::struct_closed<T>;
                 constexpr bool names = yd::struct_property_names<T>;
                 constexpr bool counts = yd::struct_property_counts<T>;
@@ -1754,6 +1782,12 @@ namespace yyjson
                             (keys.emplace_back(yd::struct_field_key<T, Ks>), ...);
                         }(std::make_index_sequence<yd::struct_field_count<T>>{});
                         std::ranges::copy(adjacent_keys<T>(), std::back_inserter(keys));
+                    }
+                    if constexpr (yd::caster_type_keywords<T>)
+                    {
+                        const auto& nodes = yd::caster_type_schema<T>::tree.nodes;
+                        for (auto m = nodes[0].members; m != 0; m = nodes[m].next)
+                            if (nodes[m].named) keys.emplace_back(nodes[m].key.view());
                     }
                     if (!keys.empty())
                     {
@@ -3034,7 +3068,8 @@ namespace yyjson
                 place(out, "format").emplace("format", c.assertion_name.view(), copy_string);
             constexpr auto array_bits = yd::constraint_bit<yyjson::min_items> | yd::constraint_bit<yyjson::max_items> |
                                         yd::constraint_bit<yyjson::unique_items_t>;
-            if constexpr ((c.bits & array_bits) != 0 || n.items != 0 || n.prefix_count != 0 || n.contains != 0)
+            if constexpr ((c.bits & array_bits) != 0 || n.items != 0 || n.prefix_count != 0 || n.contains != 0 ||
+                          n.items_denied)
                 emit_array_keywords<N, C, S>(out);
             constexpr auto object_bits =
                 yd::constraint_bit<yyjson::min_properties> | yd::constraint_bit<yyjson::max_properties>;
@@ -3160,7 +3195,7 @@ namespace yyjson
             if constexpr (c.template has<yyjson::max_items>()) tighten(out, "maxItems", c.max_items, false);
             if constexpr (c.template has<yyjson::unique_items_t>())
                 if (!out.contains("uniqueItems")) out.emplace("uniqueItems", true);
-            if constexpr (n.prefix_count != 0 || n.items != 0)
+            if constexpr (n.prefix_count != 0 || n.items != 0 || n.items_denied)
             {
                 constexpr bool tuple = yd::tuple_like<C> && !std::ranges::range<C>;
                 bool done = false;
@@ -3200,9 +3235,14 @@ namespace yyjson
                         if constexpr (n.items != 0)
                             emit_node<typename N::template at<n.items>, typename P::element, S>(
                                 target.emplace("items", empty_object));
+                        else if constexpr (n.items_denied)
+                            target.emplace("items", false);
                     }
-                    else
+                    else if constexpr (n.items != 0)
                         emit_node<typename N::template at<n.items>, typename P::element, S>(sub(out, "items"));
+                    else
+                        (out.contains("items") || out.contains("prefixItems") ? conjunct(out) : out)
+                            .emplace("items", false);
                 }
             }
             if constexpr (n.contains != 0)
@@ -3228,7 +3268,9 @@ namespace yyjson
                 tighten(out, "minProperties", c.min_properties, true);
             if constexpr (c.template has<yyjson::max_properties>())
                 tighten(out, "maxProperties", c.max_properties, false);
-            if constexpr (n.properties != 0)
+            // the root of the conditions of a struct beside the `properties` of its fields, which `emit_struct_values`
+            // gives
+            if constexpr (n.properties != 0 && !std::same_as<N, yd::node_schema<yd::struct_tree<S>, 0>>)
                 emit_node<typename N::template at<n.properties>, typename P::value, S>(
                     sub(out, "additionalProperties"));
             if constexpr (n.keys != 0)
@@ -3268,10 +3310,17 @@ namespace yyjson
             using type = typename position_types<C>::value;
         };
         template <typename C, std::size_t K>
-        requires (yyjson::detail::object_struct_value<C>())
+        requires (yyjson::detail::object_struct_value<C>() && K < yyjson::detail::struct_field_count<C>)
         struct member_type<C, K>
         {
             using type = yyjson::detail::struct_field_type<C, K>;
+        };
+        // a key of no field, of a tag or of the map of `yyjson::extra_keys` or `yyjson::pattern_properties`
+        template <typename C, std::size_t K>
+        requires (yyjson::detail::object_struct_value<C>() && K == yyjson::detail::struct_field_count<C>)
+        struct member_type<C, K>
+        {
+            using type = yyjson::value;
         };
 
         template <typename N, std::size_t M, typename C, typename S>
@@ -3291,7 +3340,14 @@ namespace yyjson
             {
                 // a key of `yyjson::required` alone is not one that `additionalProperties: false` allows
                 auto at = Mn::node.named || !N::node.closed ? holder : conjunct(out);
-                emit_node<Mn, F, S>(sub(sub(at, "properties"), key));
+                auto member = sub(sub(at, "properties"), key);
+                emit_node<Mn, F, S>(member);
+                // the read puts the key in the map of `yyjson::extra_keys`, whose schema `properties` hides
+                if constexpr (yd::object_struct_value<C>())
+                    if constexpr (yd::has_extra_keys<C> && k == yd::struct_field_count<C>)
+                        if (const auto tags = adjacent_keys<C>();
+                            std::ranges::find(tags, key) == tags.end() && !yd::matches_any_pattern<C>(key))
+                            emit_map_values<C, yd::extra_keys_index<C>>(member.empty() ? member : conjunct(member));
             }
             if constexpr (Mn::node.required) add_required(holder, key);
             if constexpr (Mn::node.next != 0) emit_members<N, Mn::node.next, C, S>(holder, out);

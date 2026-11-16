@@ -260,6 +260,21 @@ namespace
 
     inline std::string merge_patched(std::string_view json, std::string_view patch);
 
+    // runs `commit` as `yyjson::merge_into` runs its commit of `json` into `u`: after the checks of the merged JSON,
+    // and before the checks that need the merged C++ value
+    template <typename T, typename F>
+    void checked_commit(std::string_view json, T& u, F&& commit)
+    {
+        if constexpr (yyjson::detail::checks_merged_json<T>)
+        {
+            const auto checked = yyjson::detail::check_merge_result(json, yyjson::ReadFlag::NoFlag, u);
+            commit();
+            if (checked.has_value()) yyjson::detail::check_deferred_merge(u, *checked);
+        }
+        else
+            commit();
+    }
+
     // reading the merge of `patch` into what `t` writes throws
     template <typename T>
     bool rejected_by_rule(const T& t, std::string_view patch)
@@ -283,7 +298,7 @@ namespace
         // what merging through a document gives, which `merge_into` falls back to
         const auto expected = read_or_error([&] {
             auto u = t;
-            yyjson::detail::merge_text(json, u, yyjson::ReadFlag::NoFlag);
+            checked_commit(json, u, [&] { yyjson::detail::merge_text(json, u, yyjson::ReadFlag::NoFlag); });
             return u;
         });
         EXPECT_EQ(merged(t, json), expected) << json;
@@ -297,9 +312,11 @@ namespace
             auto u = t;
             try
             {
-                yyjson::reader::detail::direct_reader(trimmed.data(), trimmed.data() + trimmed.size() - 1,
-                                                      yyjson::ReadFlag::NoFlag)
-                    .merge_root(u);
+                checked_commit(json, u, [&] {
+                    yyjson::reader::detail::direct_reader(trimmed.data(), trimmed.data() + trimmed.size() - 1,
+                                                          yyjson::ReadFlag::NoFlag)
+                        .merge_root(u);
+                });
                 EXPECT_EQ(read_or_error([&] { return u; }), expected) << json;
                 if (merged_directly != nullptr) *merged_directly = true;
             }

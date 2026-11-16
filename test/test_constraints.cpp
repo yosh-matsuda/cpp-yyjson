@@ -18,7 +18,10 @@
 // The keywords of the values of the fields: the bounds of a number, the lengths and the patterns of a string,
 // `yyjson::format_assertion`, `yyjson::const_`, `yyjson::enum_` and `yyjson::satisfies`
 
-// a format that the program checks
+// a format that the program checks, and one that it checks with a validate of its own
+bool r14_valid_text(std::string_view s);
+bool r15_nested_checks(std::string_view s);
+bool r16_nested_reads(std::string_view s);
 template <>
 struct yyjson::format_checker<>
 {
@@ -26,6 +29,9 @@ struct yyjson::format_checker<>
     explicit format_checker(std::string_view name) : name(name) {}
     bool operator()(std::string_view s) const
     {
+        if (name == "valid-text") return r14_valid_text(s);
+        if (name == "nested-checks") return r15_nested_checks(s);
+        if (name == "nested-reads") return r16_nested_reads(s);
         return name == "upper" && std::ranges::all_of(s, [](char c) { return c >= 'A' && c <= 'Z'; });
     }
 };
@@ -977,7 +983,7 @@ namespace constraint_rules
     using yyjson::additional_properties;
     static_assert(table_error(additional_properties(false)) == none);
     static_assert(table_error(additional_properties(false), additional_properties(false)) == closed_twice);
-    static_assert(table_error(additional_properties(minimum(0))) == struct_additional_properties);
+    static_assert(table_error(additional_properties(minimum(0))) == none);
     static_assert(table_error(yyjson::min_properties(1)) == none);
     static_assert(table_error(yyjson::max_properties(1), additional_properties(false)) == none);
     static_assert(table_error(yyjson::property_names(yyjson::min_length(1))) == none);
@@ -1010,8 +1016,7 @@ namespace constraint_rules
     static_assert(table_error(field("w", extra_keys, yyjson::adjacent_tag("t", {"x"}))) == extra_keys_with_setting);
     static_assert(table_error(field("w", extra_keys), additional_properties(false)) == extra_keys_denied);
     static_assert(table_error(additional_properties(false), field("w", extra_keys)) == extra_keys_denied);
-    static_assert(table_error(field("w", extra_keys), additional_properties(minimum(0))) ==
-                  struct_additional_properties);
+    static_assert(table_error(field("w", extra_keys), additional_properties(minimum(0))) == none);
     static_assert(table_error(yyjson::transparent, field("w", extra_keys)) == transparent_object_keyword);
     static_assert(table_error(field("w", extra_keys), yyjson::transparent) == transparent_object_keyword);
     static_assert([] {
@@ -1838,23 +1843,32 @@ inline constexpr auto yyjson::annotations<CasterWrapped> =
     yyjson::annotate(yyjson::transparent, yyjson::field("tags", yyjson::max_items(1)));
 #endif
 
-// the keywords of a field check the JSON value that a caster reads, but not its elements and members, and a
-// subschema of a combinator is a position of the type
+#if YYJSON_VERSION_HEX >= 0x000C00
+// the keywords of a field check the elements and the members of the JSON value that a caster reads too
 struct CasterItems
 {
-    CasterList v;
+    CasterList list;
+    CasterTags tags;
+    CasterKeySet set;
+    CasterBag bag;
+    bool operator==(const CasterItems&) const = default;
 };
 template <>
-inline constexpr auto yyjson::annotations<CasterItems> =
-    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::maximum(1))));
+inline constexpr auto yyjson::annotations<CasterItems> = yyjson::annotate(
+    yyjson::field("list", yyjson::prefix_items(yyjson::minimum(0)), yyjson::items(yyjson::maximum(1)),
+                  yyjson::any_of(yyjson::max_items(1), yyjson::contains(yyjson::const_(1)))),
+    yyjson::field("tags", yyjson::items(yyjson::max_length(1)), yyjson::not_(yyjson::contains(yyjson::const_("x")))),
+    yyjson::field("set", yyjson::property("a", yyjson::maximum(1)), yyjson::required("a"),
+                  yyjson::additional_properties(yyjson::minimum(0))),
+    yyjson::field("bag", yyjson::dependent_required("a", {"b"}),
+                  yyjson::if_then_else(yyjson::if_(yyjson::required("c")), yyjson::then(yyjson::max_properties(1)))));
+#endif
 namespace caster_json_rules
 {
-    using yyjson::detail::caster_json_keywords_fit, yyjson::detail::checks_caster_json, yyjson::detail::field_schema;
+    using yyjson::detail::checks_caster_json, yyjson::detail::field_schema;
     static_assert(checks_caster_json<field_schema<CasterFields, 0>, CasterName>() &&
                   checks_caster_json<field_schema<CasterFields, 6>, CasterList>() &&
                   checks_caster_json<field_schema<CasterFields, 9>, std::optional<CasterName>>());
-    static_assert(caster_json_keywords_fit<field_schema<CasterFields, 6>>() &&
-                  !caster_json_keywords_fit<field_schema<CasterItems, 0>>());
     static_assert(yyjson::detail::misplaced_keywords(yyjson::detail::constraint_bit<yyjson::min_items>,
                                                      yyjson::detail::json_kinds_of<CasterList>()) != 0);
 }  // namespace caster_json_rules
@@ -2486,7 +2500,7 @@ template <>
 inline constexpr auto yyjson::annotations<ManyKeys> = yyjson::annotate(yyjson::one_of(
     yyjson::required("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"),
     yyjson::required("z")));
-// the field of `yyjson::extra_keys` has no key, so that the settings cannot name it
+// the settings name any key with the map of `yyjson::extra_keys`, whose member it is
 struct PresenceExtra
 {
     std::optional<int> a;
@@ -2503,7 +2517,7 @@ struct ConditionExtra
 template <>
 inline constexpr auto yyjson::annotations<ConditionExtra> = yyjson::annotate(
     yyjson::field("s", yyjson::extra_keys), yyjson::not_(yyjson::property("s", yyjson::min_properties(1))));
-// nor a field of `yyjson::pattern_properties`
+// and with a map of `yyjson::pattern_properties`
 struct PresencePattern
 {
     std::optional<int> a;
@@ -2893,8 +2907,8 @@ namespace struct_condition_rules
     using enum yyjson::detail::struct_condition_error;
     static_assert(presence_error<PresenceRenamed> == unknown_key && presence_error<PresenceSkipped> == unknown_key &&
                   presence_error<PresenceKnown> == none);
-    static_assert(presence_error<PresenceExtra> == unknown_key && presence_error<ConditionExtra> == unknown_key);
-    static_assert(presence_error<PresencePattern> == unknown_key && presence_error<ConditionPattern> == unknown_key);
+    static_assert(presence_error<PresenceExtra> == none && presence_error<ConditionExtra> == none);
+    static_assert(presence_error<PresencePattern> == none && presence_error<ConditionPattern> == none);
     static_assert(presence_error<PresenceNestedKnown> == none);
     static_assert(presence_error<ClosedAllOfKeys> == closed_required && presence_error<ClosedAllOfField> == none);
     static_assert(!yyjson::detail::has_struct_conditions<NestedAllOf> &&
@@ -3035,9 +3049,15 @@ namespace
         auto into = T();
         yyjson::read_into(json, into);
         EXPECT_EQ(into, expected) << json;
+        // the merge checks the fields of T() that `json` leaves out too
         auto merged = T();
-        yyjson::merge_into(json, merged);
-        EXPECT_EQ(merged, expected) << json;
+        if (rejected_by_rule(T(), json))
+            EXPECT_THROW(yyjson::merge_into(json, merged), yyjson::bad_cast) << json;
+        else
+        {
+            yyjson::merge_into(json, merged);
+            EXPECT_EQ(merged, expected) << json;
+        }
 #if YYJSON_VERSION_HEX >= 0x000C00
         const auto direct = read_directly<T>(json, yyjson::ReadFlag::NoFlag);
         ASSERT_EQ(direct.has_value(), direct_read) << json;
@@ -3857,11 +3877,15 @@ TEST(Constraints, ElementNullables)
 
 TEST(Constraints, ElementsMerge)
 {
-    // the keywords on the values check the members of the patch, and the counts count the map after the merge
+    // the keywords on the values check the members of the patch, and the members that the map keeps on what they
+    // write; the counts count the map after the merge
     auto t = Elements();
-    t.limits = {{"old", 200}};
-    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})").find(R"("limits":{"a":1,"old":200})") !=
+    t.limits = {{"old", 50}};
+    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})").find(R"("limits":{"a":1,"old":50})") !=
                 std::string::npos);
+    t.limits = {{"old", 200}};
+    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})")
+                    .starts_with(R"(bad cast: an element of the value of the key "limits" of Elements is greater)"));
     const auto limits = [](std::string_view text) {
         return std::format(R"(the value of the key "limits" of Elements {})", text);
     };
@@ -3871,6 +3895,11 @@ TEST(Constraints, ElementsMerge)
         EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
         EXPECT_EQ(e.path(), path) << json;
     };
+    // the merged map keeps "old" before the new key "a", and read reports the first member that it rejects
+    expect_merge_rejected(t, R"({"limits":{"a":101}})",
+                          R"(an element of the value of the key "limits" of Elements is greater than the maximum 100)",
+                          "/limits/old");
+    t.limits = {{"old", 50}};
     expect_merge_rejected(t, R"({"limits":{"a":101}})",
                           R"(an element of the value of the key "limits" of Elements is greater than the maximum 100)",
                           "/limits/a");
@@ -3917,13 +3946,18 @@ TEST(Constraints, InputCounts)
     expect_rejected<InputCounted>(R"({"c":[5,1]})", key("c", "has fewer than 2 items that satisfy"), "/c");
 
     // `merge_into` counts the members of the patch, and replaces a set with the elements that it counts
-    for (const auto* json : {R"({"s":[1,1]})", R"({"m":{"a":1,"a":2}})", R"({"c":[5,5]})"})
+    const auto seed = InputCounted{.s = {1, 2}, .m = {{"x", 0}, {"y", 0}}, .v = {1, 1}, .c = {5, 6}};
+    auto t = seed;
+    t.m = {{"x", 0}};
+    for (const auto& [start, json] :
+         {std::pair{seed, R"({"s":[1,1]})"}, std::pair{t, R"({"m":{"a":1,"a":2}})"}, std::pair{seed, R"({"c":[5,5]})"}})
     {
         auto direct = false;
-        static_cast<void>(expect_merge_into(InputCounted{.m = {{"x", 0}}}, json, &direct));
+        EXPECT_FALSE(expect_merge_into(start, json, &direct).starts_with("bad cast")) << json;
         EXPECT_TRUE(direct || !reads_directly) << json;
     }
-    auto t = InputCounted{.m = {{"x", 0}}};
+    // the fields that the patch leaves out are counted too
+    EXPECT_TRUE(expect_merge_into(t, R"({"s":[1,1]})").ends_with(" at /m"));
     yyjson::merge_into(R"({"m":{"a":1,"a":2}})", t);
     EXPECT_EQ(t.m, (std::map<std::string, int>{{"a", 2}, {"x", 0}}));
     EXPECT_THROW(yyjson::merge_into(R"({"m":{"b":1}})", t), yyjson::bad_cast);
@@ -3944,9 +3978,14 @@ TEST(Constraints, MergeHeldMaps)
     t.held = Limits{{"old", 200}};
     t.boxed = yyjson::indirect<Limits>(Limits{{"old", 200}});
     t.nested = {{"k", {{"old", 200}}}};
-    // a pointer takes the map of the patch, and the other holders keep the members that the patch does not give
+    // a pointer takes the map of the patch, and the other holders keep the members that the patch does not give,
+    // which are checked too
     EXPECT_EQ(expect_merge_into(t, R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{}}})"),
-              R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{"old":200}}})");
+              R"(bad cast: an element of the value of the key "nested" of HeldLimits is greater than the maximum 100)"
+              " at /nested/k/old");
+    EXPECT_EQ(
+        expect_merge_into(t, R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{"old":2}}})"),
+        R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{"old":2}}})");
     const auto expect_merge_rejected = [](std::string_view json, std::string_view message, std::string_view path,
                                           HeldLimits value = HeldLimits()) {
         const auto e = bad_cast_of([&] { yyjson::merge_into(json, value); });
@@ -3969,7 +4008,12 @@ TEST(Constraints, MergeHeldMaps)
     expect_merge_rejected(R"({"nested":{"k":{"a":1,"b":2}}})", element("nested") + "has more properties", "/nested/k");
     expect_merge_rejected(R"({"nested":{"k":{"a":1},"i":{}}})",
                           R"(the value of the key "nested" of HeldLimits has more properties)", "/nested");
-    // the counts count the members that the holders keep
+    // the counts count the members that the holders keep; the kept values satisfy the other keywords, which read
+    // checks first in the merged object
+    t.pointer = std::make_shared<Limits>(Limits{{"old", 1}});
+    t.held = Limits{{"old", 1}};
+    t.boxed = yyjson::indirect<Limits>(Limits{{"old", 1}});
+    t.nested = {{"k", {{"old", 1}}}};
     for (const auto* key : {"held", "boxed"})
         expect_merge_rejected(std::format(R"({{"{}":{{"a":1}}}})", key),
                               std::format(R"(the value of the key "{}" of HeldLimits has more properties)", key),
@@ -4012,13 +4056,17 @@ TEST(Constraints, MergeRepeatedKeys)
 
 TEST(Constraints, MergeKept)
 {
-    // yyjson::property_names and yyjson::min_properties check the keys of the patch without null
+    // yyjson::property_names and yyjson::min_properties check the keys of the merged map, without null
     auto keyed = Keyed();
-    keyed.m = {{"ABC", 1}};
+    keyed.sized = {{"a", 1}};
+    keyed.m = {{"abc", 1}};
     auto direct = false;
-    EXPECT_TRUE(expect_merge_into(keyed, R"({"m":{"ab":1}})", &direct).find(R"("m":{"ABC":1,"ab":1})") !=
+    EXPECT_TRUE(expect_merge_into(keyed, R"({"m":{"ab":1}})", &direct).find(R"("m":{"ab":1,"abc":1})") !=
                 std::string::npos);
     EXPECT_TRUE(direct);
+    keyed.m = {{"ABC", 1}};
+    EXPECT_TRUE(expect_merge_into(keyed, R"({"m":{"ab":1}})").ends_with(" at /m/ABC"));
+    keyed.m = {{"abc", 1}};
     const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"m":{"ab":null,"Ab":1}})", keyed); });
     EXPECT_TRUE(message_of(e).starts_with(R"(a key of the value of the key "m" of Keyed does not match the pattern)"))
         << e.what();
@@ -4612,8 +4660,11 @@ TEST(Constraints, MatchesFunction)
 
 TEST(Constraints, CombinatorsMerge)
 {
-    // merge_into checks the values of the patch, and a null patch resets the field without a check
-    auto merged = Negated{.n = 5, .o = 1};
+    // merge_into checks the values of the patch, and a null patch resets the field without a check; the fields
+    // that the patch leaves out are checked as they are written
+    auto start = Negated();
+    EXPECT_THROW(yyjson::merge_into(R"({"n":9})", start), yyjson::bad_cast);
+    auto merged = Negated{.n = 5, .row = {1, "y"}, .c = {-1}, .o = 1, .nested = {{}}};
     yyjson::merge_into(R"({"n":9,"o":null})", merged);
     EXPECT_EQ(merged.n, 9);
     EXPECT_FALSE(merged.o.has_value());
@@ -5289,10 +5340,10 @@ TEST(Constraints, ClosedConditions)
     yyjson::merge_into(R"({"r":3})", merged);
     EXPECT_EQ(merged.r, 3.0);
     EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"w":1})", merged); }).path(), "/w");
-    // without the key "kind", yyjson::else_ applies, and the error is at the object, as the patch has no key "r"
+    // without the key "kind", yyjson::else_ applies, and rejects the key "r" that the merged object keeps
     auto e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":null})", merged); });
     EXPECT_TRUE(message_of(e).starts_with(closed("ConditionClosed", "r"))) << e.what();
-    EXPECT_EQ(e.path(), "");
+    EXPECT_EQ(e.path(), "/r");
     merged = ConditionClosed{"circle", 1.0, {}};
     e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":"circle","r":1,"w":1})", merged); });
     EXPECT_EQ(e.path(), "/w");
@@ -5434,6 +5485,8 @@ TEST(Constraints, ObjectKeywordsAtPositions)
     EXPECT_EQ(merged.field->a, 2);
     const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"field":{"b":1}})", merged); });
     EXPECT_TRUE(message_of(e).starts_with(value("field") + closed)) << e.what();
+    // a merge that throws leaves the value unspecified
+    merged = Positions{};
     merged.groups = Positioned{1, {}};
     yyjson::merge_into(R"({"groups":{"a":null,"b":1}})", merged);
     EXPECT_EQ(merged.groups->b, 1);
@@ -6811,16 +6864,16 @@ TEST(Constraints, CasterJsonText)
 TEST(Constraints, CasterJsonMerged)
 {
     // a caster replaces the value of its field, so the keywords check the member of the patch
-    auto t = CasterFields();
-    t.list = CasterList({1});
-    t.opt = CasterName("o");
+    const auto t = yyjson::read<CasterFields>(
+        R"({"color":"red","name":"ab","label":"xy","real":1.25,"small":10,"flag":true,"list":[1],"pos":{"y":2,"x":1},"dom":[3],"opt":"o","nul":null})");
     EXPECT_EQ(
         expect_merge_rule(t, R"({"list":[2,3]})"),
-        R"({"color":"","name":"","label":"","real":0.0,"small":0,"flag":false,"list":[2,3],"pos":{"x":0,"y":0},"dom":[],"opt":"o","nul":null})");
+        R"({"color":"red","name":"ab","label":"xy","real":1.25,"small":10,"flag":true,"list":[2,3],"pos":{"x":1,"y":2},"dom":[3],"opt":"o","nul":null})");
     EXPECT_TRUE(expect_merge_rule(t, R"({"list":[2,3,4]})").starts_with("bad cast"));
     EXPECT_TRUE(expect_merge_rule(t, R"({"list":[2,2]})").starts_with("bad cast"));
-    // the fields that the patch leaves out, and a null that gives a field its default, are not checked
+    // the fields that the patch leaves out are checked as they are written, and a null gives a field its default
     EXPECT_FALSE(expect_merge_rule(t, R"({"small":1})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_rule(CasterFields(), R"({"small":1})").ends_with(" at /color"));
     EXPECT_FALSE(expect_merge_rule(t, R"({"opt":null})").starts_with("bad cast"));
     EXPECT_TRUE(expect_merge_rule(t, R"({"opt":"abc"})").starts_with("bad cast"));
     EXPECT_FALSE(expect_merge_rule(CasterPairs{{1, 2}, {}}, R"({"pair":{"x":3,"y":4}})").starts_with("bad cast"));
@@ -6880,7 +6933,8 @@ TEST(Constraints, CasterJsonViews)
     expect_rejected<CasterWrapped>(R"(["a","b"])", "the value of CasterWrapped has more items than the maximum 1", "");
 
     // the in-place form fills a field that the merge resets, so the keywords count the members of the patch
-    const auto t = yyjson::read<CasterViews>(R"({"bag":{"a":1}})");
+    const auto t = yyjson::read<CasterViews>(R"({"tags":["a"],"bag":{"a":1}})");
+    EXPECT_TRUE(expect_merge_into(CasterViews(), R"({"bag":{"b":2}})").ends_with(" at /tags"));
     const auto merged = expect_merge_into(t, R"({"bag":{"b":2}})");
     EXPECT_NE(merged.find(R"("bag":{"b":2})"), std::string::npos) << merged;
     EXPECT_TRUE(expect_merge_into(t, R"({"bag":{"b":2,"c":3}})").starts_with("bad cast"));
@@ -6923,10 +6977,12 @@ TEST(Constraints, CasterJsonNull)
     expect_rejected<CasterNulls>(R"({"opt":["b"]})", value("opt") + R"(is not one of ["a"], null)", "/opt", false);
     expect_rejected<CasterNulls>(R"({"text":[]})", value("text") + "is not equal to the constant null", "/text", false);
     expect_rejected<CasterNulls>(R"({"one":[]})", value("one") + "is not equal to the constant null", "/one", false);
-    // a null member of the patch gives the field its default, which the keywords do not check
+    // a null member of the patch gives the field its default, which the keywords do not check, while the fields
+    // that the patch leaves out are checked as they are written
     const auto t = yyjson::read<CasterNulls>(R"({"opt":["a"],"one":null})");
-    EXPECT_FALSE(expect_merge_into(t, R"({"opt":null})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_into(t, R"({"opt":null})").ends_with(" at /one"));
     EXPECT_FALSE(expect_merge_into(t, R"({"one":null})").starts_with("bad cast"));
+    EXPECT_FALSE(expect_merge_into(t, R"({"opt":null,"one":null})").starts_with("bad cast"));
     EXPECT_TRUE(expect_merge_into(t, R"({"opt":["b"]})").starts_with("bad cast"));
     EXPECT_TRUE(expect_merge_into(t, R"({"text":[]})").starts_with("bad cast"));
 }
@@ -7008,6 +7064,50 @@ TEST(Constraints, CasterJsonKeys)
         EXPECT_FALSE(expect_merge_rule(T{}, R"({"set":{}})").starts_with("bad cast"));
     }
 }
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+TEST(Constraints, CasterJsonElements)
+{
+    // the subschemas of the elements and the members check the JSON value that the caster reads
+    using T = CasterItems;
+    auto bag = CasterBag();
+    bag.set("a", 1);
+    bag.set("b", 2);
+    expect_accepted<T>(R"({"list":[0,1],"tags":["a"],"set":{"a":1,"b":0},"bag":{"a":1,"b":2}})",
+                       {CasterList({0, 1}), CasterTags({"a"}), CasterKeySet({{"a", 1}, {"b", 0}}), bag});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of CasterItems )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of CasterItems )", key);
+    };
+    expect_rejected<T>(R"({"list":[-1]})", element("list") + "is less than the minimum 0", "/list/0");
+    expect_rejected<T>(R"({"list":[0,2]})", element("list") + "is greater than the maximum 1", "/list/1");
+    expect_rejected<T>(R"({"list":[0,0]})", value("list") + "satisfies none of the subschemas of yyjson::any_of",
+                       "/list");
+    expect_rejected<T>(R"({"tags":["ab"]})", element("tags") + "is longer than the maximum length 1", "/tags/0");
+    expect_rejected<T>(R"({"tags":["a","x"]})", value("tags") + "satisfies the settings of yyjson::not_", "/tags");
+    const auto members = value("set") + "does not have the keys and the values that yyjson::property and required give";
+    expect_rejected<T>(R"({"set":{"a":2}})", members, "/set");
+    expect_rejected<T>(R"({"set":{"b":0}})", members, "/set");
+    expect_rejected<T>(R"({"set":{"a":1,"b":-1}})", element("set") + "is less than the minimum 0", "/set/b");
+    expect_rejected<T>(R"({"bag":{"a":1}})",
+                       value("bag") + "does not have all the keys that yyjson::dependent_required requires", "/bag");
+    expect_rejected<T>(R"({"bag":{"c":1,"d":2}})",
+                       value("bag") + "satisfies the settings of yyjson::if_ and not those of yyjson::then", "/bag");
+    // validate checks the JSON that the caster writes
+    auto t = T{CasterList({0, 1}), CasterTags({"a"}), CasterKeySet({{"a", 1}}), {}};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.list = CasterList({0, 2});
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
+    t.list = CasterList({0, 1});
+    t.set = CasterKeySet({{"a", 1}, {"b", -1}});
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
+    t.set = CasterKeySet({{"a", 1}});
+    t.bag.set("a", 1);
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
+}
+#endif
 #endif
 
 #if FIELD_RFL_ANNOTATIONS
@@ -7123,5 +7223,3336 @@ TEST(Constraints, CasterAnnotations)
         "/name");
 }
 #endif
+
+// the keywords check the JSON value at their position, and those of another JSON kind check nothing there
+enum class KjColor
+{
+    red,
+    green
+};
+struct KjRect
+{
+    int w = 0;
+    int h = 0;
+    bool operator==(const KjRect&) const = default;
+};
+struct KjCircle
+{
+    double r = 0;
+    bool operator==(const KjCircle&) const = default;
+};
+using KjShape = std::variant<KjCircle, KjRect>;
+template <>
+inline constexpr auto yyjson::annotations<KjShape> = yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+struct KjObjects
+{
+    KjRect r;
+    KjShape s;
+    bool operator==(const KjObjects&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjObjects> =
+    yyjson::annotate(yyjson::field("r", yyjson::additional_properties(yyjson::minimum(0))),
+                     yyjson::field("s", yyjson::max_properties(2)));
+struct KjScalars
+{
+    std::variant<KjColor, std::string> v;
+    KjColor c{};
+    std::variant<int, std::string> w = std::string();
+    bool operator==(const KjScalars&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjScalars> =
+    yyjson::annotate(yyjson::field("v", yyjson::max_length(3)), yyjson::field("c", yyjson::max_length(3)),
+                     yyjson::field("w", yyjson::not_(yyjson::min_length(1))));
+struct KjArrays
+{
+    std::array<char, 3> a{};
+    std::tuple<int, double, std::string> t = {0, 1, ""};
+    std::set<int> s;
+    bool operator==(const KjArrays&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjArrays> =
+    yyjson::annotate(yyjson::field("a", yyjson::items(yyjson::maximum(100))),
+                     yyjson::field("t", yyjson::unique_items, yyjson::items(yyjson::minimum(0))),
+                     yyjson::field("s", yyjson::unique_items));
+struct KjExtra
+{
+    int a = 0;
+    std::map<std::string, int> rest;
+    bool operator==(const KjExtra&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjExtra> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys), yyjson::property("b", yyjson::minimum(0)), yyjson::required("b"));
+struct KjEvent
+{
+    int id = 0;
+    std::variant<KjRect, int> data;
+    bool operator==(const KjEvent&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjEvent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"rect", "count"})),
+                     yyjson::property("kind", yyjson::const_("count")));
+// written as a string, and read as an object by its field
+struct KjText
+{
+    std::string s;
+    bool operator==(const KjText&) const = default;
+};
+template <>
+struct yyjson::caster<KjText>
+{
+    static std::string to_json(const KjText& t) { return t.s; }
+};
+struct KjCasters
+{
+    std::vector<CasterName> names;
+    std::map<std::string, CasterName> map;
+    KjText text;
+    bool operator==(const KjCasters&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjCasters> =
+    yyjson::annotate(yyjson::field("names", yyjson::items(yyjson::max_length(2))),
+                     yyjson::field("map", yyjson::additional_properties(yyjson::max_length(2))),
+                     yyjson::field("text", yyjson::max_length(1)));
+
+TEST(Constraints, JsonKindObjects)
+{
+    expect_accepted<KjObjects>(R"({"r":{"w":1,"h":2},"s":{"type":"circle","r":1}})", {{1, 2}, KjCircle{1}});
+    // every member of the object of the struct satisfies the subschema, and the tag counts as a member
+    expect_rejected<KjObjects>(
+        R"({"r":{"w":1,"h":-2}})",
+        R"(the value of the key "r" of KjObjects has a value that does not satisfy the constraints of yyjson::additional_properties)",
+        "/r");
+    expect_rejected<KjObjects>(R"({"s":{"type":"rect","w":1,"h":2}})",
+                               R"(the value of the key "s" of KjObjects has more properties than the maximum 2)", "/s");
+}
+
+TEST(Constraints, JsonKindScalars)
+{
+    expect_accepted<KjScalars>(R"({"v":"red","c":"red","w":""})", {KjColor::red, KjColor::red, std::string()});
+    expect_rejected<KjScalars>(R"({"v":"green"})",
+                               R"(the value of the key "v" of KjScalars is longer than the maximum length 3)", "/v");
+    expect_rejected<KjScalars>(R"({"c":"green"})",
+                               R"(the value of the key "c" of KjScalars is longer than the maximum length 3)", "/c");
+    // `yyjson::min_length` holds for a number, so that `yyjson::not_` rejects it
+    expect_rejected<KjScalars>(R"({"w":1})",
+                               R"(the value of the key "w" of KjScalars satisfies the settings of yyjson::not_)", "/w");
+}
+
+TEST(Constraints, JsonKindArrays)
+{
+    expect_accepted<KjArrays>(R"({"a":[1,2,3],"t":[1,2,"x"],"s":[1,2]})", {{1, 2, 3}, {1, 2.0, "x"}, {1, 2}});
+    expect_rejected<KjArrays>(R"({"a":[1,2,101]})",
+                              R"(an element of the value of the key "a" of KjArrays is greater than the maximum 100)",
+                              "/a/2");
+    expect_rejected<KjArrays>(R"({"t":[-1,2,"x"]})",
+                              R"(an element of the value of the key "t" of KjArrays is less than the minimum 0)",
+                              "/t/0");
+    expect_rejected<KjArrays>(R"({"t":[1,1,"x"]})",
+                              R"(an element of the value of the key "t" of KjArrays is equal to an earlier element)",
+                              "/t/1");
+    // the set drops a duplicate, but the keyword checks the JSON value
+    expect_rejected<KjArrays>(R"({"s":[1,1]})",
+                              R"(an element of the value of the key "s" of KjArrays is equal to an earlier element)",
+                              "/s/1");
+}
+
+TEST(Constraints, JsonKindKeys)
+{
+    // the struct writes any key with the map of `yyjson::extra_keys`, and the key of an adjacent tag
+    expect_accepted<KjExtra>(R"({"a":1,"b":5})", {1, {{"b", 5}}});
+    expect_rejected<KjExtra>(R"({"a":1,"b":-5})", R"(the value of the key "b" of KjExtra is less than the minimum 0)",
+                             "/b");
+    expect_rejected<KjExtra>(R"({"a":1})", R"(KjExtra is not constructible from JSON without the key "b")", "");
+    expect_accepted<KjEvent>(R"({"id":1,"data":5,"kind":"count"})", {1, 5});
+    expect_rejected<KjEvent>(R"({"id":1,"data":{"w":1,"h":2},"kind":"rect"})",
+                             R"(the value of the key "kind" of KjEvent is not equal to the constant "count")", "/kind");
+}
+
+TEST(Constraints, JsonKindCasters)
+{
+    using N = CasterName;
+    expect_accepted<KjCasters>(R"({"names":["a","bc"],"map":{"k":"ab"},"text":{"s":"long"}})",
+                               {{N("a"), N("bc")}, {{"k", N("ab")}}, {"long"}});
+    expect_rejected<KjCasters>(
+        R"({"names":["a","bcd"]})",
+        R"(an element of the value of the key "names" of KjCasters is longer than the maximum length 2)", "/names/1");
+    expect_rejected<KjCasters>(
+        R"({"map":{"k":"abc"}})",
+        R"(an element of the value of the key "map" of KjCasters is longer than the maximum length 2)", "/map/k");
+}
+
+// `yyjson::additional_properties` on the type of a struct checks each member that `yyjson::property` does not name
+struct KjTypeRest
+{
+    int a = 0;
+    std::string b = "x";
+    std::map<std::string, int> rest;
+    bool operator==(const KjTypeRest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjTypeRest> =
+    yyjson::annotate(yyjson::field("rest", yyjson::extra_keys), yyjson::property("b", yyjson::min_length(1)),
+                     yyjson::additional_properties(yyjson::minimum(0)));
+// the keywords at the position of an internally tagged variant name its tag
+struct KjTagged
+{
+    KjShape s;
+    bool operator==(const KjTagged&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjTagged> =
+    yyjson::annotate(yyjson::field("s", yyjson::property("type", yyjson::enum_("circle")), yyjson::required("type"),
+                                   yyjson::if_then_else(yyjson::if_(yyjson::property("type", yyjson::const_("circle"))),
+                                                        yyjson::then(yyjson::max_properties(2)))));
+// a value that the extra keys read is written in another form
+enum class KjLevel
+{
+    zero,
+    one
+};
+template <>
+inline constexpr auto yyjson::annotations<KjLevel> = yyjson::annotate(yyjson::enum_format::name_or_integer);
+struct KjLevels
+{
+    int a = 0;
+    std::map<std::string, KjLevel> rest;
+    bool operator==(const KjLevels&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjLevels> =
+    yyjson::annotate(yyjson::field("rest", yyjson::extra_keys), yyjson::property("z", yyjson::maximum(0)));
+struct KjDomPrefix
+{
+    yyjson::value v;
+};
+template <>
+inline constexpr auto yyjson::annotations<KjDomPrefix> =
+    yyjson::annotate(yyjson::field("v", yyjson::prefix_items(yyjson::minimum(0))));
+
+TEST(Constraints, JsonKindTypeRest)
+{
+    expect_accepted<KjTypeRest>(R"({"a":1,"b":"x","z":3})", {1, "x", {{"z", 3}}});
+    const auto rest = [](std::string_view key) {
+        return std::format(
+            R"(the value of the key "{}" of KjTypeRest is less than the minimum 0 in yyjson::additional_properties)",
+            key);
+    };
+    expect_rejected<KjTypeRest>(R"({"a":-1,"b":"x"})", rest("a"), "/a");
+    expect_rejected<KjTypeRest>(R"({"a":1,"b":"x","z":-3})", rest("z"), "/z");
+    expect_rejected<KjTypeRest>(R"({"a":1,"b":""})",
+                                R"(the value of the key "b" of KjTypeRest is shorter than the minimum length 1)", "/b");
+    EXPECT_NO_THROW(yyjson::validate(KjTypeRest{1, "x", {{"q", 2}}}));
+    EXPECT_THROW(yyjson::validate(KjTypeRest{-1, "x", {}}), yyjson::bad_cast);
+    EXPECT_THROW(yyjson::validate(KjTypeRest{1, "x", {{"q", -2}}}), yyjson::bad_cast);
+}
+
+TEST(Constraints, JsonKindTag)
+{
+    expect_accepted<KjTagged>(R"({"s":{"type":"circle","r":1}})", {KjCircle{1}});
+    expect_rejected<KjTagged>(
+        R"({"s":{"type":"rect","w":1}})",
+        R"(the value of the key "s" of KjTagged does not have the keys and the values that yyjson::property and required give)",
+        "/s");
+    // the read checks the input object, which can hold a key that the struct does not write
+    expect_rejected<KjTagged>(
+        R"({"s":{"type":"circle","r":1,"x":0}})",
+        R"(the value of the key "s" of KjTagged satisfies the settings of yyjson::if_ and not those of yyjson::then)",
+        "/s");
+    EXPECT_NO_THROW(yyjson::validate(KjTagged{KjCircle{1}}));
+    EXPECT_THROW(yyjson::validate(KjTagged{KjRect{}}), yyjson::bad_cast);
+    // a merge checks the object as merged, with the tag of the alternative that it holds
+    auto t = KjTagged{KjCircle{1}};
+    yyjson::merge_into(R"({"s":{"r":2}})", t);
+    EXPECT_EQ(t, KjTagged{KjCircle{2}});
+}
+
+TEST(Constraints, JsonKindInputValues)
+{
+    // the read checks the value of the input, and `validate` the value that the struct writes
+    expect_accepted<KjLevels>(R"({"a":0,"z":"one"})", {0, {{"z", KjLevel::one}}});
+    expect_accepted<KjLevels>(R"({"a":0,"z":0})", {0, {{"z", KjLevel::zero}}});
+    expect_rejected<KjLevels>(R"({"a":0,"z":1})",
+                              R"(the value of the key "z" of KjLevels is greater than the maximum 0)", "/z");
+    EXPECT_NO_THROW(yyjson::validate(KjLevels{0, {{"z", KjLevel::one}}}));
+    // a value of the DOM checks its elements by their positions
+    EXPECT_NO_THROW((void)yyjson::read<KjDomPrefix>(R"({"v":[0,-1]})"));
+    const auto e = bad_cast_of([] { (void)yyjson::read<KjDomPrefix>(R"({"v":[-1]})"); });
+    EXPECT_EQ(e.path(), "/v/0");
+}
+
+// a key of `yyjson::property` that the extra keys receive leaves the other extra keys to additional_properties
+struct ScExtra
+{
+    int a = 0;
+    std::map<std::string, int> rest;
+    bool operator==(const ScExtra&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScExtra> =
+    yyjson::annotate(yyjson::field("rest", yyjson::extra_keys), yyjson::property("b", yyjson::minimum(0)),
+                     yyjson::additional_properties(yyjson::minimum(0)));
+// a caster that only writes, and the casters that read a JSON object
+struct ScWritten
+{
+    std::string s;
+};
+template <>
+struct yyjson::caster<ScWritten>
+{
+    static std::string to_json(const ScWritten& c) { return c.s; }
+};
+struct ScWrittenVec
+{
+    std::vector<ScWritten> v;
+    std::map<std::string, ScWritten> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScWrittenVec> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::max_length(2))),
+                     yyjson::field("m", yyjson::additional_properties(yyjson::max_length(2))));
+struct ScCount
+{
+    int n = 0;
+    bool operator==(const ScCount&) const = default;
+};
+template <>
+struct yyjson::caster<ScCount>
+{
+    static ScCount from_json(const std::map<std::string, int>& m) { return {m.contains("n") ? m.at("n") : 0}; }
+    static std::map<std::string, int> to_json(const ScCount&) { return {{"n", 0}}; }
+};
+struct ScCounts
+{
+    std::map<std::string, ScCount> m;
+    bool operator==(const ScCounts&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScCounts> = yyjson::annotate(
+    yyjson::field("m", yyjson::additional_properties(yyjson::additional_properties(yyjson::maximum(0)))));
+// a member that a patch gives is checked by the value of the patch
+enum class ScLevel
+{
+    zero,
+    one
+};
+template <>
+inline constexpr auto yyjson::annotations<ScLevel> = yyjson::annotate(yyjson::enum_format::name_or_integer);
+struct ScLevelRest
+{
+    ScLevel e = ScLevel::zero;
+    bool operator==(const ScLevelRest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScLevelRest> =
+    yyjson::annotate(yyjson::additional_properties(yyjson::maximum(0)));
+// a caster that reads in place takes the kinds of its source
+struct ScInPlace
+{
+    int v = 0;
+    bool operator==(const ScInPlace&) const = default;
+};
+template <>
+struct yyjson::caster<ScInPlace>
+{
+    static void from_json(ScInPlace& x, int v) { x.v = v; }
+    static std::string to_json(const ScInPlace& x) { return std::to_string(x.v); }
+};
+struct ScInPlaceField
+{
+    ScInPlace x;
+    bool operator==(const ScInPlaceField&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScInPlaceField> = yyjson::annotate(yyjson::field("x", yyjson::minimum(0)));
+// the elements of a tuple take the keywords of each kind in a combinator
+struct ScPair
+{
+    std::pair<int, std::string> t;
+    bool operator==(const ScPair&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScPair> =
+    yyjson::annotate(yyjson::field("t", yyjson::contains(yyjson::all_of(yyjson::min_length(2), yyjson::maximum(0)))));
+// a tag is a JSON string
+struct ScTagged
+{
+    std::variant<int, std::string> v;
+    bool operator==(const ScTagged&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ScTagged> = yyjson::annotate(
+    yyjson::field("v", yyjson::adjacent_tag("kind", {"ii", "s"})), yyjson::property("kind", yyjson::min_length(2)));
+
+TEST(Constraints, ExtraKeyProperty)
+{
+    expect_accepted<ScExtra>(R"({"a":1,"b":2,"c":1})", {1, {{"b", 2}, {"c", 1}}});
+    expect_rejected<ScExtra>(
+        R"({"a":1,"b":2,"c":-1})",
+        R"(the value of the key "c" of ScExtra is less than the minimum 0 in yyjson::additional_properties)", "/c");
+    expect_rejected<ScExtra>(R"({"a":1,"b":-2})", R"(the value of the key "b" of ScExtra is less than the minimum 0)",
+                             "/b");
+    EXPECT_NO_THROW(yyjson::validate(ScExtra{0, {{"b", 2}, {"c", 1}}}));
+    EXPECT_THROW(yyjson::validate(ScExtra{0, {{"b", 2}, {"c", -1}}}), yyjson::bad_cast);
+}
+
+TEST(Constraints, WrittenCasterElements)
+{
+    // `validate` checks the JSON that the caster writes, and does not read it back
+    EXPECT_NO_THROW(yyjson::validate(ScWrittenVec{{{"ok"}}, {{"k", {"ok"}}}}));
+    const auto v = bad_cast_of([] { yyjson::validate(ScWrittenVec{{{"bad"}}, {}}); });
+    EXPECT_EQ(v.path(), "/v/0");
+    const auto m = bad_cast_of([] { yyjson::validate(ScWrittenVec{{}, {{"k", {"bad"}}}}); });
+    EXPECT_EQ(m.path(), "/m/k");
+    EXPECT_EQ(yyjson::write(ScWrittenVec{{{"ok"}}, {}}, yyjson::with_validation), R"({"v":["ok"],"m":{}})");
+    EXPECT_THROW((void)yyjson::write(ScWrittenVec{{{"bad"}}, {}}, yyjson::with_validation), yyjson::bad_cast);
+}
+
+TEST(Constraints, MergeChecksPatch)
+{
+    // a merge into a value that a caster replaces checks the JSON of the patch
+    auto counts = ScCounts{{{"k", ScCount{0}}}};
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"m":{"k":{"n":1}}})", counts); });
+    EXPECT_EQ(e.path(), "/m/k");
+    yyjson::merge_into(R"({"m":{"k":{"n":0}}})", counts);
+    // a patched member is checked by the value of the patch, not by the value that it writes
+    auto rest = ScLevelRest{};
+    const auto r = bad_cast_of([&] { yyjson::merge_into(R"({"e":1})", rest); });
+    EXPECT_TRUE(message_of(r).starts_with(
+        R"(the value of the key "e" of ScLevelRest is greater than the maximum 0 in yyjson::additional_properties)"))
+        << r.what();
+    yyjson::merge_into(R"({"e":0})", rest);
+    EXPECT_EQ(rest, ScLevelRest{});
+}
+
+TEST(Constraints, InPlaceCasterKind)
+{
+    expect_accepted<ScInPlaceField>(R"({"x":1})", {{1}});
+    expect_rejected<ScInPlaceField>(R"({"x":-1})",
+                                    R"(the value of the key "x" of ScInPlaceField is less than the minimum 0)", "/x");
+}
+
+TEST(Constraints, TupleCombinatorKinds)
+{
+    expect_accepted<ScPair>(R"({"t":[0,"a"]})", {{0, "a"}});
+    expect_accepted<ScPair>(R"({"t":[1,"ab"]})", {{1, "ab"}});
+    expect_rejected<ScPair>(R"({"t":[1,"a"]})", R"(the value of the key "t" of ScPair has no item)", "/t");
+    EXPECT_NO_THROW(yyjson::validate(ScPair{{1, "ab"}}));
+    EXPECT_THROW(yyjson::validate(ScPair{{1, "a"}}), yyjson::bad_cast);
+}
+
+TEST(Constraints, TagStringKeywords)
+{
+    expect_accepted<ScTagged>(R"({"kind":"ii","v":1})", {1});
+    EXPECT_THROW((void)yyjson::read<ScTagged>(R"({"kind":"s","v":"x"})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"kind":"s","v":"x"})").cast<ScTagged>(), yyjson::bad_cast);
+    EXPECT_THROW(yyjson::validate(ScTagged{std::string("x")}), yyjson::bad_cast);
+}
+
+// the keywords on a type check the JSON that its caster reads and writes
+struct CtList
+{
+    std::vector<int> v;
+    bool operator==(const CtList&) const = default;
+};
+template <>
+struct yyjson::caster<CtList>
+{
+    static CtList from_json(const std::vector<int>& v) { return {v}; }
+    static std::vector<int> to_json(const CtList& l) { return l.v; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CtList> = yyjson::annotate(
+    yyjson::not_(yyjson::contains(yyjson::minimum(5))), yyjson::prefix_items(yyjson::maximum(3)), yyjson::unique_items);
+struct CtMap
+{
+    std::map<std::string, int> m;
+    bool operator==(const CtMap&) const = default;
+};
+template <>
+struct yyjson::caster<CtMap>
+{
+    static CtMap from_json(const std::map<std::string, int>& m) { return {m}; }
+    static std::map<std::string, int> to_json(const CtMap& o) { return o.m; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CtMap> =
+    yyjson::annotate(yyjson::property("a", yyjson::minimum(0)), yyjson::additional_properties(yyjson::maximum(9)),
+                     yyjson::dependent_required("a", {"b"}), yyjson::additional_properties(false),
+                     yyjson::property("b", yyjson::minimum(0)));
+struct CtNumber
+{
+    int n = 0;
+    bool operator==(const CtNumber&) const = default;
+};
+template <>
+struct yyjson::caster<CtNumber>
+{
+    static CtNumber from_json(int n) { return {n}; }
+    static int to_json(const CtNumber& n) { return n.n; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CtNumber> =
+    yyjson::annotate(yyjson::not_(yyjson::any_of(yyjson::minimum(5), yyjson::multiple_of(2))));
+// the read reflects the struct, and the caster writes an array
+struct CtWritten
+{
+    int a = 0;
+    bool operator==(const CtWritten&) const = default;
+};
+template <>
+struct yyjson::caster<CtWritten>
+{
+    static std::vector<int> to_json(const CtWritten& w) { return {w.a}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<CtWritten> =
+    yyjson::annotate(yyjson::items(yyjson::minimum(0)), yyjson::property("a", yyjson::maximum(5)));
+struct CtHolder
+{
+    CtList l;
+    std::vector<CtMap> ms;
+    bool operator==(const CtHolder&) const = default;
+};
+
+TEST(Constraints, CasterTypeKeywords)
+{
+    expect_accepted<CtList>("[1,2]", {{1, 2}});
+    expect_rejected<CtList>("[1,5]", "CtList satisfies the settings of yyjson::not_", "");
+    expect_rejected<CtList>("[4]",
+                            "CtList has an element that does not satisfy the constraints of yyjson::prefix_items", "");
+    expect_rejected<CtList>("[1,1]", "CtList has duplicate items", "");
+    EXPECT_NO_THROW(yyjson::validate(CtList{{1, 2}}));
+    EXPECT_THROW(yyjson::validate(CtList{{6}}), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::write(CtList{{1, 1}}, yyjson::with_validation), yyjson::bad_cast);
+
+    expect_accepted<CtMap>(R"({"a":1,"b":2})", {{{"a", 1}, {"b", 2}}});
+    expect_rejected<CtMap>(R"({"a":1})", "CtMap does not have all the keys that yyjson::dependent_required requires",
+                           "");
+    expect_rejected<CtMap>(R"({"a":-1,"b":1})", "CtMap does not have the keys and the values", "");
+    expect_rejected<CtMap>(R"({"c":1})", R"(CtMap has the key "c", which yyjson::additional_properties(false) rejects)",
+                           "/c");
+    EXPECT_NO_THROW(yyjson::validate(CtMap{{{"a", 1}, {"b", 1}}}));
+    EXPECT_THROW(yyjson::validate(CtMap{{{"b", -1}}}), yyjson::bad_cast);
+
+    expect_accepted<CtNumber>("1", {1});
+    expect_rejected<CtNumber>("2", "CtNumber satisfies the settings of yyjson::not_", "");
+    expect_rejected<CtNumber>("7", "CtNumber satisfies the settings of yyjson::not_", "");
+    EXPECT_THROW(yyjson::validate(CtNumber{2}), yyjson::bad_cast);
+
+    // the read checks the object that it reads, and `validate` the array that the caster writes
+    EXPECT_EQ(yyjson::read<CtWritten>(R"({"a":1})"), CtWritten{1});
+    EXPECT_THROW((void)yyjson::read<CtWritten>(R"({"a":6})"), yyjson::bad_cast);
+    EXPECT_NO_THROW(yyjson::validate(CtWritten{6}));
+    EXPECT_THROW(yyjson::validate(CtWritten{-1}), yyjson::bad_cast);
+
+    // a value at a position checks its caster type too, and a merge the JSON of the patch
+    const auto e = bad_cast_of([] { (void)yyjson::read<CtHolder>(R"({"l":[1],"ms":[{"c":1}]})"); });
+    EXPECT_EQ(e.path(), "/ms/0/c");
+    auto holder = CtHolder{};
+    const auto m = bad_cast_of([&] { yyjson::merge_into(R"({"l":[1,1]})", holder); });
+    EXPECT_EQ(m.path(), "/l");
+}
+
+// a typed predicate on an element that a caster writes takes the C++ element, and the other keywords its JSON
+struct C4Word
+{
+    std::string s;
+    bool operator==(const C4Word&) const = default;
+};
+template <>
+struct yyjson::caster<C4Word>
+{
+    static C4Word from_json(std::string s) { return {std::move(s)}; }
+    static std::string to_json(const C4Word& w) { return w.s; }
+};
+inline bool c4_allowed(const C4Word& w) { return w.s != "no"; }
+struct C4Words
+{
+    std::vector<C4Word> v;
+    std::map<std::string, C4Word> m;
+    bool operator==(const C4Words&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<C4Words> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::max_length(3), yyjson::satisfies<c4_allowed>)),
+                     yyjson::field("m", yyjson::additional_properties(yyjson::max_length(3),
+                                                                      yyjson::all_of(yyjson::satisfies<c4_allowed>))));
+// a merge checks a member that the patch merges into on the patch at each depth
+struct C4Inner
+{
+    ScLevel e = ScLevel::zero;
+    int k = 3;
+    bool operator==(const C4Inner&) const = default;
+};
+struct C4Outer
+{
+    C4Inner in;
+    bool operator==(const C4Outer&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<C4Outer> =
+    yyjson::annotate(yyjson::additional_properties(yyjson::additional_properties(yyjson::maximum(0))));
+// an enumeration with a caster takes the keywords of its JSON
+enum class C4Code
+{
+    a,
+    b
+};
+template <>
+struct yyjson::caster<C4Code>
+{
+    static C4Code from_json(int i) { return static_cast<C4Code>(i); }
+    static int to_json(const C4Code& c) { return static_cast<int>(c); }
+};
+template <>
+inline constexpr auto yyjson::annotations<C4Code> = yyjson::annotate(yyjson::all_of(yyjson::maximum(0)));
+// a class that is not an aggregate
+class C4Number
+{
+    int n_ = 0;
+
+public:
+    C4Number(int n = 0) : n_(n) {}  // NOLINT(google-explicit-constructor)
+    [[nodiscard]] int n() const { return n_; }
+    bool operator==(const C4Number&) const = default;
+};
+template <>
+struct yyjson::caster<C4Number>
+{
+    static C4Number from_json(int i) { return {i}; }
+    static int to_json(const C4Number& x) { return x.n(); }
+};
+template <>
+inline constexpr auto yyjson::annotations<C4Number> = yyjson::annotate(yyjson::all_of(yyjson::maximum(1)));
+// `items(false)` on the array of a caster
+struct C4Empty
+{
+    std::vector<int> v;
+    bool operator==(const C4Empty&) const = default;
+};
+template <>
+struct yyjson::caster<C4Empty>
+{
+    static C4Empty from_json(const std::vector<int>& v) { return {v}; }
+    static std::vector<int> to_json(const C4Empty& x) { return x.v; }
+};
+template <>
+inline constexpr auto yyjson::annotations<C4Empty> = yyjson::annotate(yyjson::items(false));
+struct C4EmptyHolder
+{
+    C4Empty x;
+    bool operator==(const C4EmptyHolder&) const = default;
+};
+
+TEST(Constraints, CasterElementPredicates)
+{
+    expect_accepted<C4Words>(R"({"v":["yes"],"m":{"k":"yes"}})", {{{"yes"}}, {{"k", {"yes"}}}});
+    expect_rejected<C4Words>(R"({"v":["no"],"m":{}})",
+                             R"(an element of the value of the key "v" of C4Words is rejected by yyjson::satisfies)",
+                             "/v/0");
+    expect_rejected<C4Words>(R"({"v":["long"],"m":{}})",
+                             R"(an element of the value of the key "v" of C4Words is longer than the maximum length 3)",
+                             "/v/0");
+    expect_rejected<C4Words>(
+        R"({"v":[],"m":{"k":"no"}})",
+        R"(an element of the value of the key "m" of C4Words does not satisfy all the subschemas of yyjson::all_of)",
+        "/m/k");
+    EXPECT_NO_THROW(yyjson::validate(C4Words{{{"yes"}}, {{"k", {"yes"}}}}));
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C4Words{{{"no"}}, {}}); }).path(), "/v/0");
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C4Words{{}, {{"k", {"no"}}}}); }).path(), "/m/k");
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C4Words{{}, {{"k", {"long"}}}}); }).path(), "/m/k");
+}
+
+TEST(Constraints, NestedMergeObject)
+{
+    expect_rejected<C4Outer>(R"({"in":{"e":1,"k":0}})", R"(the value of the key "in" of C4Outer has a value)", "/in",
+                             false);
+    auto outer = C4Outer{};
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"in":{"e":1,"k":0}})", outer); });
+    EXPECT_EQ(e.path(), "/in");
+    // the kept member k = 3 is checked on its written value
+    outer = C4Outer{};
+    EXPECT_THROW(yyjson::merge_into(R"({"in":{"e":0}})", outer), yyjson::bad_cast);
+    outer = C4Outer{};
+    yyjson::merge_into(R"({"in":{"e":0,"k":0}})", outer);
+    EXPECT_EQ(outer, (C4Outer{{ScLevel::zero, 0}}));
+}
+
+TEST(Constraints, CasterTypeKeywordsOfOtherTypes)
+{
+    expect_accepted<C4Code>("0", C4Code::a);
+    expect_rejected<C4Code>("1", "C4Code does not satisfy all the subschemas of yyjson::all_of", "");
+    EXPECT_NO_THROW(yyjson::validate(C4Code::a));
+    EXPECT_THROW(yyjson::validate(C4Code::b), yyjson::bad_cast);
+
+    expect_accepted<C4Number>("1", C4Number{1});
+    for (const auto& e : {bad_cast_of([] { (void)yyjson::read<C4Number>("2"); }),
+                          bad_cast_of([] { (void)yyjson::read("2").cast<C4Number>(); }), bad_cast_of([] {
+                              auto x = C4Number();
+                              yyjson::merge_into("2", x);
+                          })})
+        EXPECT_TRUE(message_of(e).starts_with("C4Number does not satisfy all the subschemas of yyjson::all_of"))
+            << e.what();
+    EXPECT_THROW(yyjson::validate(C4Number{2}), yyjson::bad_cast);
+
+    expect_accepted<C4Empty>("[]", C4Empty{});
+    expect_rejected<C4Empty>("[1]", "C4Empty has an element that does not satisfy the constraints of yyjson::items",
+                             "");
+    EXPECT_THROW(yyjson::validate(C4Empty{{1}}), yyjson::bad_cast);
+    auto holder = C4EmptyHolder{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"x":[1]})", holder); }).path(), "/x");
+}
+
+// a merge into a variant with `internal_tag` checks the members of the patch at each depth
+struct C5Named
+{
+    ScLevel e = ScLevel::zero;
+    bool operator==(const C5Named&) const = default;
+};
+struct C5Counted
+{
+    int k = 0;
+    ScLevel f = ScLevel::zero;
+    bool operator==(const C5Counted&) const = default;
+};
+using C5Tagged = std::variant<C5Named, C5Counted>;
+template <>
+inline constexpr auto yyjson::annotations<C5Tagged> = yyjson::annotate(yyjson::internal_tag("type", {"i", "j"}));
+struct C5TaggedHolder
+{
+    C5Tagged in = C5Counted{};
+    bool operator==(const C5TaggedHolder&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<C5TaggedHolder> =
+    yyjson::annotate(yyjson::additional_properties(yyjson::additional_properties(yyjson::maximum(0))));
+// an enumeration with a caster that reads and writes a JSON object
+enum class C5Shape
+{
+    a,
+    b
+};
+template <>
+struct yyjson::caster<C5Shape>
+{
+    static C5Shape from_json(const std::map<std::string, int>& m) { return m.size() > 1 ? C5Shape::b : C5Shape::a; }
+    static std::map<std::string, int> to_json(const C5Shape& s)
+    {
+        return s == C5Shape::a ? std::map<std::string, int>{{"a", 1}} : std::map<std::string, int>{{"a", 1}, {"b", 1}};
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<C5Shape> =
+    yyjson::annotate(yyjson::min_properties(2), yyjson::property_names(yyjson::max_length(1)));
+enum class C5Closed
+{
+    a
+};
+template <>
+struct yyjson::caster<C5Closed>
+{
+    static C5Closed from_json(const std::map<std::string, int>&) { return C5Closed::a; }
+    static std::map<std::string, int> to_json(const C5Closed&) { return {}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<C5Closed> = yyjson::annotate(yyjson::additional_properties(false));
+// the elements that a caster only writes, and a set of elements that do not read back as written
+struct C5Text
+{
+    std::string s;
+    auto operator<=>(const C5Text&) const = default;
+};
+template <>
+struct yyjson::caster<C5Text>
+{
+    static std::string to_json(const C5Text& t) { return "!" + t.s; }
+};
+template <>
+struct std::hash<C5Text>
+{
+    std::size_t operator()(const C5Text& t) const noexcept { return std::hash<std::string>()(t.s); }
+};
+inline bool c5_allowed(const C5Text& t) { return t.s != "no"; }
+struct C5Texts
+{
+    std::vector<C5Text> v;
+    std::set<C5Text> s;
+    std::unordered_set<C5Text> u;
+};
+template <>
+inline constexpr auto yyjson::annotations<C5Texts> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::max_length(4), yyjson::satisfies<c5_allowed>)),
+                     yyjson::field("s", yyjson::items(yyjson::max_length(4), yyjson::satisfies<c5_allowed>)),
+                     yyjson::field("u", yyjson::items(yyjson::max_length(4), yyjson::satisfies<c5_allowed>)));
+struct C5Word
+{
+    std::string s;
+    auto operator<=>(const C5Word&) const = default;
+};
+template <>
+struct yyjson::caster<C5Word>
+{
+    static C5Word from_json(const std::string& s)
+    {
+        if (s.starts_with("!")) throw std::runtime_error("not readable");
+        return {s};
+    }
+    static std::string to_json(const C5Word& w) { return "!" + w.s; }
+};
+inline bool c5_word_allowed(const C5Word& w) { return w.s != "no"; }
+struct C5Words
+{
+    std::set<C5Word> v;
+    bool operator==(const C5Words&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<C5Words> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::max_length(4), yyjson::satisfies<c5_word_allowed>)));
+
+TEST(Constraints, MergeTaggedVariant)
+{
+    const auto merged = [](std::string_view patch, C5TaggedHolder h) {
+        yyjson::merge_into(patch, h);
+        return h;
+    };
+    EXPECT_THROW((void)yyjson::read<C5TaggedHolder>(R"({"in":{"type":"i","e":1}})"), yyjson::bad_cast);
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"in":{"type":"i","e":1}})", {}); }).path(), "/in");
+    EXPECT_EQ(merged(R"({"in":{"type":"i"}})", {}), C5TaggedHolder{C5Named{}});
+    // the alternative that the holder keeps takes the patch at its members
+    EXPECT_THROW((void)merged(R"({"in":{"f":1}})", {}), yyjson::bad_cast);
+    const auto kept = C5TaggedHolder{C5Counted{0, ScLevel::one}};
+    EXPECT_EQ(merged(R"({"in":{"k":0}})", kept), kept);
+    EXPECT_THROW((void)merged(R"({"in":{"type":"j","f":1}})", {}), yyjson::bad_cast);
+}
+
+TEST(Constraints, CasterEnumObjectKeywords)
+{
+    expect_accepted<C5Shape>(R"({"a":1,"b":1})", C5Shape::b);
+    for (const auto& e : {bad_cast_of([] { (void)yyjson::read<C5Shape>(R"({"a":1})"); }),
+                          bad_cast_of([] { (void)yyjson::read(R"({"a":1})").cast<C5Shape>(); }), bad_cast_of([] {
+                              auto x = C5Shape::b;
+                              yyjson::merge_into(R"({"a":1})", x);
+                          })})
+        EXPECT_TRUE(message_of(e).starts_with("C5Shape has fewer properties than the minimum 2")) << e.what();
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C5Shape>(R"({"a":1,"bb":1})"); }).path(), "/bb");
+    EXPECT_NO_THROW(yyjson::validate(C5Shape::b));
+    EXPECT_THROW(yyjson::validate(C5Shape::a), yyjson::bad_cast);
+
+    EXPECT_NO_THROW((void)yyjson::read<C5Closed>("{}"));
+    EXPECT_THROW((void)yyjson::read<C5Closed>(R"({"a":1})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"a":1})").cast<C5Closed>(), yyjson::bad_cast);
+}
+
+TEST(Constraints, WrittenCasterElementsOfSets)
+{
+    EXPECT_NO_THROW(yyjson::validate(C5Texts{{{"yes"}}, {{"yes"}}, {{"a"}, {"b"}, {"yes"}}}));
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C5Texts{{{"no"}}, {}, {}}); }).path(), "/v/0");
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C5Texts{{}, {{"a"}, {"no"}}, {}}); }).path(), "/s/1");
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C5Texts{{}, {{"a"}, {"long"}}, {}}); }).path(), "/s/1");
+    // the path is the position of the element in the written array
+    const auto u = C5Texts{{}, {}, {{"a"}, {"no"}, {"b"}}};
+    const auto at = std::ranges::distance(u.u.begin(), std::ranges::find(u.u, C5Text{"no"}));
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(u); }).path(), "/u/" + std::to_string(at));
+    EXPECT_THROW((void)yyjson::write(u, yyjson::with_validation), yyjson::bad_cast);
+
+    expect_accepted<C5Words>(R"({"v":["yes"]})", {{{"yes"}}});
+    expect_rejected<C5Words>(R"({"v":["no"]})",
+                             R"(an element of the value of the key "v" of C5Words is rejected by yyjson::satisfies)",
+                             "/v/0");
+    EXPECT_NO_THROW(yyjson::validate(C5Words{{{"yes"}}}));
+    EXPECT_TRUE(
+        message_of(bad_cast_of([] {
+            yyjson::validate(C5Words{{{"no"}}});
+        })).starts_with(R"(an element of the value of the key "v" of C5Words is rejected by yyjson::satisfies)"));
+    EXPECT_TRUE(
+        message_of(bad_cast_of([] {
+            yyjson::validate(C5Words{{{"long"}}});
+        })).starts_with(R"(an element of the value of the key "v" of C5Words is longer than the maximum length 4)"));
+}
+
+// the elements of a vector<bool> and the values of a map, which the check copies
+struct C6Flags
+{
+    std::vector<bool> v;
+    std::map<std::string, bool> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Flags> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::const_(true))),
+                     yyjson::field("m", yyjson::additional_properties(yyjson::const_(true))));
+// a read inside validate checks its own input
+struct C6Letter
+{
+    std::string s;
+    auto operator<=>(const C6Letter&) const = default;
+};
+template <>
+struct yyjson::caster<C6Letter>
+{
+    static C6Letter from_json(const std::string& s) { return {s}; }
+    static std::string to_json(const C6Letter& c) { return c.s; }
+};
+inline bool c6_is_a(const C6Letter& c) { return c.s == "a"; }
+struct C6Letters
+{
+    std::set<C6Letter> v;
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Letters> = yyjson::annotate(
+    yyjson::field("v", yyjson::items(yyjson::any_of(yyjson::max_length(1), yyjson::satisfies<c6_is_a>))));
+inline bool c6_reads_inside(int)
+{
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read(R"({"v":["long","a"]})").cast<C6Letters>(); }).path(), "/v/0");
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C6Letters>(R"({"v":["long","a"]})"); }).path(), "/v/0");
+    return true;
+}
+struct C6Outer
+{
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Outer> =
+    yyjson::annotate(yyjson::field("x", yyjson::satisfies<c6_reads_inside>));
+// casters whose written value differs from the value that they read
+struct C6Step
+{
+    int n = 0;
+    bool operator==(const C6Step&) const = default;
+};
+template <>
+struct yyjson::caster<C6Step>
+{
+    static C6Step from_json(int n) { return {n}; }
+    static int to_json(const C6Step& c) { return c.n + 1; }
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Step> = yyjson::annotate(yyjson::all_of(yyjson::maximum(0)));
+enum class C6Level
+{
+    a,
+    b
+};
+template <>
+struct yyjson::caster<C6Level>
+{
+    static C6Level from_json(int n) { return static_cast<C6Level>(n); }
+    static int to_json(C6Level x) { return static_cast<int>(x) + 1; }
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Level> = yyjson::annotate(yyjson::all_of(yyjson::maximum(1)));
+struct C6Kept
+{
+    C6Step c;
+    C6Level x = C6Level::a;
+    int n = 0;
+    bool operator==(const C6Kept&) const = default;
+};
+// a patch that switches the alternative gives a new one, read from the patch alone
+struct C6First
+{
+    int a = 0;
+    bool operator==(const C6First&) const = default;
+};
+struct C6Second
+{
+    std::optional<int> k = 1;
+    bool operator==(const C6Second&) const = default;
+};
+using C6Choice = std::variant<C6First, C6Second>;
+template <>
+inline constexpr auto yyjson::annotations<C6Choice> = yyjson::annotate(yyjson::internal_tag("type", {"a", "b"}));
+struct C6Switch
+{
+    C6Choice in;
+    bool operator==(const C6Switch&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Switch> =
+    yyjson::annotate(yyjson::additional_properties(yyjson::additional_properties(yyjson::maximum(0))));
+struct C6Counted
+{
+    C6Choice in;
+    bool operator==(const C6Counted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<C6Counted> =
+    yyjson::annotate(yyjson::additional_properties(yyjson::min_properties(2)));
+
+TEST(Constraints, WrittenProxyElements)
+{
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C6Flags{{false}, {}}); }).path(), "/v/0");
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C6Flags{{true, false}, {}}); }).path(), "/v/1");
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(C6Flags{{}, {{"a", false}}}); }).path(), "/m/a");
+    EXPECT_NO_THROW(yyjson::validate(C6Flags{{true, true}, {{"a", true}}}));
+}
+
+TEST(Constraints, ReadInsideValidate)
+{
+    EXPECT_NO_THROW(yyjson::validate(C6Outer{}));
+    EXPECT_NO_THROW((void)yyjson::write(C6Outer{}, yyjson::with_validation));
+}
+
+TEST(Constraints, MergeKeepsCasterValues)
+{
+    const auto merged = [](std::string_view patch, C6Kept k) {
+        yyjson::merge_into(patch, k);
+        return k;
+    };
+    const auto kept = yyjson::read<C6Kept>(R"({"c":0,"x":0,"n":0})");
+    EXPECT_EQ(yyjson::write(kept), R"({"c":1,"x":1,"n":0})");
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(kept); }).path(), "/c");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"n":1})", kept); }).path(), "/c");
+    // the patch gives the value that the check takes
+    EXPECT_EQ(merged(R"({"c":0,"n":1})", kept).n, 1);
+    EXPECT_EQ(merged(R"({"c":-1,"x":0})", {}).n, 0);
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"c":1})", {}); }).path(), "/c");
+    const auto level = C6Kept{{-1}, C6Level::b, 0};
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"n":1})", level); }).path(), "/x");
+    EXPECT_EQ(merged(R"({"x":1})", level).x, C6Level::b);
+}
+
+TEST(Constraints, MergeSwitchesAlternative)
+{
+    const auto merged = [](std::string_view patch, auto h) {
+        yyjson::merge_into(patch, h);
+        return h;
+    };
+    EXPECT_EQ(yyjson::write(yyjson::read<C6Switch>(R"({"in":{"type":"b"}})")), R"({"in":{"type":"b","k":1}})");
+    EXPECT_EQ(merged(R"({"in":{"type":"b"}})", C6Switch{}), C6Switch{C6Second{}});
+    EXPECT_EQ(merged(R"({"in":{"type":"b","k":0}})", C6Switch{}), C6Switch{C6Second{0}});
+    EXPECT_THROW((void)merged(R"({"in":{"type":"b","k":1}})", C6Switch{}), yyjson::bad_cast);
+    // the alternative that the patch names is kept, and its written members count
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"in":{"type":"b"}})", C6Switch{C6Second{}}); }).path(), "/in");
+    EXPECT_EQ(merged(R"({"in":{"type":"a"}})", C6Switch{C6Second{}}), C6Switch{});
+
+    EXPECT_THROW((void)yyjson::read<C6Counted>(R"({"in":{"type":"b"}})"), yyjson::bad_cast);
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"in":{"type":"b"}})", C6Counted{}); }).path(), "/in");
+    EXPECT_EQ(merged(R"({"in":{"type":"b"}})", C6Counted{C6Second{}}), C6Counted{C6Second{}});
+}
+
+struct C7Pair
+{
+    int x = 0;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7Pair> = yyjson::annotate(yyjson::field("x", yyjson::maximum(0)));
+struct C7Nested
+{
+    C7Pair in;
+    std::vector<int> v;
+    std::map<std::string, int> m;
+    std::map<std::string, C7Pair> pairs;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7Nested> = yyjson::annotate(
+    yyjson::field("v", yyjson::max_items(1)), yyjson::field("m", yyjson::additional_properties(yyjson::maximum(0))));
+struct C7Other
+{
+    std::optional<int> k = 1;
+    bool operator==(const C7Other&) const = default;
+};
+struct C7Adjacent
+{
+    std::variant<C7Pair, C7Other> v;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7Adjacent> =
+    yyjson::annotate(yyjson::field("v", yyjson::adjacent_tag("kind", {"a", "b"})));
+enum class C7Key
+{
+    x,
+    y
+};
+struct C7EnumKeys
+{
+    std::map<C7Key, C7Pair> m;
+    std::map<C7Key, int> counts;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7EnumKeys> =
+    yyjson::annotate(yyjson::field("counts", yyjson::additional_properties(yyjson::maximum(0))));
+
+TEST(Constraints, MergeChecksKeptFields)
+{
+    const auto merged = [](std::string_view patch, auto h) {
+        yyjson::merge_into(patch, h);
+        return h;
+    };
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C7Pair>(R"({"x":1,"n":1})"); }).path(), "/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"n":1})", C7Pair{1, 0}); }).path(), "/x");
+    EXPECT_EQ(merged(R"({"x":0})", C7Pair{1, 0}).x, 0);
+
+    const auto bad_in = C7Nested{{1, 0}, {}, {}, {}, 0};
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"n":1})", bad_in); }).path(), "/in/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"in":{"n":1}})", bad_in); }).path(), "/in/x");
+    EXPECT_EQ(merged(R"({"in":{"x":0}})", bad_in).in.x, 0);
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"n":1})", C7Nested{{}, {1, 2}, {}, {}, 0}); }).path(), "/v");
+    const auto bad_m = C7Nested{{}, {}, {{"a", 1}}, {}, 0};
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"m":{"b":0}})", bad_m); }).path(), "/m/a");
+    EXPECT_EQ(merged(R"({"m":{"a":0}})", bad_m).m.at("a"), 0);
+    const auto bad_pairs = C7Nested{{}, {}, {}, {{"a", {1, 0}}}, 0};
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"pairs":{"b":{}}})", bad_pairs); }).path(), "/pairs/a/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"pairs":{"a":{"n":1}}})", bad_pairs); }).path(), "/pairs/a/x");
+}
+
+TEST(Constraints, MergeChecksKeptAdjacentAlternative)
+{
+    const auto merged = [](std::string_view patch, auto h) {
+        yyjson::merge_into(patch, h);
+        return h;
+    };
+    const auto bad = C7Adjacent{C7Pair{1, 0}, 0};
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"n":1})", bad); }).path(), "/v/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"v":{"n":1}})", bad); }).path(), "/v/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"kind":"a","v":{"n":1}})", bad); }).path(), "/v/x");
+    EXPECT_EQ(std::get<C7Pair>(merged(R"({"v":{"x":0}})", bad).v).x, 0);
+    // a tag that names another alternative reads it from the patch alone
+    EXPECT_EQ(std::get<C7Other>(merged(R"({"kind":"b","v":{}})", bad).v), C7Other{});
+}
+
+TEST(Constraints, MergeChecksKeptEnumKeys)
+{
+    const auto merged = [](std::string_view patch, auto h) {
+        yyjson::merge_into(patch, h);
+        return h;
+    };
+    const auto bad = C7EnumKeys{{{C7Key::x, {1, 0}}}, {}};
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"m":{"y":{}}})", bad); }).path(), "/m/x/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"m":{"x":{"n":1}}})", bad); }).path(), "/m/x/x");
+    EXPECT_EQ(merged(R"({"m":{"x":{"x":0}}})", bad).m.at(C7Key::x).x, 0);
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"counts":{"y":0}})", C7EnumKeys{{}, {{C7Key::x, 1}}}); }).path(),
+              "/counts/x");
+}
+
+// a struct whose map of the other keys merges objects into its values
+struct C7Spot
+{
+    int x = 0;
+    std::optional<int> y;
+};
+struct C7Extra
+{
+    int a = 0;
+    std::map<std::string, C7Spot> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7Extra> =
+    yyjson::annotate(yyjson::field("rest", yyjson::extra_keys), yyjson::property("a"),
+                     yyjson::additional_properties(yyjson::min_properties(2)));
+
+TEST(Constraints, MergeChecksExtraKeyObjects)
+{
+    // the object that a patch merges into a value of the map is checked as merged
+    auto t = C7Extra{0, {{"r", {1, 2}}}};
+    yyjson::merge_into(R"({"r":{"x":3}})", t);
+    EXPECT_EQ(written(t), R"({"a":0,"r":{"x":3,"y":2}})");
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"r":{"y":null}})", t); }).path(), "/r");
+}
+
+// a field that yyjson::adjacent_tag tags, whose content a property of the struct around it checks
+struct C7Two
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+struct C7AdjacentTwo
+{
+    std::variant<C7Two, C7Other> v;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7AdjacentTwo> =
+    yyjson::annotate(yyjson::field("v", yyjson::adjacent_tag("kind", {"a", "b"})));
+struct C7AdjacentOuter
+{
+    C7AdjacentTwo h;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7AdjacentOuter> =
+    yyjson::annotate(yyjson::field("h", yyjson::property("v", yyjson::max_properties(1))));
+
+TEST(Constraints, MergeChecksMergedAdjacentContent)
+{
+    const auto merged = [](std::string_view patch, auto h) {
+        yyjson::merge_into(patch, h);
+        return h;
+    };
+    const auto t = C7AdjacentOuter{{C7Two{1, {}}, 0}};
+    EXPECT_EQ(
+        bad_cast_of([] { (void)yyjson::read<C7AdjacentOuter>(R"({"h":{"kind":"a","v":{"a":1,"b":2}}})"); }).path(),
+        "/h");
+    // the content is checked as merged: {"a":1,"b":2}, then {"b":2}
+    EXPECT_EQ(bad_cast_of([&] { (void)merged(R"({"h":{"v":{"b":2}}})", t); }).path(), "/h");
+    EXPECT_EQ(written(merged(R"({"h":{"v":{"a":null,"b":2}}})", t)), R"({"h":{"kind":"a","v":{"b":2},"n":0}})");
+    EXPECT_EQ(written(merged(R"({"h":{"kind":"b","v":{"k":2}}})", t)), R"({"h":{"kind":"b","v":{"k":2},"n":0}})");
+}
+
+// a field whose type has no JSON to write: the merge does not check the value that it keeps
+struct C7ReadOnly
+{
+    int n = 0;
+};
+template <>
+struct yyjson::caster<C7ReadOnly>
+{
+    static C7ReadOnly from_json(int n) { return {n}; }
+};
+struct C7Unwritable
+{
+    C7ReadOnly r;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C7Unwritable> = yyjson::annotate(yyjson::field("r", yyjson::minimum(0)));
+
+TEST(Constraints, MergeKeepsUnwritableValues)
+{
+    EXPECT_THROW((void)yyjson::read<C7Unwritable>(R"({"r":-1,"n":0})"), yyjson::bad_cast);
+    auto t = C7Unwritable{{-1}, 0};
+    yyjson::merge_into(R"({"n":1})", t);
+    EXPECT_EQ(t.r.n, -1);
+    EXPECT_EQ(t.n, 1);
+    EXPECT_THROW(yyjson::merge_into(R"({"r":-2})", t), yyjson::bad_cast);
+}
+
+// a struct with keywords on the keys of its object only, inside another struct
+struct C9Pairless
+{
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Pairless> = yyjson::annotate(yyjson::min_properties(2));
+struct C9HoldsPairless
+{
+    C9Pairless in;
+    int n = 0;
+};
+// a struct whose keys `yyjson::property_names` checks, and a keyword on another field
+struct C9Names
+{
+    int longname = 0;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Names> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(1)), yyjson::field("n", yyjson::maximum(0)));
+// maps of the other keys whose values the patch creates
+struct C9Spot
+{
+    int x = 0;
+};
+struct C9Rest
+{
+    std::map<std::string, C9Spot> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Rest> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys), yyjson::additional_properties(yyjson::min_properties(1)));
+struct C9Pattern
+{
+    std::map<std::string, C9Spot> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Pattern> = yyjson::annotate(
+    yyjson::field("rest", yyjson::pattern_properties("^r")), yyjson::additional_properties(yyjson::min_properties(1)));
+// a struct whose other keys must hold objects with a member
+struct C9Closed
+{
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Closed> =
+    yyjson::annotate(yyjson::additional_properties(yyjson::min_properties(1)));
+// the types of the differential test
+struct C9Inner
+{
+    int x = 0;
+    std::optional<int> y;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Inner> =
+    yyjson::annotate(yyjson::field("x", yyjson::maximum(5)), yyjson::max_properties(2));
+struct C9Other
+{
+    int k = 0;
+};
+using C9Internal = std::variant<C9Inner, C9Other>;
+template <>
+inline constexpr auto yyjson::annotations<C9Internal> = yyjson::annotate(yyjson::internal_tag("type", {"i", "o"}));
+struct C9Target
+{
+    C9Inner in;
+    std::map<std::string, int> m;
+    std::vector<int> v;
+    std::optional<int> o;
+    C9Internal u;
+    std::variant<C9Inner, C9Other> a;
+    std::map<std::string, C9Inner> rest;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C9Target> = yyjson::annotate(
+    yyjson::field("m", yyjson::max_properties(2), yyjson::additional_properties(yyjson::maximum(3))),
+    yyjson::field("v", yyjson::max_items(2)), yyjson::field("o", yyjson::maximum(1)),
+    yyjson::field("u", yyjson::max_properties(2)), yyjson::field("a", yyjson::adjacent_tag("kind", {"i", "o"})),
+    yyjson::field("rest", yyjson::extra_keys), yyjson::dependent_required("o", {"r"}), yyjson::max_properties(9));
+
+TEST(Constraints, MergeChecksObjectKeywordsOfKeptStructs)
+{
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C9HoldsPairless>(R"({"in":{"x":0},"n":1})"); }).path(), "/in");
+    auto h = C9HoldsPairless{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"n":1})", h); }).path(), "/in");
+    EXPECT_EQ(h.n, 0);
+}
+
+TEST(Constraints, MergeChecksAllKeyNames)
+{
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C9Names>(R"({"longname":0,"n":0})"); }).path(), "/longname");
+    auto t = C9Names{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"n":0})", t); }).path(), "/longname");
+}
+
+TEST(Constraints, MergeChecksNewMapValues)
+{
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C9Rest>(R"({"a":{}})"); }).path(), "/a");
+    auto rest = C9Rest{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"a":{}})", rest); }).path(), "/a");
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C9Pattern>(R"({"r":{}})"); }).path(), "/r");
+    auto pattern = C9Pattern{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"r":{}})", pattern); }).path(), "/r");
+    EXPECT_TRUE(pattern.rest.empty());
+}
+
+TEST(Constraints, MergeRemovesNullMembersOfOtherKeys)
+{
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C9Closed>(R"({"n":0,"extra":{}})"); }).path(), "/extra");
+    auto t = C9Closed{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"extra":{"x":null}})", t); }).path(), "/extra");
+}
+
+// merge_into rejects a patch if and only if read rejects the object that the patch merges into the written target
+TEST(Constraints, MergeChecksAsReadOfMergedObject)
+{
+    const auto path_of = [](auto&& f) -> std::optional<std::string> {
+        try
+        {
+            f();
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            return std::string(e.path());
+        }
+        return std::nullopt;
+    };
+    const auto expect_as_read = [&](const C9Target& target, std::string_view patch, std::string_view merged,
+                                    bool kept = true) {
+        const auto read = path_of([&] { (void)yyjson::read<C9Target>(merged); });
+        auto t = target;
+        const auto merge = path_of([&] { yyjson::merge_into(patch, t); });
+        EXPECT_EQ(merge, read) << patch;
+        if (merge.has_value() && kept)
+        {
+            EXPECT_EQ(written(t), written(target)) << patch;
+        }
+    };
+    auto t = C9Target{};
+    t.m = {{"a", 1}};
+    t.v = {1};
+    t.o = 1;
+    t.rest = {{"r", {}}};
+    ASSERT_EQ(written(t), R"({"in":{"x":0},"m":{"a":1},"v":[1],"o":1,"u":{"type":"i","x":0},"kind":"i","a":{"x":0},)"
+                          R"("n":0,"r":{"x":0}})");
+    const auto with = [](std::string_view in, std::string_view m, std::string_view v, std::string_view o,
+                         std::string_view u, std::string_view a, std::string_view n, std::string_view rest) {
+        return std::format(R"({{"in":{},"m":{},"v":{}{},"u":{},{},"n":{}{}}})", in, m, v, o, u, a, n, rest);
+    };
+    const auto base = [&](std::string_view n) {
+        return with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                    R"("kind":"i","a":{"x":0})", n, R"(,"r":{"x":0})");
+    };
+    // nested structs and optional fields
+    expect_as_read(t, R"({"n":1})", base("1"));
+    expect_as_read(t, R"({"in":{"x":6}})",
+                   with(R"({"x":6})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"in":{"y":1}})",
+                   with(R"({"x":0,"y":1})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    auto kept_y = t;
+    kept_y.in.y = 1;
+    const auto with_y = with(R"({"x":0,"y":1})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                             R"("kind":"i","a":{"x":0})", "1", R"(,"r":{"x":0})");
+    expect_as_read(kept_y, R"({"n":1})", with_y);
+    expect_as_read(kept_y, R"({"in":{"y":null}})", base("0"));
+    expect_as_read(t, R"({"o":2})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":2)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"o":null})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", "", R"({"type":"i","x":0})", R"("kind":"i","a":{"x":0})",
+                        "0", R"(,"r":{"x":0})"));
+    // maps, arrays, and null removal
+    expect_as_read(t, R"({"m":{"b":2}})",
+                   with(R"({"x":0})", R"({"a":1,"b":2})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"m":{"b":2,"c":3}})",
+                   with(R"({"x":0})", R"({"a":1,"b":2,"c":3})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"m":{"a":null,"b":2,"c":3}})",
+                   with(R"({"x":0})", R"({"b":2,"c":3})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"m":{"b":4}})",
+                   with(R"({"x":0})", R"({"a":1,"b":4})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"v":[1,2,3]})",
+                   with(R"({"x":0})", R"({"a":1})", "[1,2,3]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"v":[5]})",
+                   with(R"({"x":0})", R"({"a":1})", "[5]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    // the members of `yyjson::extra_keys`, and the dependent key that a null removes
+    expect_as_read(t, R"({"s":{"x":6}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0},"s":{"x":6})"));
+    expect_as_read(t, R"({"r":{"y":1}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0,"y":1})"));
+    expect_as_read(t, R"({"r":null})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", ""));
+    expect_as_read(t, R"({"zz":null})", base("0"));
+    // the internal tag and the adjacent tag: a tag that names another alternative takes the patch alone
+    expect_as_read(t, R"({"u":{"x":6}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":6})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"u":{"y":1}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0,"y":1})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"u":{"type":"o","k":1}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"o","k":1})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"a":{"x":6}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":6})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"a":{"y":1}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0,"y":1})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"kind":"o","a":{"k":1}})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"o","a":{"k":1})", "0", R"(,"r":{"x":0})"));
+    // repeated keys apply in their order, and the last one gives the value
+    expect_as_read(t, R"({"n":1,"n":2})", base("2"));
+    expect_as_read(t, R"({"n":2,"n":1})", base("1"));
+    expect_as_read(t, R"({"m":{"b":1,"b":5}})",
+                   with(R"({"x":0})", R"({"a":1,"b":5})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    expect_as_read(t, R"({"m":{"b":5,"b":1}})",
+                   with(R"({"x":0})", R"({"a":1,"b":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+    // the merge checks each value of a repeated key as it applies it, as read checks each, after the values before
+    const auto first_in = with(R"({"x":6})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                               R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})");
+    expect_as_read(t, R"({"in":{"x":6},"in":{"x":0}})", first_in, false);
+    expect_as_read(t, R"({"in":{"x":6,"x":0}})", first_in, false);
+    expect_as_read(t, R"({"o":2,"o":1})",
+                   with(R"({"x":0})", R"({"a":1})", "[1]", R"(,"o":2)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"),
+                   false);
+    expect_as_read(t, R"({"in":{"x":0,"x":6}})",
+                   with(R"({"x":6})", R"({"a":1})", "[1]", R"(,"o":1)", R"({"type":"i","x":0})",
+                        R"("kind":"i","a":{"x":0})", "0", R"(,"r":{"x":0})"));
+}
+
+struct C10Count
+{
+    int n = 0;
+};
+inline int c10_reads = 0;
+template <>
+struct yyjson::caster<C10Count>
+{
+    static C10Count from_json(int n)
+    {
+        ++c10_reads;
+        return {n};
+    }
+    static int to_json(const C10Count& c) { return c.n + 1; }
+};
+inline bool c10_is_five(const C10Count& c) { return c.n == 5; }
+struct C10Holder
+{
+    C10Count c;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<C10Holder> =
+    yyjson::annotate(yyjson::field("c", yyjson::satisfies<c10_is_five>), yyjson::field("n", yyjson::maximum(1)));
+
+struct C10Outer
+{
+    C10Holder in;
+    int m = 0;
+};
+
+// the merge checks a kept value on the C++ value, and reads only the values of the patch
+TEST(Constraints, MergeChecksKeptValuesWithoutReadingThem)
+{
+    auto h = C10Holder{{5}, 0};
+    c10_reads = 0;
+    yyjson::merge_into(R"({"n":1})", h);
+    EXPECT_EQ(c10_reads, 0);
+    EXPECT_EQ(h.c.n, 5);
+    EXPECT_EQ(h.n, 1);
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"n":2})", h); }).path(), "/n");
+    EXPECT_EQ(c10_reads, 0);
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C10Holder>(R"({"c":7,"n":0})"); }).path(), "/c");
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"c":7})", h); }).path(), "/c");
+    EXPECT_EQ(h.c.n, 5);
+    yyjson::merge_into(R"({"c":5,"n":0})", h);
+    EXPECT_EQ(h.c.n, 5);
+    EXPECT_EQ(h.n, 0);
+    auto outer = C10Outer{{{5}, 0}, 0};
+    c10_reads = 0;
+    yyjson::merge_into(R"({"in":{"n":1}})", outer);
+    EXPECT_EQ(c10_reads, 0);
+    EXPECT_EQ(outer.in.n, 1);
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"in":{"n":2}})", outer); }).path(), "/in/n");
+}
+
+struct C10Pair
+{
+    int a = 0;
+    int b = 0;
+};
+inline bool c10_sum_small(const C10Pair& p) { return p.a + p.b <= 1; }
+struct C10Typed
+{
+    C10Pair in;
+    std::map<std::string, C10Pair> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<C10Typed> = yyjson::annotate(
+    yyjson::field("in", yyjson::satisfies<c10_sum_small>),
+    yyjson::field("rest", yyjson::extra_keys, yyjson::additional_properties(yyjson::satisfies<c10_sum_small>)));
+
+// a predicate that takes a C++ value checks a value that the patch merges into after the merge
+TEST(Constraints, MergeChecksTypedPredicatesAfterTheMerge)
+{
+    const auto target = C10Typed{{1, 0}, {{"k", {1, 0}}}};
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C10Typed>(R"({"in":{"a":1,"b":1}})"); }).path(), "/in");
+    auto t = target;
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"in":{"b":1}})", t); }).path(), "/in");
+    t = target;
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"k":{"b":1}})", t); }).path(), "/k");
+    t = target;
+    yyjson::merge_into(R"({"in":{"a":0,"b":1},"k":{"a":0}})", t);
+    EXPECT_EQ(t.in.b, 1);
+    EXPECT_EQ(t.rest.at("k").a, 0);
+}
+
+// a merge walks a member that no field takes without recursion, at any depth of the patch
+struct R11Deep
+{
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Deep> = yyjson::annotate(yyjson::field("n", yyjson::maximum(1)));
+
+TEST(Constraints, MergeWalksADeepPatchWithoutRecursion)
+{
+    constexpr auto depth = 200000;
+    auto patch = std::string(R"({"n":0,"x":null,"extra":)");
+    for (auto i = 0; i < depth; ++i) patch += R"({"a":null,"b":)";
+    patch += '0';
+    patch.append(depth, '}');
+    patch += '}';
+    auto t = R11Deep{1};
+    yyjson::merge_into(patch, t);
+    EXPECT_EQ(t.n, 0);
+}
+
+// a keyword of a field on the members of its object checks the merged members
+struct R11Point
+{
+    int x = 0;
+    int y = 0;
+};
+struct R11Property
+{
+    R11Point f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Property> =
+    yyjson::annotate(yyjson::field("f", yyjson::property("x", yyjson::maximum(0))));
+
+TEST(Constraints, MergeChecksAFieldPropertyOnTheMergedMember)
+{
+    expect_rejected<R11Property>(
+        R"({"f":{"x":1}})",
+        R"(the value of the key "f" of R11Property does not have the keys and the values that yyjson::property and required give)",
+        "/f", false);
+    auto t = R11Property{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":1}})", t); }).path(), "/f");
+    t = R11Property{{1, 0}};
+    yyjson::merge_into(R"({"f":{"x":0}})", t);
+    EXPECT_EQ(t.f.x, 0);
+}
+
+// a predicate that takes a C++ value checks the merged value, inside a condition and through a transparent type
+inline bool r11_sum_small(const R11Point& p) { return p.x + p.y <= 0; }
+inline bool r11_any(const R11Point&) { return true; }
+struct R11Condition
+{
+    R11Point f;
+};
+struct R11Kept
+{
+    R11Point f;
+    int k = 1;
+};
+struct R11Wrapper
+{
+    R11Point value;
+};
+struct R11Wrapped
+{
+    R11Wrapper w;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Condition> =
+    yyjson::annotate(yyjson::all_of(yyjson::property("f", yyjson::satisfies<r11_sum_small>)));
+template <>
+inline constexpr auto yyjson::annotations<R11Kept> = yyjson::annotate(
+    yyjson::all_of(yyjson::property("f", yyjson::satisfies<r11_any>), yyjson::property("k", yyjson::maximum(0))));
+template <>
+inline constexpr auto yyjson::annotations<R11Wrapper> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::satisfies<r11_sum_small>));
+
+TEST(Constraints, MergeChecksEveryDeferredPredicate)
+{
+    auto c = R11Condition{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":1}})", c); }).path(), "/f");
+    auto k = R11Kept{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":0}})", k); }).path(), "/k");
+    auto w = R11Wrapped{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"w":{"x":1}})", w); }).path(), "/w");
+    yyjson::merge_into(R"({"f":{"x":-1}})", c);
+    EXPECT_EQ(c.f.x, -1);
+}
+
+// a schema that also takes a C++ value checks the merged JSON, which the merge does not write again
+struct R11Mixed
+{
+    R11Point f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Mixed> =
+    yyjson::annotate(yyjson::field("f", yyjson::min_properties(2), yyjson::satisfies<r11_any>));
+
+TEST(Constraints, MergeChecksAMixedSchemaOnTheMergedJson)
+{
+    expect_rejected<R11Mixed>(R"({"f":{"y":0}})",
+                              R"(the value of the key "f" of R11Mixed has fewer properties than the minimum 2)", "/f",
+                              false);
+    auto t = R11Mixed{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":null}})", t); }).path(), "/f");
+}
+
+// a value that only writes leaves the checks of the other values in place
+struct R11WriteOnly
+{
+    int x = 0;
+};
+template <>
+struct yyjson::caster<R11WriteOnly>
+{
+    static std::map<std::string, int> to_json(const R11WriteOnly& c) { return {{"x", c.x}}; }
+};
+struct R11WithWriteOnly
+{
+    R11WriteOnly c;
+    int n = 1;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11WithWriteOnly> = yyjson::annotate(yyjson::field("n", yyjson::maximum(0)));
+
+TEST(Constraints, MergeChecksKeptValuesBesideAWriteOnlyValue)
+{
+    EXPECT_THROW(yyjson::validate(R11WithWriteOnly{}), yyjson::bad_cast);
+    auto t = R11WithWriteOnly{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into("{}", t); }).path(), "/n");
+}
+
+// `validate` checks a value of a map with its C++ value, and does not read the JSON that it writes
+struct R11Prefixed
+{
+    std::string s;
+};
+inline int r11_prefixed_reads = 0;
+template <>
+struct yyjson::caster<R11Prefixed>
+{
+    static R11Prefixed from_json(std::string s)
+    {
+        ++r11_prefixed_reads;
+        if (s.starts_with("!")) throw std::runtime_error("unreadable prefix");
+        return {std::move(s)};
+    }
+    static std::string to_json(const R11Prefixed& c) { return "!" + c.s; }
+};
+struct R11PrefixedMap
+{
+    std::map<std::string, R11Prefixed> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11PrefixedMap> =
+    yyjson::annotate(yyjson::field("rest", yyjson::extra_keys, yyjson::additional_properties(yyjson::max_length(4))));
+
+TEST(Constraints, ValidateBindsAMapValueToItsEntry)
+{
+    r11_prefixed_reads = 0;
+    EXPECT_NO_THROW(yyjson::validate(R11PrefixedMap{{{"a", {"ab"}}}}));
+    EXPECT_EQ(bad_cast_of([] { yyjson::validate(R11PrefixedMap{{{"a", {"abcd"}}}}); }).path(), "/a");
+    EXPECT_EQ(r11_prefixed_reads, 0);
+    // a merge reads only the value of the patch, and binds the kept value "!ab" to its entry
+    auto t = R11PrefixedMap{{{"a", {"ab"}}}};
+    yyjson::merge_into(R"({"b":"cd"})", t);
+    EXPECT_EQ(t.rest.size(), 2U);
+}
+
+// a member that the patch replaces keeps no binding to the value before the merge
+struct R11Negative
+{
+    int x = 0;
+    int y = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Negative> = yyjson::annotate(yyjson::field("x", yyjson::maximum(-1)));
+struct R11Replaced
+{
+    R11Negative f;
+};
+
+TEST(Constraints, MergeReplacesAMemberForTheLaterDuplicates)
+{
+    auto t = R11Replaced{};
+    yyjson::merge_into(R"({"f":null,"f":{"x":-1},"f":{"y":0}})", t);
+    EXPECT_EQ(t.f.x, -1);
+}
+
+// a merge into an empty optional checks the patch before it sets the optional
+struct R11Root
+{
+    int x = 0;
+    int y = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Root> = yyjson::annotate(yyjson::field("y", yyjson::minimum(0)));
+
+TEST(Constraints, MergeChecksAnEmptyRootBeforeTheCommit)
+{
+    auto t = std::optional<R11Root>{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"x":1,"y":-1})", t); }).path(), "/y");
+    EXPECT_FALSE(t.has_value());
+}
+
+// a predicate of the values of a map gives the key of the value that it rejects
+struct R11Pair
+{
+    int a = 0;
+    int b = 0;
+};
+inline bool r11_pair_small(const R11Pair& c) { return c.a + c.b <= 1; }
+struct R11Pairs
+{
+    std::map<std::string, R11Pair> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<R11Pairs> =
+    yyjson::annotate(yyjson::field("m", yyjson::additional_properties(yyjson::satisfies<r11_pair_small>)));
+
+TEST(Constraints, MergeGivesTheKeyOfARejectedMapValue)
+{
+    auto t = R11Pairs{{{"k", {1, 0}}}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"m":{"k":{"b":1}}})", t); }).path(), "/m/k");
+}
+
+// a check before a merge that does not depend on the merged C++ value rejects the patch before the commit
+struct R12Pair
+{
+    int x = 0;
+    int n = 0;
+};
+inline bool r12_yes(const R12Pair&) { return true; }
+inline bool r12_small(const R12Pair& f) { return f.x <= 1; }
+inline bool r12_zero(const int& n) { return n == 0; }
+struct R12Counted
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12Counted> =
+    yyjson::annotate(yyjson::field("f", yyjson::min_properties(2), yyjson::satisfies<r12_yes>));
+struct R12Condition
+{
+    R12Pair f;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12Condition> =
+    yyjson::annotate(yyjson::all_of(yyjson::property("n", yyjson::satisfies<r12_zero>)));
+
+TEST(Constraints, MergeRejectsBeforeTheCommitWhatNoMergedValueDecides)
+{
+    auto t = R12Counted{{9, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":null}})", t); }).path(), "/f");
+    EXPECT_EQ(t.f.x, 9);
+
+    auto c = R12Condition{{0, 0}, 0};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":7},"n":1})", c); }).path(), "/n");
+    EXPECT_EQ(c.f.x, 0);
+    EXPECT_EQ(c.n, 0);
+}
+
+// a combinator of a keyword on JSON and a predicate of a merged value is left to the commit only if the
+// predicate can change its result
+struct R12AnyOf
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12AnyOf> =
+    yyjson::annotate(yyjson::field("f", yyjson::any_of(yyjson::min_properties(3), yyjson::satisfies<r12_small>)));
+struct R12AnyOfAll
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12AnyOfAll> = yyjson::annotate(
+    yyjson::field("f", yyjson::any_of(yyjson::max_properties(0),
+                                      yyjson::all_of(yyjson::min_properties(3), yyjson::satisfies<r12_small>))));
+struct R12Not
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12Not> = yyjson::annotate(
+    yyjson::field("f", yyjson::not_(yyjson::all_of(yyjson::min_properties(1), yyjson::satisfies<r12_small>))));
+struct R12NotJson
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12NotJson> = yyjson::annotate(
+    yyjson::field("f", yyjson::not_(yyjson::any_of(yyjson::min_properties(1), yyjson::satisfies<r12_small>))));
+struct R12OneOf
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12OneOf> =
+    yyjson::annotate(yyjson::field("f", yyjson::one_of(yyjson::min_properties(2), yyjson::satisfies<r12_small>)));
+struct R12OneOfJson
+{
+    R12Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12OneOfJson> = yyjson::annotate(yyjson::field(
+    "f", yyjson::one_of(yyjson::min_properties(1), yyjson::max_properties(5), yyjson::satisfies<r12_small>)));
+
+TEST(Constraints, MergeDecidesACombinatorBeforeTheCommitIfItCan)
+{
+    // the predicate decides: the merge commits, and then rejects the merged value
+    auto any = R12AnyOf{{0, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":5}})", any); }).path(), "/f");
+    EXPECT_EQ(any.f.x, 5);
+    yyjson::merge_into(R"({"f":{"x":1}})", any);
+    EXPECT_EQ(any.f.x, 1);
+
+    auto one = R12OneOf{{5, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":0}})", one); }).path(), "/f");
+    EXPECT_EQ(one.f.x, 0);
+
+    auto negated = R12Not{{0, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":1}})", negated); }).path(), "/f");
+    EXPECT_EQ(negated.f.x, 1);
+
+    // the keywords on JSON decide whatever the predicate gives: the merge rejects the patch before the commit
+    auto all = R12AnyOfAll{{0, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":1}})", all); }).path(), "/f");
+    EXPECT_EQ(all.f.x, 0);
+
+    auto json = R12NotJson{{0, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":5}})", json); }).path(), "/f");
+    EXPECT_EQ(json.f.x, 0);
+
+    auto many = R12OneOfJson{{0, 0}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":5}})", many); }).path(), "/f");
+    EXPECT_EQ(many.f.x, 0);
+}
+
+// a pattern that matches a declared field of its value type checks the field without a read of its JSON
+struct R12Prefixed
+{
+    std::string s;
+};
+inline int r12_prefixed_reads = 0;
+template <>
+struct yyjson::caster<R12Prefixed>
+{
+    static R12Prefixed from_json(std::string s)
+    {
+        ++r12_prefixed_reads;
+        if (s.starts_with("!")) throw std::runtime_error("unreadable prefix");
+        return {s};
+    }
+    static std::string to_json(const R12Prefixed& c) { return "!" + c.s; }
+};
+struct R12Declared
+{
+    R12Prefixed a;
+    std::map<std::string, R12Prefixed> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12Declared> = yyjson::annotate(
+    yyjson::field("p", yyjson::pattern_properties("^a$"), yyjson::additional_properties(yyjson::max_length(4))));
+
+TEST(Constraints, PatternOfADeclaredFieldTakesItsValue)
+{
+    r12_prefixed_reads = 0;
+    auto t = R12Declared{{"ab"}, {}};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    yyjson::merge_into(R"({"p":{}})", t);
+    EXPECT_EQ(r12_prefixed_reads, 0);
+    t.a.s = "abcd";
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/a");
+    EXPECT_EQ(r12_prefixed_reads, 0);
+}
+
+// a finite value that a caster writes as a float is not read back with WriteFlag::InfAndNanAsNull
+struct R12Finite
+{
+    double x = 5;
+};
+inline int r12_finite_reads = 0;
+template <>
+struct yyjson::caster<R12Finite>
+{
+    static R12Finite from_json(double)
+    {
+        ++r12_finite_reads;
+        throw std::runtime_error("finite caster reread");
+    }
+    static double to_json(const R12Finite& d) { return d.x; }
+};
+struct R12Finites
+{
+    std::map<std::string, R12Finite> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<R12Finites> =
+    yyjson::annotate(yyjson::field("m", yyjson::extra_keys, yyjson::additional_properties(yyjson::maximum(10))));
+
+TEST(Constraints, InfAndNanAsNullReadsNoFiniteCasterValue)
+{
+    r12_finite_reads = 0;
+    const auto t = R12Finites{{{"k", R12Finite{5}}}};
+    EXPECT_EQ(std::string_view(yyjson::write(t, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation)),
+              R"({"k":5.0})");
+    EXPECT_EQ(r12_finite_reads, 0);
+}
+
+// a validate that a predicate calls during the check of a merge checks its own value
+struct R13Part
+{
+    int x = 0;
+};
+inline bool r13_positive(const R13Part& f) { return f.x > 0; }
+struct R13Check
+{
+    std::shared_ptr<R13Part> f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13Check> =
+    yyjson::annotate(yyjson::field("f", yyjson::satisfies<r13_positive>));
+struct R13Gated
+{
+    R13Part f;
+    int gate = 0;
+};
+inline R13Gated* r13_target = nullptr;
+inline bool r13_rejects(int)
+{
+    try
+    {
+        yyjson::validate(R13Check{std::shared_ptr<R13Part>(&r13_target->f, [](R13Part*) {})});
+        return false;
+    }
+    catch (const yyjson::bad_cast&)
+    {
+        return true;
+    }
+}
+template <>
+inline constexpr auto yyjson::annotations<R13Gated> = yyjson::annotate(
+    yyjson::field("f", yyjson::satisfies<r13_positive>), yyjson::field("gate", yyjson::satisfies<r13_rejects>));
+
+TEST(Constraints, MergeKeepsANestedValidateIndependent)
+{
+    auto t = R13Gated{};
+    r13_target = &t;
+    EXPECT_NO_THROW((void)yyjson::read<R13Gated>(R"({"f":{"x":1},"gate":0})"));
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"x":1}})", t));
+    EXPECT_EQ(t.f.x, 1);
+}
+
+// a merge calls no predicate of a branch that read does not select
+inline bool r13_explode(int) { throw std::runtime_error("inactive branch"); }
+struct R13Branch
+{
+    R13Part f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13Branch> = yyjson::annotate(yyjson::field(
+    "f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r13_positive>), yyjson::then(yyjson::min_properties(1)),
+                              yyjson::else_(yyjson::property("x", yyjson::satisfies<r13_explode>)))));
+struct R13AnyOf
+{
+    R13Part f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13AnyOf> = yyjson::annotate(yyjson::field(
+    "f", yyjson::any_of(yyjson::satisfies<r13_positive>, yyjson::property("x", yyjson::satisfies<r13_explode>))));
+struct R13Both
+{
+    R13Part f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13Both> = yyjson::annotate(yyjson::field(
+    "f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r13_positive>), yyjson::then(yyjson::max_properties(0)),
+                              yyjson::else_(yyjson::max_properties(0)))));
+
+TEST(Constraints, MergeCallsNoPredicateOfAnInactiveBranch)
+{
+    EXPECT_NO_THROW((void)yyjson::read<R13Branch>(R"({"f":{"x":1}})"));
+    auto branch = R13Branch{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"x":1}})", branch));
+    EXPECT_EQ(branch.f.x, 1);
+    auto any = R13AnyOf{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"x":1}})", any));
+    EXPECT_EQ(any.f.x, 1);
+
+    // both branches fail: the message does not tell which way the condition went
+    auto both = R13Both{{-1}};
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":-2}})", both); });
+    EXPECT_EQ(e.path(), "/f");
+    EXPECT_EQ(std::string_view(e.what()).find("if_"), std::string_view::npos);
+    EXPECT_EQ(both.f.x, -1);
+}
+
+// a pattern binds the C++ value of a declared field through a wrapper or a variant
+struct R13Wrap
+{
+    R12Prefixed value;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13Wrap> = yyjson::annotate(yyjson::transparent);
+template <typename A>
+struct R13Patterned
+{
+    A a;
+    std::map<std::string, R12Prefixed> p;
+};
+template <typename A>
+inline constexpr auto yyjson::annotations<R13Patterned<A>> = yyjson::annotate(
+    yyjson::field("p", yyjson::pattern_properties("^a$"), yyjson::additional_properties(yyjson::max_length(4))));
+using R13Adjacent = std::variant<R12Prefixed, std::string>;
+struct R13AdjacentField
+{
+    R13Adjacent v;
+    std::map<std::string, R13Adjacent> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13AdjacentField> = yyjson::annotate(
+    yyjson::field("v", yyjson::adjacent_tag("t", {"c", "s"})),
+    yyjson::field("p", yyjson::pattern_properties("^v$"), yyjson::additional_properties(yyjson::max_length(4))));
+
+TEST(Constraints, PatternOfAWrappedFieldTakesItsValue)
+{
+    r12_prefixed_reads = 0;
+    EXPECT_NO_THROW(yyjson::validate(R13Patterned<std::optional<R12Prefixed>>{R12Prefixed{"ab"}, {}}));
+    EXPECT_NO_THROW(yyjson::validate(R13Patterned<R13Wrap>{R13Wrap{{"ab"}}, {}}));
+    EXPECT_NO_THROW(yyjson::validate(R13Patterned<std::variant<R12Prefixed, int>>{R12Prefixed{"ab"}, {}}));
+    EXPECT_NO_THROW(yyjson::validate(R13AdjacentField{R12Prefixed{"ab"}, {}}));
+    auto t = R13Patterned<std::optional<R12Prefixed>>{R12Prefixed{"ab"}, {}};
+    yyjson::merge_into(R"({"p":{}})", t);
+    EXPECT_EQ(r12_prefixed_reads, 0);
+    t.a = R12Prefixed{"abcd"};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/a");
+    EXPECT_EQ(r12_prefixed_reads, 0);
+}
+
+// a NaN that write gives as null is checked as the JSON of the caster, without its from_json
+struct R13Real
+{
+    double x = 0;
+};
+inline int r13_real_reads = 0;
+template <>
+struct yyjson::caster<R13Real>
+{
+    static R13Real from_json(std::optional<double> x)
+    {
+        ++r13_real_reads;
+        return {x.value_or(0)};
+    }
+    static std::optional<double> to_json(const R13Real& c) { return c.x; }
+};
+struct R13Reals
+{
+    std::map<std::string, R13Real> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13Reals> =
+    yyjson::annotate(yyjson::field("m", yyjson::extra_keys, yyjson::additional_properties(yyjson::maximum(10))));
+struct R13Positions
+{
+    R12Finite a;
+    std::vector<R13Real> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<R13Positions> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::max_items(5));
+
+TEST(Constraints, InfAndNanAsNullReadsNoCasterValue)
+{
+    const auto as_null = yyjson::WriteFlag::InfAndNanAsNull;
+    const auto nan = std::nan("");
+    r13_real_reads = 0;
+    r12_finite_reads = 0;
+    EXPECT_EQ(std::string_view(yyjson::write(R13Reals{{{"k", R13Real{nan}}}}, as_null, yyjson::with_validation)),
+              R"({"k":null})");
+    EXPECT_EQ(std::string_view(yyjson::write(R13Real{nan}, as_null, yyjson::with_validation)), "null");
+    EXPECT_EQ(
+        std::string_view(yyjson::write(R13Positions{R12Finite{1}, {R13Real{nan}}}, as_null, yyjson::with_validation)),
+        "[1.0,null]");
+    // a `double` that `from_json` takes cannot read null
+    const auto e =
+        bad_cast_of([&] { (void)yyjson::write(R13Positions{R12Finite{nan}, {}}, as_null, yyjson::with_validation); });
+    EXPECT_EQ(std::string_view(e.what()), "double is not constructible from JSON null at /0");
+    EXPECT_EQ(r13_real_reads, 0);
+    EXPECT_EQ(r12_finite_reads, 0);
+}
+
+// a validate inside a format of a merge checks its value on its own
+struct R14Text
+{
+    std::string text;
+};
+inline bool r14_has_s(const std::string& s) { return s.find('S') != std::string::npos; }
+template <>
+inline constexpr auto yyjson::annotations<R14Text> =
+    yyjson::annotate(yyjson::field("text", yyjson::satisfies<r14_has_s>));
+bool r14_valid_text(std::string_view s)
+{
+    try
+    {
+        yyjson::validate(R14Text{std::string(s)});
+        return true;
+    }
+    catch (const yyjson::bad_cast&)
+    {
+        return false;
+    }
+}
+struct R14Text2
+{
+    int x = 0;
+    std::string s = "s";
+};
+inline bool r14_positive(const R14Text2& f) { return f.x > 0; }
+struct R14Nested
+{
+    R14Text2 f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R14Nested> = yyjson::annotate(
+    yyjson::field("f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r14_positive>),
+                                            yyjson::then(yyjson::property("s", yyjson::format_assertion("valid-text"))),
+                                            yyjson::else_(yyjson::max_properties(0)))));
+
+TEST(Constraints, MergeRejectsBeforeANestedValidate)
+{
+    EXPECT_THROW((void)yyjson::read<R14Nested>(R"({"f":{"x":1,"s":"s"}})"), yyjson::bad_cast);
+    auto t = R14Nested{};
+    EXPECT_THROW(yyjson::merge_into(R"({"f":{"x":1}})", t), yyjson::bad_cast);
+    EXPECT_EQ(t.f.x, 0);
+}
+
+// a merge calls no predicate after a property of the struct position that fails
+struct R14Inner
+{
+    int x = 0;
+};
+inline bool r14_inner_positive(const R14Inner& a) { return a.x > 0; }
+inline int r14_later_calls = 0;
+inline bool r14_later(int)
+{
+    ++r14_later_calls;
+    throw yyjson::bad_cast("later callback");
+}
+struct R14Pair
+{
+    R14Inner a;
+    int b = 0;
+};
+struct R14Chain
+{
+    R14Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R14Chain> = yyjson::annotate(yyjson::field(
+    "f", yyjson::if_then_else(yyjson::if_(yyjson::property("a", yyjson::satisfies<r14_inner_positive>),
+                                          yyjson::property("b", yyjson::satisfies<r14_later>)),
+                              yyjson::then(yyjson::min_properties(1)), yyjson::else_(yyjson::min_properties(1)))));
+
+TEST(Constraints, MergeCallsNoPredicateAfterAFailedProperty)
+{
+    r14_later_calls = 0;
+    EXPECT_NO_THROW((void)yyjson::read<R14Chain>(R"({"f":{"a":{"x":-1},"b":0}})"));
+    auto t = R14Chain{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"a":{"x":-1}}})", t));
+    EXPECT_EQ(r14_later_calls, 0);
+}
+
+// InfAndNanAsNull reads no caster value that a variant or a map holds
+struct R14Key
+{
+    std::string s;
+    explicit R14Key(std::string_view x) : s("!" + std::string(x)) {}
+    operator std::string_view() const { return s; }  // NOLINT(google-explicit-constructor)
+    bool operator<(const R14Key& k) const { return s < k.s; }
+};
+struct R14Keyed
+{
+    std::map<R14Key, R13Real> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<R14Keyed> =
+    yyjson::annotate(yyjson::field("m", yyjson::extra_keys, yyjson::additional_properties(yyjson::maximum(10))));
+struct R14Int
+{
+    static double from_json(int n) { return n; }
+};
+struct R14Source
+{
+    double a = 0;
+};
+struct R14Written
+{
+    std::optional<double> a;
+};
+struct R14Translated
+{
+    double v = 0;
+};
+template <>
+struct yyjson::caster<R14Translated>
+{
+    static R14Translated from_json(R14Source s) { return {s.a}; }
+    static R14Written to_json(const R14Translated& t) { return {t.v}; }
+};
+
+struct R14Accepting
+{
+    double v = 0;
+};
+template <>
+struct yyjson::caster<R14Accepting>
+{
+    static R14Accepting from_json(R14Written w) { return {w.a.value_or(0)}; }
+    static R14Source to_json(const R14Accepting& t) { return {t.v}; }
+};
+
+TEST(Constraints, InfAndNanAsNullReadsTheHeldCasterValue)
+{
+    const auto as_null = yyjson::WriteFlag::InfAndNanAsNull;
+    const auto nan = std::nan("");
+    r13_real_reads = 0;
+    EXPECT_EQ(std::string_view(
+                  yyjson::write(std::variant<R13Real, std::string>{R13Real{nan}}, as_null, yyjson::with_validation)),
+              "null");
+    EXPECT_EQ(std::string_view(yyjson::write(R14Keyed{{{R14Key("k"), R13Real{5}}}}, as_null, yyjson::with_validation)),
+              R"({"!k":5.0})");
+    EXPECT_EQ(
+        std::string_view(yyjson::write(R14Keyed{{{R14Key("k"), R13Real{nan}}}}, as_null, yyjson::with_validation)),
+        R"({"!k":null})");
+    EXPECT_EQ(r13_real_reads, 0);
+    // null is read as the type that `from_json` takes
+    const auto e = bad_cast_of(
+        [&] { (void)yyjson::write(yyjson::with_caster<double, R14Int>{nan}, as_null, yyjson::with_validation); });
+    EXPECT_EQ(std::string_view(e.what()), "int is not constructible from JSON null");
+    const auto f = bad_cast_of([&] { (void)yyjson::write(R14Translated{nan}, as_null, yyjson::with_validation); });
+    EXPECT_EQ(std::string_view(f.what()), "double is not constructible from JSON null at /a");
+    // a std::optional field of the type that `from_json` takes rejects null, as read rejects it under the policy
+    const auto g = bad_cast_of([&] { (void)yyjson::write(R14Accepting{nan}, as_null, yyjson::with_validation); });
+    EXPECT_EQ(std::string_view(g.what()),
+              "std::optional<double> is not constructible from JSON null under yyjson::reject_null_as_missing at /a");
+}
+
+// the check of a merge follows no field that write leaves out
+struct R15Node;
+struct R15Link
+{
+    std::shared_ptr<R15Node> p;
+    bool operator==(const R15Link&) const { return true; }
+};
+template <>
+struct yyjson::caster<R15Link>
+{
+    static const R15Node& to_json(const R15Link& l) { return *l.p; }
+};
+struct R15Node
+{
+    double x = 0;
+    R15Link next;
+};
+inline R15Link r15_empty_link() { return {}; }
+template <>
+inline constexpr auto yyjson::annotations<R15Node> =
+    yyjson::annotate(yyjson::field("next", yyjson::default_from<r15_empty_link>));
+struct R15Cyclic
+{
+    std::shared_ptr<R15Node> p;
+};
+template <>
+struct yyjson::caster<R15Cyclic>
+{
+    static R15Cyclic from_json(std::map<std::string, double>) { return {std::make_shared<R15Node>()}; }
+    static const R15Node& to_json(const R15Cyclic& c) { return *c.p; }
+};
+
+TEST(Constraints, InfAndNanAsNullFollowsTheWrittenFields)
+{
+    auto p = std::make_shared<R15Node>();
+    p->next.p = p;
+    EXPECT_EQ(
+        std::string_view(yyjson::write(R15Cyclic{p}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation)),
+        R"({"x":0.0})");
+    p->next.p.reset();
+}
+
+// a validate inside a speculative branch of a merge checks types that only its write reaches
+inline bool r15_positive(int x) { return x > 0; }
+struct R15Array
+{
+    int x = -1;
+};
+template <>
+inline constexpr auto yyjson::annotations<R15Array> =
+    yyjson::annotate(yyjson::as_array, yyjson::items(false), yyjson::contains(yyjson::satisfies<r15_positive>));
+struct R15Limited
+{
+    int v = 5;
+};
+template <>
+inline constexpr auto yyjson::annotations<R15Limited> = yyjson::annotate(yyjson::field("v", yyjson::maximum(0)));
+struct R15WriteOnly
+{
+    int v = 5;
+};
+template <>
+struct yyjson::caster<R15WriteOnly>
+{
+    static R15Limited to_json(const R15WriteOnly& w) { return {w.v}; }
+};
+inline int r15_nested_accepted = 0;
+bool r15_nested_checks(std::string_view)
+{
+    const auto accepts = [](const auto& v) {
+        try
+        {
+            yyjson::validate(v);
+            return true;
+        }
+        catch (const yyjson::bad_cast&)
+        {
+            return false;
+        }
+    };
+    r15_nested_accepted += static_cast<int>(accepts(R15Array{})) + static_cast<int>(accepts(R15WriteOnly{}));
+    return true;
+}
+struct R15Gate
+{
+    R14Text2 f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R15Gate> = yyjson::annotate(yyjson::field(
+    "f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r14_positive>), yyjson::then(yyjson::min_properties(1)),
+                              yyjson::else_(yyjson::property("s", yyjson::format_assertion("nested-checks"))))));
+
+TEST(Constraints, NestedValidateInASpeculativeBranchChecksAll)
+{
+    r15_nested_accepted = 0;
+    (void)r15_nested_checks("");
+    EXPECT_EQ(r15_nested_accepted, 0);
+    auto t = R15Gate{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"x":1}})", t));
+    EXPECT_EQ(r15_nested_accepted, 0);
+}
+
+// null is read as the type that read gives `from_json` at the position
+struct R15Both
+{
+    double x = 0;
+};
+template <>
+struct yyjson::caster<R15Both>
+{
+    static R15Both from_json(std::optional<double> x) { return {x.value_or(0)}; }
+    static void from_json(R15Both& c, int x) { c.x = x; }
+    static std::optional<double> to_json(const R15Both& c) { return c.x; }
+};
+struct R15BothField
+{
+    R15Both b;
+};
+// the native positions beside a caster in the written value are read back
+struct R15Opaque
+{
+    int x = 0;
+};
+template <>
+struct yyjson::caster<R15Opaque>
+{
+    static R15Opaque from_json(int x) { return {x}; }
+    static int to_json(const R15Opaque& d) { return d.x; }
+};
+struct R15In
+{
+    double a = 0;
+    R15Opaque b;
+};
+struct R15Out
+{
+    double a = 0;
+    int b = 0;
+};
+struct R15Beside
+{
+    double x = 0;
+};
+template <>
+struct yyjson::caster<R15Beside>
+{
+    static R15Beside from_json(R15In v) { return {v.a}; }
+    static R15Out to_json(const R15Beside& v) { return {v.x, 0}; }
+};
+
+TEST(Constraints, InfAndNanAsNullReadsAsTheReadPosition)
+{
+    const auto as_null = yyjson::WriteFlag::InfAndNanAsNull;
+    const auto nan = std::nan("");
+    EXPECT_NO_THROW((void)yyjson::read<R15Both>("null"));
+    EXPECT_EQ(std::string_view(yyjson::write(R15Both{nan}, as_null, yyjson::with_validation)), "null");
+    EXPECT_THROW((void)yyjson::read<R15BothField>(R"({"b":null})"), yyjson::bad_cast);
+    const auto e = bad_cast_of([&] { (void)yyjson::write(R15BothField{{nan}}, as_null, yyjson::with_validation); });
+    EXPECT_EQ(std::string_view(e.what()), "int is not constructible from JSON null at /b");
+    EXPECT_THROW((void)yyjson::read<R15Beside>(R"({"a":null,"b":0})"), yyjson::bad_cast);
+    const auto f = bad_cast_of([&] { (void)yyjson::write(R15Beside{nan}, as_null, yyjson::with_validation); });
+    EXPECT_EQ(std::string_view(f.what()), "double is not constructible from JSON null at /a");
+}
+
+// a key of a map that read stores in another map is found before a value of the map is read back
+struct R15Routed
+{
+    std::map<std::string, R13Real> first, rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<R15Routed> = yyjson::annotate(
+    yyjson::field("first", yyjson::pattern_properties("^x")), yyjson::field("rest", yyjson::extra_keys));
+
+TEST(Constraints, InfAndNanAsNullChecksTheRoutesFirst)
+{
+    r13_real_reads = 0;
+    const auto e = bad_cast_of([] {
+        (void)yyjson::write(R15Routed{{}, {{"x", R13Real{5}}}}, yyjson::WriteFlag::InfAndNanAsNull,
+                            yyjson::with_validation);
+    });
+    EXPECT_EQ(std::string_view(e.what()),
+              R"(the key "x" of the field "rest" of R15Routed is read into the field "first" at /x)");
+    EXPECT_EQ(r13_real_reads, 0);
+}
+
+// a merge calls a predicate of a branch that its check cannot select only after the merge
+struct R15Pair
+{
+    int x = 0, y = 0;
+};
+inline bool r15_pair_positive(const R15Pair& f) { return f.x > 0; }
+inline bool r15_never(int) { return false; }
+struct R15Late
+{
+    R15Pair f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R15Late> = yyjson::annotate(
+    yyjson::field("f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r15_pair_positive>),
+                                            yyjson::then(yyjson::property("y", yyjson::satisfies<r15_never>)),
+                                            yyjson::else_(yyjson::max_properties(0)))));
+
+TEST(Constraints, MergeChecksASpeculativePredicateAfterTheMerge)
+{
+    EXPECT_THROW((void)yyjson::read<R15Late>(R"({"f":{"x":1,"y":0}})"), yyjson::bad_cast);
+    auto t = R15Late{};
+    EXPECT_THROW(yyjson::merge_into(R"({"f":{"x":1}})", t), yyjson::bad_cast);
+    // documented: the predicate runs after the merge, so `t` holds the merged value
+    EXPECT_EQ(t.f.x, 1);
+}
+
+// a merge checks a field that `from_json` reads in place as read gives it
+struct R16InPlace
+{
+    std::string value;
+};
+template <>
+struct yyjson::caster<R16InPlace>
+{
+    static R16InPlace from_json(int x) { return {std::to_string(x)}; }
+    static void from_json(R16InPlace& c, std::string x) { c.value = std::move(x); }
+    static std::string to_json(const R16InPlace& c) { return c.value; }
+};
+struct R16InPlaceField
+{
+    int n = 0;
+    R16InPlace c{"old"};
+};
+template <>
+inline constexpr auto yyjson::annotations<R16InPlaceField> =
+    yyjson::annotate(yyjson::field("c", yyjson::max_length(3)));
+
+TEST(Constraints, MergeChecksAFieldReadInPlace)
+{
+    const auto* json = R"({"n":1,"c":"new"})";
+    EXPECT_NO_THROW((void)yyjson::read<R16InPlaceField>(json));
+    auto t = R16InPlaceField{};
+    EXPECT_NO_THROW(yyjson::merge_into(json, t));
+    EXPECT_EQ(t.n, 1);
+    EXPECT_EQ(t.c.value, "new");
+}
+
+// InfAndNanAsNull reads the written JSON as the type that read gives `from_json` of the caster
+namespace r16
+{
+    constexpr auto inf = std::numeric_limits<double>::infinity();
+    struct D
+    {
+        double x = inf;
+    };
+    struct Transparent
+    {
+        D d;
+    };
+    struct W
+    {
+        double x = 0;
+    };
+    struct Translated
+    {
+        double x = inf;
+    };
+    struct Row
+    {
+        double x = inf;
+    };
+    struct ToRow
+    {
+        double x = inf;
+    };
+    struct Values
+    {
+        std::map<std::string, double> values;
+    };
+    struct ToValues
+    {
+        double x = inf;
+    };
+    struct Opaque
+    {
+        int x = 0;
+    };
+    struct ArrayIn
+    {
+        double a[1]{};
+        Opaque d;
+    };
+    struct ArrayOut
+    {
+        std::array<double, 1> a;
+        int d = 0;
+    };
+    struct ToArray
+    {
+        double x = inf;
+    };
+    struct MapIn
+    {
+        double a = 0;
+        Opaque d;
+        std::map<std::string, double> rest;
+    };
+    struct PairOut
+    {
+        double a = 0;
+        int d = 0;
+    };
+    struct ToMap
+    {
+        double x = inf;
+    };
+    struct RowIn
+    {
+        double a = 0;
+        Opaque d;
+    };
+    struct RowOut
+    {
+        double a = 0;
+        int d = 0;
+    };
+    struct ToRowIn
+    {
+        double x = inf;
+    };
+    inline int outer = 0;
+    inline int inner = 0;
+    struct Counted
+    {
+        double x = 0;
+    };
+    struct CountedTransparent
+    {
+        Counted d;
+    };
+    struct ToCounted
+    {
+        double x = inf;
+    };
+    struct ExtraIn
+    {
+        yyjson::nullable<double> a;
+        std::map<std::string, Opaque> rest;
+    };
+    struct ToExtra
+    {
+        double x = inf;
+    };
+}  // namespace r16
+template <>
+struct yyjson::caster<r16::D>
+{
+    static r16::D from_json(int x) { return {double(x)}; }
+    static void from_json(r16::D& d, std::optional<double> x) { d.x = x.value_or(0); }
+    static std::optional<double> to_json(const r16::D& d) { return d.x; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::Transparent> = yyjson::annotate(yyjson::transparent);
+template <>
+struct yyjson::caster<r16::Translated>
+{
+    static r16::Translated from_json(r16::W w) { return {w.x}; }
+    static void from_json(r16::Translated& c, int x) { c.x = x; }
+    static r16::W to_json(const r16::Translated& c) { return {c.x}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::Row> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("x", yyjson::default_));
+template <>
+struct yyjson::caster<r16::ToRow>
+{
+    static r16::ToRow from_json(std::vector<double> x) { return {x.at(0)}; }
+    static r16::Row to_json(const r16::ToRow& c) { return {c.x}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::Values> = yyjson::annotate(yyjson::field("values", yyjson::extra_keys));
+template <>
+struct yyjson::caster<r16::ToValues>
+{
+    static r16::ToValues from_json(std::map<std::string, double> x) { return {x.at("x")}; }
+    static r16::Values to_json(const r16::ToValues& c) { return {{{"x", c.x}}}; }
+};
+template <>
+struct yyjson::caster<r16::Opaque>
+{
+    static r16::Opaque from_json(int x) { return {x}; }
+    static int to_json(const r16::Opaque& d) { return d.x; }
+};
+template <>
+struct yyjson::caster<r16::ToArray>
+{
+    static r16::ToArray from_json(r16::ArrayIn) { return {}; }
+    static r16::ArrayOut to_json(const r16::ToArray& c) { return {{c.x}, 0}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::MapIn> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+template <>
+struct yyjson::caster<r16::ToMap>
+{
+    static r16::ToMap from_json(r16::MapIn) { return {}; }
+    static r16::PairOut to_json(const r16::ToMap& c) { return {c.x, 0}; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::RowIn> = yyjson::annotate(yyjson::as_array);
+template <>
+inline constexpr auto yyjson::annotations<r16::RowOut> = yyjson::annotate(yyjson::as_array);
+template <>
+struct yyjson::caster<r16::ToRowIn>
+{
+    static r16::ToRowIn from_json(r16::RowIn) { return {}; }
+    static r16::RowOut to_json(const r16::ToRowIn& c) { return {c.x, 0}; }
+};
+template <>
+struct yyjson::caster<r16::Counted>
+{
+    static r16::Counted from_json(std::optional<double> x)
+    {
+        ++r16::inner;
+        return {x.value_or(0)};
+    }
+    static double to_json(const r16::Counted& d) { return d.x; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::CountedTransparent> = yyjson::annotate(yyjson::transparent);
+template <>
+struct yyjson::caster<r16::ToCounted>
+{
+    static r16::ToCounted from_json(r16::CountedTransparent)
+    {
+        ++r16::outer;
+        return {};
+    }
+    static double to_json(const r16::ToCounted& c) { return c.x; }
+};
+template <>
+inline constexpr auto yyjson::annotations<r16::ExtraIn> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+template <>
+struct yyjson::caster<r16::ToExtra>
+{
+    static r16::ToExtra from_json(r16::ExtraIn)
+    {
+        ++r16::outer;
+        return {};
+    }
+    static r16::PairOut to_json(const r16::ToExtra& c) { return {c.x, 0}; }
+};
+
+namespace
+{
+    // whether the validated write accepts the value exactly when read accepts its plain write
+    template <typename T>
+    void expect_read_agrees()
+    {
+        const auto as_null = yyjson::WriteFlag::InfAndNanAsNull;
+        const auto text = std::string(std::string_view(yyjson::write(T{}, as_null)));
+        bool read_accepts = true;
+        try
+        {
+            (void)yyjson::read<T>(text);
+        }
+        catch (const std::exception&)
+        {
+            read_accepts = false;
+        }
+        bool validate_accepts = true;
+        try
+        {
+            (void)yyjson::write(T{}, as_null, yyjson::with_validation);
+        }
+        catch (const std::exception&)
+        {
+            validate_accepts = false;
+        }
+        EXPECT_EQ(validate_accepts, read_accepts) << text;
+    }
+}  // namespace
+
+TEST(Constraints, InfAndNanAsNullReadsTheSourceOfTheCaster)
+{
+    expect_read_agrees<r16::Transparent>();
+    expect_read_agrees<r16::Translated>();
+    expect_read_agrees<r16::ToRow>();
+    expect_read_agrees<r16::ToValues>();
+    expect_read_agrees<r16::ToArray>();
+    expect_read_agrees<r16::ToMap>();
+    expect_read_agrees<r16::ToRowIn>();
+    EXPECT_THROW((void)yyjson::write(r16::ToArray{}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation),
+                 yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::write(r16::ToMap{}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation),
+                 yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::write(r16::ToRowIn{}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation),
+                 yyjson::bad_cast);
+}
+
+TEST(Constraints, InfAndNanAsNullCallsOnlyTheNestedCasters)
+{
+    const auto as_null = yyjson::WriteFlag::InfAndNanAsNull;
+    r16::outer = 0;
+    EXPECT_NO_THROW((void)yyjson::write(r16::ToCounted{}, as_null, yyjson::with_validation));
+    EXPECT_EQ(r16::outer, 0);
+    expect_read_agrees<r16::ToExtra>();
+    r16::outer = 0;
+    EXPECT_NO_THROW((void)yyjson::write(r16::ToExtra{}, as_null, yyjson::with_validation));
+    EXPECT_EQ(r16::outer, 0);
+}
+
+// a merge does not call the predicate of a field of `yyjson::with_caster` in a branch that it cannot select
+struct R16Unread
+{
+    static int from_json(int x) { return x; }
+};
+inline int r16_invoked_calls = 0;
+inline bool r16_invoked(int)
+{
+    ++r16_invoked_calls;
+    return true;
+}
+struct R16WithCaster
+{
+    int x = 0;
+    yyjson::with_caster<int, R16Unread> y{1};
+};
+inline bool r16_with_caster_positive(const R16WithCaster& f) { return f.x > 0; }
+struct R16WithCasterGate
+{
+    R16WithCaster f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R16WithCasterGate> = yyjson::annotate(
+    yyjson::field("f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r16_with_caster_positive>),
+                                            yyjson::then(yyjson::min_properties(1)),
+                                            yyjson::else_(yyjson::property("y", yyjson::satisfies<r16_invoked>)))));
+
+TEST(Constraints, MergeDefersThePredicateOfAWithCaster)
+{
+    r16_invoked_calls = 0;
+    EXPECT_NO_THROW((void)yyjson::read<R16WithCasterGate>(R"({"f":{"x":1,"y":1}})"));
+    EXPECT_EQ(r16_invoked_calls, 0);
+    auto t = R16WithCasterGate{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"x":1}})", t));
+    EXPECT_EQ(r16_invoked_calls, 0);
+}
+
+// a nested read in a speculative branch checks the keywords of the type that it reads with an opaque write
+inline bool r16_positive(int x) { return x > 0; }
+struct R16Entry
+{
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<R16Entry> =
+    yyjson::annotate(yyjson::field("x", yyjson::satisfies<r16_positive>));
+struct R16ReadOnly
+{
+    std::map<std::string, R16Entry> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<R16ReadOnly> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+template <>
+struct yyjson::caster<R16ReadOnly>
+{
+    static int to_json(const R16ReadOnly&) { return 0; }
+};
+inline int r16_nested_accepted = 0;
+bool r16_nested_reads(std::string_view)
+{
+    try
+    {
+        (void)yyjson::read<R16ReadOnly>(R"({"k":{"x":-1}})");
+        ++r16_nested_accepted;
+    }
+    catch (const yyjson::bad_cast&)
+    {
+    }
+    return true;
+}
+struct R16ReadGate
+{
+    R14Text2 f;
+};
+template <>
+inline constexpr auto yyjson::annotations<R16ReadGate> = yyjson::annotate(yyjson::field(
+    "f", yyjson::if_then_else(yyjson::if_(yyjson::satisfies<r14_positive>), yyjson::then(yyjson::min_properties(1)),
+                              yyjson::else_(yyjson::property("s", yyjson::format_assertion("nested-reads"))))));
+
+TEST(Constraints, NestedReadInASpeculativeBranchChecksAll)
+{
+    EXPECT_TRUE(yyjson::detail::speculation_sensitive<R16ReadOnly>::value);
+    r16_nested_accepted = 0;
+    (void)r16_nested_reads("");
+    EXPECT_EQ(r16_nested_accepted, 0);
+    auto t = R16ReadGate{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"f":{"x":1}})", t));
+    EXPECT_EQ(r16_nested_accepted, 0);
+}
+
+TEST(Constraints, RepeatedKeysNeedNoSpeculationState)
+{
+    EXPECT_TRUE((std::is_empty_v<yyjson::detail::independent_checks_for<std::multimap<std::string, int>>>));
+}
+
+// a present value of an in-place caster field with `yyjson::default_from` starts from the field of `T()`, as read
+struct R17InPlace
+{
+    int x = 10;
+    bool operator==(const R17InPlace&) const = default;
+};
+template <>
+struct yyjson::caster<R17InPlace>
+{
+    static R17InPlace from_json(int x) { return {x + 100}; }
+    static void from_json(R17InPlace& c, int x) { c.x += x; }
+    static int to_json(const R17InPlace& c) { return c.x; }
+};
+inline R17InPlace r17_twenty() { return {20}; }
+inline bool r17_is21(const R17InPlace& c) { return c.x == 21; }
+struct R17InPlaceField
+{
+    R17InPlace c;
+};
+template <>
+inline constexpr auto yyjson::annotations<R17InPlaceField> =
+    yyjson::annotate(yyjson::field("c", yyjson::default_from<r17_twenty>, yyjson::satisfies<r17_is21>));
+struct R17InPlaceProperty
+{
+    R17InPlace c;
+};
+template <>
+inline constexpr auto yyjson::annotations<R17InPlaceProperty> = yyjson::annotate(
+    yyjson::field("c", yyjson::default_from<r17_twenty>), yyjson::property("c", yyjson::satisfies<r17_is21>));
+
+template <typename T>
+void expect_in_place_from_object()
+{
+    EXPECT_ANY_THROW((void)yyjson::read<T>(R"({"c":1})"));
+    auto t = T{};
+    EXPECT_ANY_THROW(yyjson::merge_into(R"({"c":1})", t));
+    EXPECT_EQ(t.c.x, 10);
+    EXPECT_ANY_THROW(yyjson::merge_into(R"({"c":1})", t, yyjson::strict));
+    EXPECT_EQ(t.c.x, 10);
+    EXPECT_EQ(yyjson::read<T>(R"({"c":11})").c.x, 21);
+    t.c.x = 5;
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"c":11})", t));
+    EXPECT_EQ(t.c.x, 21);
+    t.c.x = 5;
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"c":11})", t, yyjson::strict));
+    EXPECT_EQ(t.c.x, 21);
+}
+
+TEST(Constraints, MergeReadsAPresentInPlaceFieldFromTheObject)
+{
+    expect_in_place_from_object<R17InPlaceField>();
+    expect_in_place_from_object<R17InPlaceProperty>();
+}
+
+// a transparent struct with its own caster is read by that caster, also at a field
+struct R17Transparent
+{
+    int x = 10;
+};
+template <>
+inline constexpr auto yyjson::annotations<R17Transparent> = yyjson::annotate(yyjson::transparent);
+template <>
+struct yyjson::caster<R17Transparent>
+{
+    static R17Transparent from_json(int x) { return {x + 100}; }
+    static void from_json(R17Transparent& c, int x) { c.x += x; }
+    static int to_json(const R17Transparent& c) { return c.x; }
+};
+inline bool r17_eleven(const R17Transparent& c) { return c.x == 11; }
+struct R17TransparentField
+{
+    R17Transparent c;
+};
+template <>
+inline constexpr auto yyjson::annotations<R17TransparentField> =
+    yyjson::annotate(yyjson::field("c", yyjson::satisfies<r17_eleven>));
+
+TEST(Constraints, MergeReadsATransparentCasterAsRead)
+{
+    EXPECT_EQ(yyjson::read<R17TransparentField>(R"({"c":1})").c.x, 11);
+    auto t = R17TransparentField{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"c":1})", t));
+    EXPECT_EQ(t.c.x, 11);
+}
+
+// a new value of a map is an element, which read gives with the returning `from_json`
+struct R17Element
+{
+    std::string value = "old";
+};
+template <>
+struct yyjson::caster<R17Element>
+{
+    static R17Element from_json(int x) { return {std::to_string(x)}; }
+    static void from_json(R17Element& c, std::string x) { c.value = std::move(x); }
+    static std::string to_json(const R17Element& c) { return c.value; }
+};
+struct R17ExtraElements
+{
+    int n = 0;
+    std::map<std::string, R17Element> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<R17ExtraElements> =
+    yyjson::annotate(yyjson::field("m", yyjson::extra_keys, yyjson::additional_properties(yyjson::max_length(3))));
+struct R17PatternElements
+{
+    int n = 0;
+    std::map<std::string, R17Element> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<R17PatternElements> =
+    yyjson::annotate(yyjson::field("m", yyjson::pattern_properties("^a")));
+struct R17MapElements
+{
+    std::map<std::string, R17Element> m;
+};
+
+TEST(Constraints, MergeInsertsAMapValueAsAnElement)
+{
+    auto extra = R17ExtraElements{};
+    EXPECT_EQ(yyjson::read<R17ExtraElements>(R"({"n":1,"a":5})").m.at("a").value, "5");
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"n":1,"a":5})", extra));
+    EXPECT_EQ(extra.n, 1);
+    EXPECT_EQ(extra.m.at("a").value, "5");
+    auto pattern = R17PatternElements{};
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"n":1,"a":5})", pattern));
+    EXPECT_EQ(pattern.m.at("a").value, "5");
+    auto map = R17MapElements{};
+    EXPECT_EQ(yyjson::read<R17MapElements>(R"({"m":{"a":5}})", yyjson::strict).m.at("a").value, "5");
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"m":{"a":5}})", map, yyjson::strict));
+    EXPECT_EQ(map.m.at("a").value, "5");
+}
+
+// the null that write gives for a caster is read as the type of its `from_json` with the casters in that type
+inline int r17_inner_calls = 0;
+inline int r17_outer_calls = 0;
+struct R17Inner
+{
+};
+template <>
+struct yyjson::caster<R17Inner>
+{
+    static R17Inner from_json(std::optional<double> x)
+    {
+        ++r17_inner_calls;
+        if (!x) throw yyjson::bad_cast("R17Inner rejects null");
+        return {};
+    }
+    static double to_json(const R17Inner&) { return 0; }
+};
+struct R17Outer
+{
+    double x = std::numeric_limits<double>::infinity();
+};
+template <>
+struct yyjson::caster<R17Outer>
+{
+    static R17Outer from_json(R17Inner)
+    {
+        ++r17_outer_calls;
+        return {0};
+    }
+    static double to_json(const R17Outer& c) { return c.x; }
+};
+
+TEST(Constraints, ValidatedNullCallsTheNestedCasters)
+{
+    EXPECT_ANY_THROW((void)yyjson::read<R17Outer>("null"));
+    r17_inner_calls = r17_outer_calls = 0;
+    EXPECT_ANY_THROW((void)yyjson::write(R17Outer{}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation));
+    EXPECT_GT(r17_inner_calls, 0);
+    EXPECT_EQ(r17_outer_calls, 0);
+}
+
+// a field that write leaves out is not written for the check of an infinity or a NaN
+inline int r17_omitted_calls = 0;
+struct R17OmittedWritten
+{
+    double x = 0;
+};
+struct R17Omitted
+{
+    int x = 0;
+    bool operator==(const R17Omitted&) const = default;
+};
+template <>
+struct yyjson::caster<R17Omitted>
+{
+    static R17Omitted from_json(std::map<std::string, double>) { return {}; }
+    static R17OmittedWritten to_json(const R17Omitted&)
+    {
+        ++r17_omitted_calls;
+        throw std::runtime_error("omitted caster");
+    }
+};
+struct R17OmittedField
+{
+    std::optional<R17Omitted> c = R17Omitted{};
+};
+template <>
+inline constexpr auto yyjson::annotations<R17OmittedField> = yyjson::annotate(yyjson::field("c", yyjson::default_));
+
+TEST(Constraints, ValidationWritesNoOmittedField)
+{
+    r17_omitted_calls = 0;
+    EXPECT_NO_THROW(
+        (void)yyjson::write(R17OmittedField{}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation));
+    EXPECT_EQ(r17_omitted_calls, 0);
+}
+
+// a `from_json` that borrows its value from the document is checked with null too
+struct R17Borrowed
+{
+    double x = std::numeric_limits<double>::infinity();
+};
+template <>
+struct yyjson::caster<R17Borrowed>
+{
+    static R17Borrowed from_json(std::string_view) { return {0}; }
+    static double to_json(const R17Borrowed& c) { return c.x; }
+};
+
+TEST(Constraints, ValidatedNullReadsABorrowedType)
+{
+    const auto json = yyjson::write(R17Borrowed{}, yyjson::WriteFlag::InfAndNanAsNull);
+    EXPECT_EQ(json, "null");
+    EXPECT_ANY_THROW((void)yyjson::read<R17Borrowed>(json));
+    EXPECT_ANY_THROW((void)yyjson::write(R17Borrowed{}, yyjson::WriteFlag::InfAndNanAsNull, yyjson::with_validation));
+}
+
+// the layout flags do not hide the null of an infinity in a `std::optional` field
+struct R17OptionalInf
+{
+    std::optional<double> x = std::numeric_limits<double>::infinity();
+};
+
+TEST(Constraints, NullAsMissingCheckIgnoresTheLayout)
+{
+    for (const auto flag : {yyjson::WriteFlag::NewlineAtEnd, yyjson::WriteFlag::Pretty})
+    {
+        const auto f = yyjson::WriteFlag::InfAndNanAsNull | flag;
+        const auto json = yyjson::write(R17OptionalInf{}, f);
+        EXPECT_ANY_THROW((void)yyjson::read<R17OptionalInf>(json, yyjson::reject_null_as_missing));
+        EXPECT_ANY_THROW((void)yyjson::write(R17OptionalInf{}, f, yyjson::with_validation));
+    }
+}
+
+// an untagged variant with an alternative that borrows from the JSON is read back as read reads it
+struct R18Walked
+{
+    int x = -1;
+};
+template <>
+inline constexpr auto yyjson::annotations<R18Walked> = yyjson::annotate(yyjson::field("x", yyjson::minimum(0)));
+using R18Fallback = yyjson::any_of_variant<R18Walked, std::map<std::string, int>, std::string_view>;
+using R18Violating = yyjson::any_of_variant<yyjson::alt<std::string, yyjson::max_length(1)>,
+                                            yyjson::alt<std::string_view, yyjson::max_length(1)>>;
+using R18Ambiguous = yyjson::one_of_variant<yyjson::alt<std::string, yyjson::min_length(2)>,
+                                            yyjson::alt<std::string_view, yyjson::max_length(3)>>;
+template <typename V>
+struct R18Borrowing
+{
+};
+template <typename V>
+struct yyjson::caster<R18Borrowing<V>>
+{
+    static R18Borrowing<V> from_json(V) { return {}; }
+    static V to_json(const R18Borrowing<V>&)
+    {
+        if constexpr (std::same_as<V, R18Fallback>)
+            return V(std::in_place_index<0>, R18Walked{});
+        else
+            return V(std::in_place_index<0>, "ab");
+    }
+};
+
+template <typename T>
+bool r18_reads_written()
+{
+    try
+    {
+        (void)yyjson::read<T>(yyjson::write(T{}));
+        return true;
+    }
+    catch (const yyjson::bad_cast&)
+    {
+        return false;
+    }
+}
+
+TEST(Constraints, ValidationReadsABorrowedAlternativeBack)
+{
+    EXPECT_TRUE(r18_reads_written<R18Borrowing<R18Fallback>>());
+    EXPECT_NO_THROW((void)yyjson::write(R18Borrowing<R18Fallback>{}, yyjson::with_validation));
+    EXPECT_FALSE(r18_reads_written<R18Borrowing<R18Violating>>());
+    EXPECT_ANY_THROW((void)yyjson::write(R18Borrowing<R18Violating>{}, yyjson::with_validation));
+    EXPECT_FALSE(r18_reads_written<R18Borrowing<R18Ambiguous>>());
+    EXPECT_ANY_THROW((void)yyjson::write(R18Borrowing<R18Ambiguous>{}, yyjson::with_validation));
+}
+
+// a `yyjson::nullable` or a `yyjson::indirect` field reads its value in place as read does, from the field of `T()`
+inline bool r18_eleven(const R17Transparent& c) { return c.x == 11; }
+template <template <typename> typename W>
+struct R18WrappedField
+{
+    W<R17Transparent> c{R17Transparent{}};
+};
+template <template <typename> typename W>
+inline constexpr auto yyjson::annotations<R18WrappedField<W>> =
+    yyjson::annotate(yyjson::field("c", yyjson::satisfies<r18_eleven>));
+template <template <typename> typename W>
+struct R18WrappedProperty
+{
+    W<R17Transparent> c{R17Transparent{}};
+};
+template <template <typename> typename W>
+inline constexpr auto yyjson::annotations<R18WrappedProperty<W>> =
+    yyjson::annotate(yyjson::property("c", yyjson::satisfies<r18_eleven>));
+template <template <typename> typename W>
+struct R18WrappedMinimum
+{
+    W<R17Transparent> c{R17Transparent{}};
+};
+template <template <typename> typename W>
+inline constexpr auto yyjson::annotations<R18WrappedMinimum<W>> =
+    yyjson::annotate(yyjson::field("c", yyjson::minimum(0)));
+
+template <typename T>
+void expect_wrapped_in_place()
+{
+    EXPECT_EQ(yyjson::read<T>(R"({"c":1})").c->x, 11);
+    auto read = T{};
+    read.c = R17Transparent{99};
+    yyjson::read_into(R"({"c":1})", read);
+    EXPECT_EQ(read.c->x, 11);
+    for (const auto strict : {false, true})
+    {
+        auto t = T{};
+        t.c = R17Transparent{99};
+        if (strict)
+            EXPECT_NO_THROW(yyjson::merge_into(R"({"c":1})", t, yyjson::strict));
+        else
+            EXPECT_NO_THROW(yyjson::merge_into(R"({"c":1})", t));
+        EXPECT_EQ(t.c->x, 11);
+    }
+}
+
+TEST(Constraints, MergeReadsAWrappedInPlaceCasterAsRead)
+{
+    expect_wrapped_in_place<R18WrappedField<yyjson::nullable>>();
+    expect_wrapped_in_place<R18WrappedField<yyjson::indirect>>();
+    expect_wrapped_in_place<R18WrappedProperty<yyjson::nullable>>();
+    expect_wrapped_in_place<R18WrappedProperty<yyjson::indirect>>();
+    expect_wrapped_in_place<R18WrappedMinimum<yyjson::nullable>>();
+    expect_wrapped_in_place<R18WrappedMinimum<yyjson::indirect>>();
+    auto t = R18WrappedField<yyjson::nullable>{};
+    t.c = R17Transparent{99};
+    EXPECT_ANY_THROW(yyjson::merge_into(R"({"c":2})", t));
+    EXPECT_EQ(t.c->x, 99);
+}
+
+// a default that borrows from the JSON is a sentinel if the strict read of its written text fails
+struct R18BorrowedDefault
+{
+    std::string_view s = "ok";
+    bool operator==(const R18BorrowedDefault&) const = default;
+};
+template <>
+struct yyjson::caster<R18BorrowedDefault>
+{
+    static int to_json(const R18BorrowedDefault&) { return 0; }
+};
+struct R18BorrowedDefaultField
+{
+    R18BorrowedDefault r;
+};
+template <>
+inline constexpr auto yyjson::annotations<R18BorrowedDefaultField> =
+    yyjson::annotate(yyjson::field("r", yyjson::default_));
+struct R18BorrowedDefaultHolder
+{
+};
+template <>
+struct yyjson::caster<R18BorrowedDefaultHolder>
+{
+    static R18BorrowedDefaultHolder from_json(R18BorrowedDefaultField) { return {}; }
+    static R18BorrowedDefaultField to_json(const R18BorrowedDefaultHolder&) { return {}; }
+};
+
+TEST(Constraints, BorrowedDefaultIsASentinel)
+{
+    const auto json = yyjson::write(R18BorrowedDefaultHolder{}, yyjson::emit_defaults);
+    EXPECT_EQ(json, "{}");
+    EXPECT_NO_THROW((void)yyjson::read<R18BorrowedDefaultHolder>(json));
+    EXPECT_NO_THROW((void)yyjson::write(R18BorrowedDefaultHolder{}, yyjson::emit_defaults, yyjson::with_validation));
+}
+
+// the values of a range of pairs read from the array form are checked as in the object form
+struct PairSetValues
+{
+    std::vector<std::pair<std::string, std::set<int>>> m = {};
+};
+template <>
+inline constexpr auto yyjson::annotations<PairSetValues> =
+    yyjson::annotate(yyjson::field("m", yyjson::additional_properties(yyjson::min_items(2))));
+struct PairVectorValues
+{
+    std::vector<std::pair<std::string, std::vector<int>>> m = {};
+};
+template <>
+inline constexpr auto yyjson::annotations<PairVectorValues> =
+    yyjson::annotate(yyjson::field("m", yyjson::additional_properties(yyjson::min_items(2))));
+
+template <typename T>
+void expect_pair_values()
+{
+    for (const auto* json : {R"({"m":{"k":[1]}})", R"({"m":[["k",[1]]]})"})
+    {
+        EXPECT_THROW((void)yyjson::read<T>(json), yyjson::bad_cast) << json;
+        EXPECT_THROW((void)yyjson::read(json).template cast<T>(), yyjson::bad_cast) << json;
+    }
+    for (const auto* json : {R"({"m":{"k":[1,2]}})", R"({"m":[["k",[1,2]]]})"})
+    {
+        EXPECT_NO_THROW((void)yyjson::read<T>(json)) << json;
+        EXPECT_NO_THROW((void)yyjson::read(json).template cast<T>()) << json;
+    }
+    EXPECT_THROW(yyjson::validate(T{{{"k", {1}}}}), yyjson::bad_cast);
+    EXPECT_NO_THROW(yyjson::validate(T{{{"k", {1, 2}}}}));
+}
+
+TEST(Constraints, PairValuesFromTheArrayForm)
+{
+    expect_pair_values<PairSetValues>();
+    expect_pair_values<PairVectorValues>();
+    try
+    {
+        (void)yyjson::read<PairSetValues>(R"({"m":[["k",[1]]]})");
+        FAIL();
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_EQ(e.path(), "/m");
+    }
+}
 
 // NOLINTEND

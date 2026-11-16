@@ -180,6 +180,17 @@ template <>
 inline constexpr auto yyjson::annotations<Ranks> =
     yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::unique_items,
                      yyjson::contains(yyjson::minimum(5)), yyjson::min_contains(2), yyjson::max_contains(3));
+// positions of several types, whose elements compare as the JSON values
+struct Labels
+{
+    int a = 0;
+    std::string b;
+    std::vector<int> rest;
+    bool operator==(const Labels&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Labels> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::unique_items);
 // positions of std::optional, and elements after them that keep null as their value
 struct OptionalRanks
 {
@@ -781,6 +792,8 @@ TEST(AsArray, ArrayKeywords)
     expect_rejected<Ranks>("[6]", "the value of Ranks has fewer than 2 items that satisfy", "");
     expect_rejected<Ranks>("[0]", "the value of Ranks has fewer than 2 items that satisfy", "");
     expect_rejected<Ranks>("[5,6,7,8]", "the value of Ranks has more than 3 items that satisfy", "");
+    expect_read<Labels>(R"([1,"1",2])", {1, "1", {2}});
+    expect_rejected<Labels>(R"([1,"x",2,1])", "an element of the value of Labels is equal to an earlier element", "/3");
 
     // the elements that the read ignores are counted too
     expect_read<Envelope>(R"([1,"a"])", {1, "a"});

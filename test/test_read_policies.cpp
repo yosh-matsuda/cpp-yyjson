@@ -896,7 +896,7 @@ namespace
         const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<Ps...>);
         EXPECT_EQ(read_or_error([&] {
                       auto u = t;
-                      yyjson::detail::merge_text(json, u, yyjson::ReadFlag::NoFlag);
+                      checked_commit(json, u, [&] { yyjson::detail::merge_text(json, u, yyjson::ReadFlag::NoFlag); });
                       return u;
                   }),
                   expected)
@@ -907,8 +907,11 @@ namespace
         auto u = t;
         try
         {
-            yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1, yyjson::ReadFlag::NoFlag)
-                .merge_root(u);
+            checked_commit(json, u, [&] {
+                yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1,
+                                                      yyjson::ReadFlag::NoFlag)
+                    .merge_root(u);
+            });
             direct_read = true;
         }
         catch (...)
@@ -1687,17 +1690,19 @@ TEST(PropertyNames, Tags)
 
 TEST(PropertyNames, MergeInto)
 {
-    // the keys of the members of the patch that are not null are checked, as for a map
+    // the keys of the merged object are checked, as read checks them: the field "bad" that `t` writes too
     const auto t = NamedPt{1, 2, 3};
     const auto longer = key_of("NamedPt", "is longer than the maximum length 2");
-    EXPECT_EQ(merge_with(t, R"({"a":4})"), R"({"a":4,"bb":2,"bad":3})");
+    EXPECT_EQ(merge_with(t, R"({"a":4})"), longer + " at /bad");
+    EXPECT_EQ(merge_with(t, R"({"a":4,"bad":null})"), R"({"a":4,"bb":2})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(merge_with(t, R"({"bad":null})"), R"({"a":1,"bb":2})");
     EXPECT_EQ(merge_with(t, R"({ "bad" : null , "zzz" : null })"), R"({"a":1,"bb":2})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(merge_with(t, R"({"bad":4})"), longer + " at /bad");
-    EXPECT_EQ(merge_with(t, R"({"a":4,"zzz":1})"), longer + " at /zzz");
-    EXPECT_EQ(merge_with(t, R"({ "zzz" : null , "zzz" : 1 })"), longer + " at /zzz");
+    EXPECT_EQ(merge_with(t, R"({"a":4,"zzz":1})"), longer + " at /bad");
+    EXPECT_EQ(merge_with(t, R"({"bad":null,"a":4,"zzz":1})"), longer + " at /zzz");
+    EXPECT_EQ(merge_with(t, R"({ "bad" : null , "zzz" : null , "zzz" : 1 })"), longer + " at /zzz");
     EXPECT_EQ(merge_with(NamedPtV{1, 2, 3}, R"({"bad":4})"),
               key_of("NamedPtV", "is longer than the maximum length 2") + " at /bad");
     EXPECT_EQ(merge_with(NamedWide(), R"({"i":1,"jjj":null})"),
@@ -1992,8 +1997,11 @@ TEST(ExtraKeys, MergeInto)
     EXPECT_EQ(merge_with(ExtraShort(), R"({"xyz":1})"),
               key_of("ExtraShort", "is longer than the maximum length 2") + " at /xyz");
     EXPECT_EQ(merge_with(ExtraShort(), R"({"xyz":null,"y":2})"), R"({"long_name":0,"y":2})");
+    // the merge checks the field "p" that the patch leaves out
     EXPECT_EQ(merge_with(ExtraHolder(), R"({"v":[{"x":1}],"o":{"y":2}})"),
-              R"({"p":{"a":0},"v":[{"a":0,"x":1}],"m":{},"o":{"a":0,"y":2}})");
+              error(R"(the value of the key "p" of ExtraHolder has fewer properties than the minimum 2)") + " at /p");
+    EXPECT_EQ(merge_with(ExtraHolder(), R"({"p":{"x":2},"v":[{"x":1}],"o":{"y":2}})"),
+              R"({"p":{"a":0,"x":2},"v":[{"a":0,"x":1}],"m":{},"o":{"a":0,"y":2}})");
     // null erases a key also from a map whose values hold null
     auto any = ExtraNullable{0, {{"x", 1}}};
     yyjson::merge_into(R"({"x":null,"y":null})", any);
