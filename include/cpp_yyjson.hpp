@@ -24395,6 +24395,30 @@ namespace yyjson
             return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
+        // The kinds of JSON values that the field I of the struct T always fails to read, but for null, which may
+        // count as a missing key.  None for a field that the reader handles on its own path.
+        template <typename T, std::size_t I>
+        consteval std::uint16_t refused_kinds()
+        {
+            if constexpr (adjacent_field<T, I> || holds_adjacent_tag<T, I> || recorded_field<T, I> ||
+                          constrained_field<T, I>)
+                return 0;
+            else
+            {
+                constexpr auto accepted = accepted_json_kinds<struct_field_type<T, I>, reader::const_value_ref>();
+                if constexpr (accepted == json_kind_all)
+                    return 0;
+                else
+                {
+                    auto refused = 0u;
+                    for (const auto kind : {json_kind_object, json_kind_array, json_kind_string, json_kind_bool})
+                        if ((accepted & kind) == 0) refused |= kind;
+                    if ((accepted & json_kind_number) == 0) refused |= json_kind_number;
+                    return static_cast<std::uint16_t>(refused);
+                }
+            }
+        }
+
         // The JSON values that an alternative of `yyjson::one_of_variant` reads, bounded at compile time.  A bound
         // gives each kind of JSON values as none of them, a subset of the values that it describes (`partial`), or
         // exactly those values (`exact`).
@@ -36518,14 +36542,25 @@ namespace yyjson
                               !yyjson::detail::constrained_union_alternative<T, first>)
                 {
                     auto seen = typename ranking::seen_keys{};
-                    if (read_watched_alternative<T, first, ranking>(make, &seen))
+                    switch (read_watched_alternative<T, first, ranking>(make, &seen))
                     {
-                        if (ranking::first_leads(seen)) return;
-                        const auto ranked = rank_seen<ranking>(seen, start);
-                        if (ranked.count == 0 ? ranking::first_in_order : ranked.order[0] == 0) return;
-                        cur_ = start;
-                        read_ranked_alternatives<T>(make, start, rereads, ranked, false);
-                        return;
+                        case watched_read::read:
+                        {
+                            if (ranking::first_leads(seen)) return;
+                            const auto ranked = rank_seen<ranking>(seen, start);
+                            if (ranked.count == 0 ? ranking::first_in_order : ranked.order[0] == 0) return;
+                            cur_ = start;
+                            read_ranked_alternatives<T>(make, start, rereads, ranked, false);
+                            return;
+                        }
+                        case watched_read::mismatch:
+                        {
+                            const auto ranked = rank_seen<ranking>(seen, start);
+                            cur_ = start;
+                            read_ranked_alternatives<T>(make, start, rereads, ranked, true);
+                            return;
+                        }
+                        case watched_read::failed: break;
                     }
                     cur_ = start;
                     const auto ranked = rank_members<ranking>();
@@ -36568,25 +36603,36 @@ namespace yyjson
                 if (!found) fail_variant<T>(start, rereads);
             }
 
+            // How `read_watched_alternative` ends: the alternative has been read; a field could not read the kind of
+            // its value, and every key is in `seen`; or the read has failed, and `seen` may lack keys.
+            enum class watched_read
+            {
+                read,
+                mismatch,
+                failed,
+            };
+
             // Reads the object at `cur_` into the keyed alternative I of the variant T, recording its keys in
-            // `seen` as `read_watched_fields` does, and as `read_alternative` does without its checks.  Gives
-            // whether it has been read; if not, the caller goes on.
+            // `seen` as `read_watched_fields` does, and as `read_alternative` does without its checks.
             template <typename T, std::size_t I, typename Ranking, typename Make>
-            bool read_watched_alternative(Make& make, typename Ranking::seen_keys* seen)
+            watched_read read_watched_alternative(Make& make, typename Ranking::seen_keys* seen)
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
                 auto pass_on = std::exception_ptr();
                 try
                 {
                     if constexpr (yyjson::detail::reflected_assignable_in_place<alternative, const_value_ref>)
-                        read_watched_fields<Ranking>(std::get<I>(make(std::in_place_index<I>)), seen);
+                    {
+                        if (!read_watched_fields<Ranking>(std::get<I>(make(std::in_place_index<I>)), seen))
+                            return watched_read::mismatch;
+                    }
                     else
                     {
                         auto result = alternative();
-                        read_watched_fields<Ranking>(result, seen);
+                        if (!read_watched_fields<Ranking>(result, seen)) return watched_read::mismatch;
                         make(std::in_place_index<I>, std::move(result));
                     }
-                    return true;
+                    return watched_read::read;
                 }
                 catch (const direct_read_unsupported&)
                 {
@@ -36604,7 +36650,7 @@ namespace yyjson
                 {
                 }
                 if (pass_on) std::rethrow_exception(pass_on);
-                return false;
+                return watched_read::failed;
             }
 
             // A number read once for the alternatives of a variant, with its precise kind.
@@ -39853,11 +39899,12 @@ namespace yyjson
             // recording the keys of the object in `seen` for the variant that `Ranking` ranks.  A function of its
             // own, as calling it from those would change how the compiler inlines them for every other struct.
             template <typename Ranking, typename T>
-            void read_watched_fields(T& t, typename Ranking::seen_keys* seen)
+            CPPYYJSON_ALWAYS_INLINE bool read_watched_fields(T& t, typename Ranking::seen_keys* seen)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 const char* const open = cur_;
                 auto adjacent = struct_reading<T>{adjacent_fields_of<T>{cur_}, {}, {}};
+                auto mismatch = false;
                 if constexpr (yyjson::detail::visitable<T>)
                 {
                     const auto read_one =
@@ -39865,6 +39912,7 @@ namespace yyjson
                             const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                                 read_field(field, yyjson::detail::visitable_field_replaceable<I>(t));
                             };
+                            if (skips_refused<T, I>(mismatch)) return;
                             adjacent.template mark<I>(cur_);
                             if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<I>(cur_);
                             read_struct_field<T, I, false, true>(t, adjacent, adjacent, read);
@@ -39885,6 +39933,7 @@ namespace yyjson
                             const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                                 read_field(field, reflected_field_replaceable<reflected_field_index<T, K>>(t));
                             };
+                            if (skips_refused<T, K>(mismatch)) return;
                             adjacent.template mark<K>(cur_);
                             if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<K>(cur_);
                             read_struct_field<T, K, false, true>(t, adjacent, adjacent, read);
@@ -39896,6 +39945,8 @@ namespace yyjson
                     else
                         read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(watching{read_one, seen, open});
                 }
+                if (mismatch) [[unlikely]]
+                    return false;
                 adjacent.fill(t);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
@@ -39904,7 +39955,44 @@ namespace yyjson
                     if (!conditions_hold(t, adjacent, open)) [[unlikely]]
                         fail();
                 }
+                return true;
             }
+
+            // Skips the value at `cur_` if the field I of T can never read its kind, so that the keys of the object
+            // are still recorded without a throw.
+            template <typename T, std::size_t I>
+            CPPYYJSON_ALWAYS_INLINE bool skips_refused(bool& mismatch)
+            {
+                constexpr auto refused = yyjson::detail::refused_kinds<T, I>();
+                if constexpr (refused == 0)
+                    return false;
+                else
+                {
+                    if (!refused_first_chars<refused>[static_cast<unsigned char>(*cur_)]) [[likely]]
+                        return false;
+                    mismatch = true;
+                    skip_value();
+                    return true;
+                }
+            }
+
+            // Whether a value that starts with a character is of one of the kinds `Refused`.
+            template <std::uint16_t Refused>
+            static constexpr auto refused_first_chars = [] {
+                using namespace yyjson::detail;
+                auto chars = std::array<bool, 256>{};
+                for (auto c = 0; c < 256; ++c)
+                {
+                    const auto kind = c == '{'               ? json_kind_object
+                                      : c == '['             ? json_kind_array
+                                      : c == '"'             ? json_kind_string
+                                      : c == 't' || c == 'f' ? json_kind_bool
+                                      : c == 'n'             ? json_kind_null
+                                                             : json_kind_number;
+                    chars[c] = (kind & Refused) != 0;
+                }
+                return chars;
+            }();
         };
     }  // namespace reader::detail
 

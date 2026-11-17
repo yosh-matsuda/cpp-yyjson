@@ -1127,6 +1127,56 @@ TEST(Reader, UntaggedCandidates)
         R"([{"x":1,"kind":"n","v":{"a":1}},{"kind":"t","v":{"b":"s"},"x":2},{"x":1,"kind":"n","v":{"a":1},"k":0}])"));
 }
 
+struct KeyedTextX
+{
+    std::string x;
+    bool operator==(const KeyedTextX&) const = default;
+};
+
+TEST(Reader, UntaggedKindMismatch)
+{
+    // a value of a JSON kind that the field never reads makes the struct fail, and the next alternative reads it
+    using x_or_text = std::variant<KeyedX, KeyedTextX>;
+    expect_untagged<x_or_text>(R"({"x":"s"})", 1);
+    expect_untagged<x_or_text>(R"({"k":[1,{"x":2}],"x":"s"})", 1);
+    // null is no value of another kind, so neither alternative skips it
+    EXPECT_THROW(static_cast<void>(yyjson::read<x_or_text>(R"({"x":null})")), yyjson::bad_cast);
+    using x_pair_or_text = std::variant<KeyedX, KeyedPair, KeyedTextX>;
+    expect_untagged<x_pair_or_text>(R"({"x":"s","z":1})", 2);
+    using pair_or_text = std::variant<KeyedPair, KeyedTextX>;
+    expect_untagged<pair_or_text>(R"({"x":"s","z":"t"})", 1);
+    expect_untagged<pair_or_text>(R"({"x":"s","z":1.5})", 1);
+    expect_untagged<pair_or_text>(R"({"z":1,"x":"s"})", 1);
+    using err_or_ok = std::variant<KeyedErr, KeyedOk>;
+    expect_untagged<err_or_ok>(R"({"code":1,"msg":2})", 1);
+    using closed_or_text = std::variant<KeyedClosed, KeyedTextX>;
+    expect_untagged<closed_or_text>(R"({"x":"s","y":1})", 1);
+    expect_untagged<closed_or_text>(R"({"x":"s","k":1})", 1);
+    using closed_tagged_or_text = std::variant<KeyedClosedTagged, KeyedTextX>;
+    expect_untagged<closed_tagged_or_text>(R"({"x":"s","kind":"n","v":{"a":1}})", 1);
+    using wrapped_or_text = std::variant<KeyedWrapped, KeyedTextX>;
+    expect_untagged<wrapped_or_text>(R"({"x":"s","z":1})", 1);
+    using with_map = std::variant<KeyedOk, KeyedErr, std::map<std::string, std::string>>;
+    expect_untagged<with_map>(R"({"code":"1","msg":"x"})", 2);
+    EXPECT_THROW((void)yyjson::read<pair_or_text>(R"({"x":1,"z":"t"})"), yyjson::bad_cast);
+
+    // the reader without a document reads as the document does
+    EXPECT_TRUE(expect_direct_read<std::vector<x_or_text>>(
+        R"([{"x":"s"},{"k":[1,{"x":2}],"x":"s"}])"));
+    // the readers agree on repeated keys too, whichever value they keep
+    expect_direct_read<x_or_text>(R"({"x":"s","x":1})");
+    expect_direct_read<x_or_text>(R"({"x":1,"x":"s"})");
+    EXPECT_TRUE(expect_direct_read<std::vector<x_pair_or_text>>(R"([{"x":"s","z":1},{"x":1,"z":"t"}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<pair_or_text>>(
+        R"([{"x":"s","z":"t"},{"x":"s","z":1.5},{"z":1,"x":"s"}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<err_or_ok>>(R"([{"code":1,"msg":2},{"msg":2,"code":1}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<closed_or_text>>(R"([{"x":"s","y":1},{"x":"s","k":1}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<closed_tagged_or_text>>(
+        R"([{"x":"s","kind":"n","v":{"a":1}},{"kind":"t","x":"s","v":{"b":"s"}}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<wrapped_or_text>>(R"([{"x":"s","z":1},{"z":1,"x":"s"}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<with_map>>(R"([{"code":"1","msg":"x"},{"msg":"x","code":"1"}])"));
+}
+
 TEST(Reader, FixedSizeShorterJson)
 {
     using namespace yyjson;
