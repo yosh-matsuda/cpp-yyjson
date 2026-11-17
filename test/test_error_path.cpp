@@ -63,6 +63,14 @@ using PathShape = std::variant<PathCircle, PathRect>;
 template <>
 inline constexpr auto yyjson::annotations<PathShape> =
     yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+struct PathAdjacent
+{
+    std::variant<PathCircle, PathRect> shape;
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<PathAdjacent> =
+    yyjson::annotate(yyjson::field("shape", yyjson::adjacent_tag("kind", {"circle", "rect"})));
 
 #if YYJSON_VERSION_HEX >= 0x000C00
 // read by a caster that casts its view, of a copy of a mutable value
@@ -268,6 +276,26 @@ TEST(ErrorPath, Position)
     EXPECT_EQ(ws.path(), "/0");
     EXPECT_FALSE(ws.position().has_value());
 #endif
+}
+
+TEST(ErrorPath, AdjacentTag)
+{
+    // the value may come before its tag, and the tag after the value
+    expect_path<std::vector<PathAdjacent>>(R"([{"kind":"rect","shape":{"w":"a"}}])", "/0/shape/w", R"("a")");
+    expect_path<std::vector<PathAdjacent>>(R"([{"shape":{"w":"a"},"kind":"rect"}])", "/0/shape/w", R"("a")");
+    expect_path<std::vector<PathAdjacent>>(R"([{"shape":{"w":1},"kind":"oval"}])", "/0/kind", R"("oval")");
+    expect_path<std::vector<PathAdjacent>>(R"([{"kind":"rect","shape":[]}])", "/0/shape", "[]");
+
+    // the lines of a value deep in the text
+    const auto json = std::string_view("[\n{\"kind\": \"circle\",\n \"shape\": {\"r\": 1.5}}]");
+    const auto e = bad_cast_of([&] { (void)yyjson::read<std::vector<PathAdjacent>>(json); });
+    EXPECT_EQ(e.path(), "/0/shape/r");
+    EXPECT_EQ(e.position(), (yyjson::text_position{3, 17, json.find("1.5")}));
+
+    auto v = std::vector<PathAdjacent>();
+    const auto m = bad_cast_of([&] { yyjson::merge_into(R"([{"kind":"circle","shape":{"r":true}}])", v); });
+    EXPECT_EQ(m.path(), "/0/shape/r");
+    EXPECT_EQ(m.position(), (yyjson::text_position{1, 32, 31}));
 }
 
 // NOLINTEND

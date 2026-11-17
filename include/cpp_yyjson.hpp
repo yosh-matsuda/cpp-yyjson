@@ -137,6 +137,8 @@ namespace yyjson
             // the value that the path starts at, `yyjson_val` or `yyjson_mut_val` as `mutable_value` tells
             const void* value = nullptr;
             bool mutable_value = false;
+            // the start of that value in the text of a reader without a document, if the path starts there
+            const char* text_value = nullptr;
             std::optional<text_position> position;
         };
         std::shared_ptr<state> state_;
@@ -365,6 +367,29 @@ namespace yyjson
                 e.state_->mutable_value = std::same_as<To, yyjson_mut_val>;
             }
 
+            // Records that the path of `e` starts at the value at `at` in the text of a reader without a document,
+            // unless a value within it was recorded before.
+            CPPYYJSON_COLD static void set_text_value(bad_cast& e, const char* at) noexcept
+            {
+                try
+                {
+                    if (e.state_ == nullptr)
+                    {
+                        e.state_ = std::make_shared<bad_cast::state>();
+                        e.state_->what = e.std::runtime_error::what();
+                    }
+                    if (e.state_->text_value == nullptr) e.state_->text_value = at;
+                }
+                catch (...)  // NOLINT(bugprone-empty-catch)
+                {
+                    // without memory for the state, the exception is thrown without a position
+                }
+            }
+            static const char* text_value(const bad_cast& e) noexcept
+            {
+                return e.state_ != nullptr ? e.state_->text_value : nullptr;
+            }
+
             // Called by a cast of `v` that `e` leaves.  The path is left as it is if it cannot be extended.
             template <typename Val>
             CPPYYJSON_COLD static void add_path(bad_cast& e, const Val* v) noexcept
@@ -405,17 +430,25 @@ namespace yyjson
                 }
             }
 
-            // The offset in `json` of the value that the ordinals lead to from the root, unless the text on the way
-            // is not strict JSON.
-            static std::optional<std::size_t> locate(std::string_view json, std::span<const std::size_t> ordinals)
+            // A walk over the text of a document that stops at a comment or a single-quoted string.
+            struct text_scan
             {
-                auto i = json.starts_with("\xEF\xBB\xBF") ? std::size_t{3} : std::size_t{0};
-                const auto at = [&] { return i < json.size() ? json[i] : '\0'; };
-                const auto skip_space = [&] {
+                std::string_view json;
+                std::size_t i;
+
+                text_scan(std::string_view text) noexcept : json(text), i(text.starts_with("\xEF\xBB\xBF") ? 3 : 0)
+                {
+                    skip_space();
+                }
+                char at() const noexcept { return i < json.size() ? json[i] : '\0'; }
+                bool stops() const noexcept { return at() == '/' || at() == '\''; }
+                void skip_space() noexcept
+                {
                     while (i < json.size() && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r'))
                         ++i;
-                };
-                const auto skip_string = [&] {
+                }
+                bool skip_string() noexcept
+                {
                     for (++i; i < json.size(); ++i)
                     {
                         if (json[i] == '\\')
@@ -427,9 +460,9 @@ namespace yyjson
                         }
                     }
                     return false;
-                };
-                // a comment or a single-quoted string stops the walk
-                const auto skip_value = [&] {
+                }
+                bool skip_value() noexcept
+                {
                     if (at() == '"') return skip_string();
                     if (at() == '[' || at() == '{')
                     {
@@ -456,37 +489,152 @@ namespace yyjson
                            std::string_view(" \t\r\n,:[]{}\"'/").find(json[i]) == std::string_view::npos)
                         ++i;
                     return i != first;
-                };
-                skip_space();
-                for (const auto n : ordinals)
+                }
+                // Reads the key at a quote and the colon after it.
+                std::optional<std::string> read_key()
                 {
-                    const auto open = at();
-                    if (open != '[' && open != '{') return std::nullopt;
+                    const auto first = i + 1;
+                    if (at() != '"' || !skip_string()) return std::nullopt;
+                    auto key = unescape(json.substr(first, i - 1 - first));
+                    skip_space();
+                    if (at() != ':') return std::nullopt;
                     ++i;
-                    for (auto k = std::size_t{0};; ++k)
+                    skip_space();
+                    return key;
+                }
+            };
+
+            static std::optional<std::string> unescape(std::string_view s)
+            {
+                const auto hex = [&](std::size_t at) -> std::optional<std::uint32_t> {
+                    if (at + 4 > s.size()) return std::nullopt;
+                    auto v = std::uint32_t{0};
+                    for (const auto c : s.substr(at, 4))
                     {
-                        skip_space();
-                        if (open == '{')
+                        const auto d = c >= '0' && c <= '9'   ? c - '0'
+                                       : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                       : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                              : -1;
+                        if (d < 0) return std::nullopt;
+                        v = v * 16 + static_cast<std::uint32_t>(d);
+                    }
+                    return v;
+                };
+                auto out = std::string();
+                for (auto i = std::size_t{0}; i < s.size(); ++i)
+                {
+                    if (s[i] != '\\')
+                    {
+                        out += s[i];
+                        continue;
+                    }
+                    if (++i == s.size()) return std::nullopt;
+                    switch (s[i])
+                    {
+                        case '"':
+                        case '\\':
+                        case '/': out += s[i]; break;
+                        case 'b': out += '\b'; break;
+                        case 'f': out += '\f'; break;
+                        case 'n': out += '\n'; break;
+                        case 'r': out += '\r'; break;
+                        case 't': out += '\t'; break;
+                        case 'u':
                         {
-                            if (at() != '"' || !skip_string()) return std::nullopt;
-                            skip_space();
-                            if (at() != ':') return std::nullopt;
-                            ++i;
-                            skip_space();
+                            auto cp = hex(i + 1);
+                            if (!cp.has_value()) return std::nullopt;
+                            i += 4;
+                            if (*cp >= 0xD800 && *cp < 0xDC00 && i + 2 < s.size() && s[i + 1] == '\\' && s[i + 2] == 'u')
+                            {
+                                if (const auto low = hex(i + 3); low.has_value() && *low >= 0xDC00 && *low < 0xE000)
+                                {
+                                    cp = 0x10000 + ((*cp - 0xD800) << 10) + (*low - 0xDC00);
+                                    i += 6;
+                                }
+                            }
+                            const auto c = *cp;
+                            if (c < 0x80)
+                                out += static_cast<char>(c);
+                            else if (c < 0x800)
+                            {
+                                out += static_cast<char>(0xC0 | (c >> 6));
+                                out += static_cast<char>(0x80 | (c & 0x3F));
+                            }
+                            else if (c < 0x10000)
+                            {
+                                out += static_cast<char>(0xE0 | (c >> 12));
+                                out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+                                out += static_cast<char>(0x80 | (c & 0x3F));
+                            }
+                            else
+                            {
+                                out += static_cast<char>(0xF0 | (c >> 18));
+                                out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+                                out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+                                out += static_cast<char>(0x80 | (c & 0x3F));
+                            }
+                            break;
                         }
-                        if (k == n) break;
-                        if (!skip_value()) return std::nullopt;
-                        skip_space();
-                        if (at() != ',') return std::nullopt;
-                        ++i;
+                        default: return std::nullopt;
                     }
                 }
-                if (at() == '/' || at() == '\'') return std::nullopt;
-                return i;
+                return out;
             }
 
-            // Called by `yyjson::read<T>` and the like with the text of the document that they cast.  The line and
-            // the column are counted as `yyjson_locate_pos` counts them.
+            // The offset in `json` of the value that the ordinals lead to from the root, unless the text on the way
+            // is not strict JSON.
+            static std::optional<std::size_t> locate(std::string_view json, std::span<const std::size_t> ordinals)
+            {
+                auto s = text_scan(json);
+                for (const auto n : ordinals)
+                {
+                    const auto open = s.at();
+                    if (open != '[' && open != '{') return std::nullopt;
+                    ++s.i;
+                    for (auto k = std::size_t{0};; ++k)
+                    {
+                        s.skip_space();
+                        if (open == '{')
+                        {
+                            if (s.at() != '"' || !s.skip_string()) return std::nullopt;
+                            s.skip_space();
+                            if (s.at() != ':') return std::nullopt;
+                            ++s.i;
+                            s.skip_space();
+                        }
+                        if (k == n) break;
+                        if (!s.skip_value()) return std::nullopt;
+                        s.skip_space();
+                        if (s.at() != ',') return std::nullopt;
+                        ++s.i;
+                    }
+                }
+                if (s.stops()) return std::nullopt;
+                return s.i;
+            }
+
+            // The line and the column of the offset `pos` of `json`, counted as `yyjson_locate_pos` counts them.
+            static text_position count_position(std::string_view json, std::size_t pos) noexcept
+            {
+                auto j = pos >= 3 && json.starts_with("\xEF\xBB\xBF") ? std::size_t{3} : std::size_t{0};
+                auto line = std::size_t{1};
+                auto chars = std::size_t{0};
+                auto line_start = std::size_t{0};
+                while (j < pos)
+                {
+                    const auto c = static_cast<unsigned char>(json[j]);
+                    ++chars;
+                    if (c == '\n')
+                    {
+                        ++line;
+                        line_start = chars;
+                    }
+                    j += c < 0xC0 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : c < 0xF8 ? 4 : 1;
+                }
+                return {line, chars - line_start + 1, pos};
+            }
+
+            // Called by `yyjson::read<T>` and the like with the text of the document that they cast.
             CPPYYJSON_COLD static void add_position(bad_cast& e, std::string_view json) noexcept
             {
                 try
@@ -494,26 +642,86 @@ namespace yyjson
                     if (e.state_ == nullptr) return;
                     const auto pos = locate(json, e.state_->ordinals);
                     if (!pos.has_value()) return;
-                    auto j = *pos >= 3 && json.starts_with("\xEF\xBB\xBF") ? std::size_t{3} : std::size_t{0};
-                    auto line = std::size_t{1};
-                    auto chars = std::size_t{0};
-                    auto line_start = std::size_t{0};
-                    while (j < *pos)
-                    {
-                        const auto c = static_cast<unsigned char>(json[j]);
-                        ++chars;
-                        if (c == '\n')
-                        {
-                            ++line;
-                            line_start = chars;
-                        }
-                        j += c < 0xC0 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : c < 0xF8 ? 4 : 1;
-                    }
-                    e.state_->position = text_position{line, chars - line_start + 1, *pos};
+                    e.state_->position = count_position(json, *pos);
                     update_what(e);
                 }
                 catch (...)  // NOLINT(bugprone-empty-catch)
                 {
+                }
+            }
+
+            // Called by a reader without a document: gives `e` the path and, if `with_position`, the position of
+            // the innermost value of `json` that starts at or holds `at`, or that ends at `at` if `at_end`, before
+            // the path that `e` may have from a document of that value.
+            CPPYYJSON_COLD static void set_location(bad_cast& e, std::string_view json, const char* at, bool at_end,
+                                                    bool with_position) noexcept
+            {
+                try
+                {
+                    if (at == nullptr || at < json.data() || at > json.data() + json.size()) return;
+                    const auto offset = static_cast<std::size_t>(at - json.data());
+                    auto s = text_scan(json);
+                    auto path = std::string();
+                    auto ordinals = std::vector<std::size_t>();
+                    auto start = s.i;
+                    for (auto found = true; found;)
+                    {
+                        found = false;
+                        const auto open = s.at();
+                        if ((open != '[' && open != '{') || offset == s.i) break;
+                        ++s.i;
+                        for (auto k = std::size_t{0};; ++k)
+                        {
+                            s.skip_space();
+                            const auto member = s.i;
+                            if (offset < member + (at_end ? 1 : 0) || s.stops() || s.at() == ']' || s.at() == '}')
+                                break;
+                            auto token = std::string();
+                            if (open == '{')
+                            {
+                                const auto key = s.read_key();
+                                if (!key.has_value()) return;
+                                token = escape(*key);
+                            }
+                            else
+                                token = std::to_string(k);
+                            const auto value = s.i;
+                            if (!s.skip_value()) return;
+                            if (at_end ? offset <= s.i : offset < s.i)
+                            {
+                                path += '/';
+                                path += token;
+                                ordinals.push_back(k);
+                                start = s.i = value;
+                                found = true;
+                                break;
+                            }
+                            s.skip_space();
+                            if (s.at() != ',') break;
+                            ++s.i;
+                        }
+                    }
+                    if (e.state_ == nullptr)
+                    {
+                        e.state_ = std::make_shared<bad_cast::state>();
+                        e.state_->what = e.std::runtime_error::what();
+                    }
+                    auto& st = *e.state_;
+                    st.path = path + st.path;
+                    ordinals.insert(ordinals.end(), st.ordinals.begin(), st.ordinals.end());
+                    st.ordinals = std::move(ordinals);
+                    st.value = nullptr;
+                    st.text_value = nullptr;
+                    if (with_position)
+                    {
+                        const auto pos = locate(json, st.ordinals);
+                        st.position = count_position(json, pos.value_or(start));
+                    }
+                    update_what(e);
+                }
+                catch (...)  // NOLINT(bugprone-empty-catch)
+                {
+                    // without memory for the path, the exception is thrown as it is
                 }
             }
         };
@@ -9522,7 +9730,8 @@ namespace yyjson
             if constexpr (bounded_range<T>)
             {
                 if (arr.size() > bounded_capacity<T>)
-                    detail::throw_bad_cast("the size of JSON array exceeds the capacity of {}", detail::type_name<T>());
+                    detail::throw_bad_cast_at(detail::target_of(arr), "the size of JSON array exceeds the capacity of {}",
+                                              detail::type_name<T>());
             }
             auto result = T();
 
@@ -14609,6 +14818,7 @@ namespace yyjson
             mismatch what = mismatch::unknown;
             std::string_view type = {};
             char first = 0;  // the first character of the value, for `kind`
+            const char* at = nullptr;  // where the value or the container that does not match starts
 
             // throws the `bad_cast` that the cast of a document throws for the mismatch
             [[noreturn]] CPPYYJSON_COLD void throw_bad_cast() const
@@ -15048,6 +15258,7 @@ namespace yyjson
             // the copy of a scalar root, in the array unless it is longer
             char scalar_[64];
             std::unique_ptr<char[]> scalar_large_;
+            const char* scalar_from_ = nullptr;  // where the text has the scalar root
             struct free_alc
             {
                 void operator()(yyjson_alc* alc) const noexcept { yyjson_alc_dyn_free(alc); }
@@ -15235,8 +15446,39 @@ namespace yyjson
                 }
                 std::memcpy(text, first, n);
                 text[n] = ']';
+                scalar_from_ = first;
                 cur_ = first_ = text;
                 last_ = end_ = text + n;
+            }
+
+        public:
+            // Where the reader stopped in the text: `cur_`, or the place that a failure gives.
+            [[nodiscard]] const char* stop(const char* at) const noexcept { return text_at(at != nullptr ? at : cur_); }
+
+        private:
+            // The place in the text of `p`, which may point into a copy of the text.
+            CPPYYJSON_COLD const char* text_at(const char* p) const noexcept
+            {
+                if (scalar_from_ != nullptr && p >= first_ && p <= end_) return scalar_from_ + (p - first_);
+                if (local_ != nullptr && p >= local_.get() && p <= local_.get() + (local_to_ - local_from_))
+                    return local_from_ + (p - local_.get());
+                return p;
+            }
+
+            // Calls `throw_it`, which throws a `bad_cast` for the value that starts at `at`, and records `at`.
+            template <typename F>
+            [[noreturn]] CPPYYJSON_COLD static void throw_at(const char* at, F&& throw_it)
+            {
+                try
+                {
+                    std::forward<F>(throw_it)();
+                }
+                catch (yyjson::bad_cast& e)
+                {
+                    yyjson::detail::bad_cast_access::set_text_value(e, at);
+                    throw;
+                }
+                std::terminate();
             }
 
         public:
@@ -15529,9 +15771,9 @@ namespace yyjson
         private:
             [[noreturn]] CPPYYJSON_COLD static void fail() { throw direct_read_failure{}; }
             [[noreturn]] CPPYYJSON_COLD static void fail(direct_read_failure::mismatch what, std::string_view type,
-                                                         char first = 0)
+                                                         const char* at, char first = 0)
             {
-                throw direct_read_failure{what, type, first};
+                throw direct_read_failure{what, type, first, at};
             }
             using mismatch = direct_read_failure::mismatch;
             template <typename T>
@@ -16844,16 +17086,25 @@ namespace yyjson
                     const auto guard = depth_guard{*this};
                     const char* const start = cur_;
                     using R = decltype(f(std::declval<S>()));
-                    if constexpr (std::is_void_v<R>)
+                    // the path of a `bad_cast` from the caster starts at the value of the view
+                    try
                     {
-                        f(S(*this, start));
-                        view_close(start);
+                        if constexpr (std::is_void_v<R>)
+                        {
+                            f(S(*this, start));
+                            view_close(start);
+                        }
+                        else
+                        {
+                            R result = f(S(*this, start));
+                            view_close(start);
+                            return result;
+                        }
                     }
-                    else
+                    catch (yyjson::bad_cast& e)
                     {
-                        R result = f(S(*this, start));
-                        view_close(start);
-                        return result;
+                        yyjson::detail::bad_cast_access::set_text_value(e, start);
+                        throw;
                     }
                 }
                 else if constexpr (yyjson::detail::borrows_strings<S>)
@@ -17059,6 +17310,11 @@ namespace yyjson
                     }
                     catch (const direct_read_failure&)
                     {
+                        return view_cast_document<U>(p);
+                    }
+                    catch (const yyjson::bad_cast&)
+                    {
+                        // the cast of a document gives the path within the value
                         return view_cast_document<U>(p);
                     }
                 }
@@ -17339,14 +17595,15 @@ namespace yyjson
                             return;
                         }
                     }
-                    if (*cur_ != '{') [[unlikely]]
-                        yyjson::detail::throw_bad_cast("{} is not constructible from JSON other than an object",
-                                                       name<T>);
                     const char* const start = cur_;
+                    if (*cur_ != '{') [[unlikely]]
+                        throw_at(start, [] {
+                            yyjson::detail::throw_bad_cast("{} is not constructible from JSON other than an object",
+                                                           name<T>);
+                        });
                     const auto index = find_variant_tag<T>(start);
                     if (index == std::variant_npos) [[unlikely]]
-                        yyjson::detail::throw_variant_tag_missing(
-                            yyjson::detail::variant_tags<std::remove_cv_t<T>>::key, name<T>);
+                        throw_at(start, [] { yyjson::detail::throw_variant_tag_missing({}, tags::key, name<T>); });
                     read_tagged_alternative<T>(make, index, start);
                 }
                 else
@@ -17386,25 +17643,26 @@ namespace yyjson
             std::size_t read_variant_tag(std::string& buf)
             {
                 using tags = Tags;
+                const char* const start = cur_;
                 if (*cur_ != '"') [[unlikely]]
-                    yyjson::detail::throw_variant_tag_not_string(tags::key, name<T>);
+                    throw_at(start, [] { yyjson::detail::throw_variant_tag_not_string({}, tags::key, name<T>); });
                 const auto id = read_short_string(buf);
                 const auto i = tags::alternative(id);
                 if (i == std::variant_npos) [[unlikely]]
-                    yyjson::detail::throw_variant_tag_unknown(tags::key, id, name<T>);
+                    throw_at(start, [id] { yyjson::detail::throw_variant_tag_unknown({}, tags::key, id, name<T>); });
                 return i;
             }
 
             // The alternative of a variant tagged by `adjacent_tag` whose value has no tag: `std::monostate` for a
-            // null, which `is_null` tells.
+            // null, which `is_null` tells.  The value starts at `at`.
             template <typename V, typename Tags>
-            static std::size_t untagged_adjacent_alternative(bool is_null)
+            static std::size_t untagged_adjacent_alternative(bool is_null, const char* at)
             {
                 if constexpr (Tags::monostate != std::variant_npos)
                 {
                     if (is_null) return Tags::monostate;
                 }
-                yyjson::detail::throw_variant_tag_missing(Tags::key, name<V>);
+                throw_at(at, [] { yyjson::detail::throw_variant_tag_missing({}, Tags::key, name<V>); });
             }
 
             // The string at `cur_`, from the text itself unless it has escapes.
@@ -17630,8 +17888,10 @@ namespace yyjson
                     index = find_variant_tag<V, tags>(adjacent.open);
                 cur_ = end;
                 if (index != std::variant_npos && index != struct_field<I>(t).index()) [[unlikely]]
-                    yyjson::detail::throw_variant_tag_without_value(tags::key, tags::ids[index],
-                                                                    yyjson::detail::struct_field_key<T, I>, name<T>);
+                    throw_at(adjacent.open, [index] {
+                        yyjson::detail::throw_variant_tag_without_value(
+                            {}, tags::key, tags::ids[index], yyjson::detail::struct_field_key<T, I>, name<T>);
+                    });
             }
 
             // Merges the value at `cur_` into the alternative that the variant `v` tagged by Tags holds, which
@@ -17669,13 +17929,28 @@ namespace yyjson
                 else
                     index = find_variant_tag<V, tags>(adjacent.open);
                 const auto doc = std::move(adjacent.docs[I]);
-                const auto value = const_value_ref(yyjson_doc_get_root(doc.get()));
-                if constexpr (Merge)
-                    merge_tagged<tags>(struct_field<I>(t), index, value);
-                else
+                auto* const root = yyjson_doc_get_root(doc.get());
+                const auto value = const_value_ref(root);
+                try
                 {
-                    if (index == std::variant_npos) index = untagged_adjacent_alternative<V, tags>(value.is_null());
-                    struct_field<I>(t) = yyjson::detail::cast_alternative<V>(index, value);
+                    if constexpr (Merge)
+                        merge_tagged<tags>(struct_field<I>(t), index, value);
+                    else
+                    {
+                        if (index == std::variant_npos)
+                            index = untagged_adjacent_alternative<V, tags>(value.is_null(), adjacent.at[I]);
+                        struct_field<I>(t) = yyjson::detail::cast_alternative<V>(index, value);
+                    }
+                }
+                catch (yyjson::bad_cast& e)
+                {
+                    // the value is in the text at `at[I]`, and `cur_` is past the object
+                    if (yyjson::detail::bad_cast_access::text_value(e) == nullptr)
+                    {
+                        yyjson::detail::bad_cast_access::add_path(e, root);
+                        yyjson::detail::bad_cast_access::set_text_value(e, adjacent.at[I]);
+                    }
+                    throw;
                 }
                 cur_ = end;
             }
@@ -17738,7 +18013,7 @@ namespace yyjson
                              read_alternative<T, Is>(make, start, (later[Is] & kind) != 0, rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found) fail(mismatch::value, name<T>);
+                if (!found) fail(mismatch::value, name<T>, start);
             }
 
             // Ranks the keys of the object at `cur_` as `untagged_key_ranking` does, and moves past the object.
@@ -17863,7 +18138,7 @@ namespace yyjson
                              read_alternative<T, Is>(make, start, ranked.others_after(Is), rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
-                if (!found) fail(mismatch::value, name<T>);
+                if (!found) fail(mismatch::value, name<T>, start);
             }
 
             // Reads the object at `cur_` into the keyed alternative I of the variant T, recording its keys in
@@ -17951,7 +18226,7 @@ namespace yyjson
                 if (!found)
                 {
                     cur_ = start;
-                    fail(mismatch::value, name<T>);
+                    fail(mismatch::value, name<T>, start);
                 }
             }
 
@@ -18177,7 +18452,10 @@ namespace yyjson
                 }
                 catch (...)
                 {
-                    if (!accepts(count_values(open))) mismatch();
+                    // the failure is located at `cur_`, which the count moves
+                    const auto at = cur_;
+                    if (!accepts(count_values(open))) mismatch(open);
+                    cur_ = at;
                     throw;
                 }
             }
@@ -18185,7 +18463,7 @@ namespace yyjson
             template <typename T>
             static auto size_mismatch(mismatch what)
             {
-                return [what] { fail(what, name<T>); };
+                return [what](const char* open) { fail(what, name<T>, open); };
             }
 
             // Reads the value at `cur_` into the tuple T as its caster reads it from a document: the members of an
@@ -18246,7 +18524,7 @@ namespace yyjson
                     else if constexpr (tuple_from_object<T>)
                         return read_by_document<T>();
                     else
-                        fail(mismatch::value, name<T>);
+                        fail(mismatch::value, name<T>, cur_);
                 }
                 if constexpr (tuple_from_array<T>)
                 {
@@ -18286,7 +18564,7 @@ namespace yyjson
                         return result;
                     }
                 }
-                fail(mismatch::value, name<T>);
+                fail(mismatch::value, name<T>, cur_);
             }
 
             // Reads the value at `cur_` as `cast<T>` reads it from a document.
@@ -18371,12 +18649,12 @@ namespace yyjson
                             if constexpr (from_json_def_obj_defined<T>)
                                 return read_object<T>();
                             else
-                                fail(mismatch::kind, name<T>, '{');
+                                fail(mismatch::kind, name<T>, cur_, '{');
                         case '[':
                             if constexpr (from_json_def_arr_defined<T>)
                                 return read_array<T>();
                             else
-                                fail(mismatch::kind, name<T>, '[');
+                                fail(mismatch::kind, name<T>, cur_, '[');
                         case '"':
                             if constexpr (std::same_as<T, std::string>)
                             {
@@ -19321,7 +19599,7 @@ namespace yyjson
                 using element_type = std::remove_extent_t<F>;
                 constexpr auto size = std::extent_v<F>;
                 if (*cur_ != '[') [[unlikely]]
-                    fail(mismatch::c_array_kind, name<std::remove_all_extents_t<F>>);
+                    fail(mismatch::c_array_kind, name<std::remove_all_extents_t<F>>, cur_);
                 if constexpr (!Counted)
                 {
                     return read_counted(
@@ -20207,6 +20485,33 @@ namespace yyjson
                 });
             }
         };
+
+        // Gives `e`, thrown by the reader `r` of `json`, the path and the position of the value at `at`, or where
+        // `r` stopped.  As in `cast_text`, `AllowExtWhitespace` leaves the position out.
+        CPPYYJSON_COLD inline void locate_direct_failure(bad_cast& e, std::string_view json, ReadFlag read_flag,
+                                                         const reader::detail::direct_reader& r,
+                                                         const char* at) noexcept
+        {
+            if (at == nullptr) at = bad_cast_access::text_value(e);
+            bad_cast_access::set_location(e, json, r.stop(at), at == nullptr,
+                                          (read_flag & ReadFlag::AllowExtWhitespace) == ReadFlag::NoFlag);
+        }
+
+        // Throws the `bad_cast` of `failure` with the path and the position of the value that does not match.
+        [[noreturn]] CPPYYJSON_COLD inline void throw_direct_failure(const reader::detail::direct_read_failure& failure,
+                                                                     std::string_view json, ReadFlag read_flag,
+                                                                     const reader::detail::direct_reader& r)
+        {
+            try
+            {
+                failure.throw_bad_cast();
+            }
+            catch (bad_cast& e)
+            {
+                locate_direct_failure(e, json, read_flag, r, failure.at);
+                throw;
+            }
+        }
     }  // namespace detail
 
     // Reads JSON text into T as `yyjson::read(json, read_flag).cast<T>()` does, without a document for the parts
@@ -20229,9 +20534,10 @@ namespace yyjson
             if (const auto root = direct_reader::find_root(json, read_flag, first, last);
                 root != direct_reader::root_kind::none) [[likely]]
             {
+                reader::detail::direct_reader r(root, first, last, read_flag);
                 try
                 {
-                    return direct_reader(root, first, last, read_flag).read_root<U>();
+                    return r.read_root<U>();
                 }
                 catch (const std::bad_alloc&)
                 {
@@ -20241,7 +20547,7 @@ namespace yyjson
                 {
                     using enum reader::detail::direct_read_failure::mismatch;
                     if (e.what != unknown && reader::detail::direct_reader::is_valid_root(root, first, last, read_flag))
-                        e.throw_bad_cast();
+                        yyjson::detail::throw_direct_failure(e, json, read_flag, r);
                 }
                 catch (const reader::detail::direct_read_unsupported&)
                 {
@@ -20249,10 +20555,17 @@ namespace yyjson
                 catch (const detail::recursion_limit_error&)
                 {
                 }
+                catch (bad_cast& e)
+                {
+                    if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag))
+                    {
+                        yyjson::detail::locate_direct_failure(e, json, read_flag, r, nullptr);
+                        throw;
+                    }
+                }
                 catch (...)
                 {
-                    // a `bad_cast` or the exception of a caster, which the cast of a document throws too unless the
-                    // text is invalid
+                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
                     if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag)) throw;
                 }
             }
@@ -20281,9 +20594,10 @@ namespace yyjson
             if (const auto root = direct_reader::find_root(json, read_flag, first, last);
                 root != direct_reader::root_kind::none) [[likely]]
             {
+                reader::detail::direct_reader r(root, first, last, read_flag);
                 try
                 {
-                    direct_reader(root, first, last, read_flag).read_root_into(t);
+                    r.read_root_into(t);
                     return;
                 }
                 catch (const std::bad_alloc&)
@@ -20294,7 +20608,7 @@ namespace yyjson
                 {
                     using enum reader::detail::direct_read_failure::mismatch;
                     if (e.what != unknown && reader::detail::direct_reader::is_valid_root(root, first, last, read_flag))
-                        e.throw_bad_cast();
+                        yyjson::detail::throw_direct_failure(e, json, read_flag, r);
                 }
                 catch (const reader::detail::direct_read_unsupported&)
                 {
@@ -20302,10 +20616,17 @@ namespace yyjson
                 catch (const detail::recursion_limit_error&)
                 {
                 }
+                catch (bad_cast& e)
+                {
+                    if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag))
+                    {
+                        yyjson::detail::locate_direct_failure(e, json, read_flag, r, nullptr);
+                        throw;
+                    }
+                }
                 catch (...)
                 {
-                    // a `bad_cast` or the exception of a caster, which the cast of a document throws too unless the
-                    // text is invalid
+                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
                     if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag)) throw;
                 }
             }
@@ -20333,9 +20654,10 @@ namespace yyjson
             if (const auto root = direct_reader::find_root(json, read_flag, first, last);
                 root != direct_reader::root_kind::none) [[likely]]
             {
+                reader::detail::direct_reader r(root, first, last, read_flag);
                 try
                 {
-                    direct_reader(root, first, last, read_flag).merge_root(t);
+                    r.merge_root(t);
                     return;
                 }
                 catch (const std::bad_alloc&)
@@ -20346,7 +20668,7 @@ namespace yyjson
                 {
                     using enum reader::detail::direct_read_failure::mismatch;
                     if (e.what != unknown && reader::detail::direct_reader::is_valid_root(root, first, last, read_flag))
-                        e.throw_bad_cast();
+                        yyjson::detail::throw_direct_failure(e, json, read_flag, r);
                 }
                 catch (const reader::detail::direct_read_unsupported&)
                 {
@@ -20354,10 +20676,17 @@ namespace yyjson
                 catch (const detail::recursion_limit_error&)
                 {
                 }
+                catch (bad_cast& e)
+                {
+                    if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag))
+                    {
+                        yyjson::detail::locate_direct_failure(e, json, read_flag, r, nullptr);
+                        throw;
+                    }
+                }
                 catch (...)
                 {
-                    // a `bad_cast` or the exception of a caster, which the cast of a document throws too unless the
-                    // text is invalid
+                    // the exception of a caster, which the cast of a document throws too unless the text is invalid
                     if (reader::detail::direct_reader::is_valid_root(root, first, last, read_flag)) throw;
                 }
             }

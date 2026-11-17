@@ -1038,7 +1038,7 @@ TEST(DirectReader, CasterExceptionIsNotRetried)
 
     // so is a `bad_cast` of a caster, and the `bad_cast` of a value that the type cannot be cast from
     EXPECT_EQ(calls([] { return yyjson::read<std::vector<RejectsNegative>>("[1,-2,3]"); }),
-              std::pair(std::string("bad cast: negative -2"), 2));
+              std::pair(std::string("bad cast: negative -2 at /1"), 2));
     const auto once = [&]<typename T>(std::string_view json, std::type_identity<T>) {
         const auto text = std::format(R"({{"first":1,"then":{}}})", json);
         const auto expected = calls([&] { return yyjson::read(text).cast<CallsBefore<T>>(); });
