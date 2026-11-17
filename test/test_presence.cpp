@@ -464,7 +464,7 @@ namespace
     std::string error(std::string_view what) { return std::format("bad cast: {}", what); }
     std::string missing(std::string_view type, std::string_view key)
     {
-        return error(std::format("{} is not constructible from JSON without the key \"{}\"", type, key));
+        return error(std::format("a required key is missing; reading the key \"{}\" of {}", key, type));
     }
 
     template <typename T>
@@ -502,7 +502,8 @@ TEST(Presence, Required)
     EXPECT_EQ(expect_merge_into(PreReqWide{}, R"({"a":1})"),
               R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":10})");
     // a vector of them, whose elements are read whole
-    EXPECT_EQ(read_with<std::vector<PreReq>>(R"([{"a":1},{"b":2}])"), missing("PreReq", "a") + " at /1");
+    EXPECT_EQ(read_with<std::vector<PreReq>>(R"([{"a":1},{"b":2}])"),
+              "bad cast: a required key is missing at /1; reading the key \"a\" of PreReq");
 }
 
 TEST(Presence, RequiredKeys)
@@ -513,8 +514,9 @@ TEST(Presence, RequiredKeys)
                   !yyjson::detail::has_struct_conditions<PreReqKeys>);
     expect_required<PreReqKeys>("PreReqKeys");
     expect_required<PreReqAllOf>("PreReqAllOf");
-    EXPECT_EQ(read_with<PreReqAllOf>(R"({"a":4,"b":-1})"),
-              error(R"(the value of the key "b" of PreReqAllOf is less than the minimum 0)") + " at /b");
+    EXPECT_EQ(
+        read_with<PreReqAllOf>(R"({"a":4,"b":-1})"),
+        error(R"(the value does not satisfy all the subschemas of allOf at /b; reading the key "b" of PreReqAllOf)"));
     EXPECT_EQ(read_with<PreReqRenamed>(R"({"x":4,"y":5})"), R"({"x":4,"y":5})");
     EXPECT_EQ(read_with<PreReqRenamed>(R"({"y":5})"), missing("PreReqRenamed", "x"));
     EXPECT_EQ(read_with<PreReqRenamed>(R"({"x":4})"), missing("PreReqRenamed", "y"));
@@ -561,7 +563,7 @@ namespace
         EXPECT_EQ(read_with<T>(R"({"s":"a","o":null})"), R"({"s":"a","o":"anon","plain":5})");
         EXPECT_EQ(read_with<T>(R"({"o":null,"s":"a"})"), R"({"s":"a","o":"anon","plain":5})");
         EXPECT_TRUE(read_with<T>(R"({"o":null,"plain":1})", yyjson::strict)
-                        .ends_with(" is not constructible from JSON null under yyjson::reject_null_as_missing at /o"));
+                        .starts_with("bad cast: the value must not be null at /o; reading std::optional<"));
         // the keys may be missing under strict
         EXPECT_EQ(read_with<T>(R"({"plain":1})", yyjson::strict), R"({"s":"anon","o":"anon","plain":1})");
         // a merge patch keeps a field whose key it lacks, and null resets the field to the value that f makes
@@ -740,7 +742,8 @@ TEST(Presence, Sentinel)
         return expect_merge_rule<PreSentinelOuter, true>(t, patch);
     };
     EXPECT_EQ(write_all(PreSentinelOuter()), R"({"n":0})");
-    EXPECT_EQ(merge(PreSentinelOuter(), R"({"in":{"b":1}})"), missing("PreSentinelInner", "a") + " at /in");
+    EXPECT_EQ(merge(PreSentinelOuter(), R"({"in":{"b":1}})"),
+              "bad cast: a required key is missing at /in; reading the key \"a\" of PreSentinelInner");
     EXPECT_EQ(merge(PreSentinelOuter(), R"({"in":{"a":1}})"), R"({"in":{"a":1},"n":0})");
     auto held = PreSentinelOuter{{2, std::nullopt}, 0};
     EXPECT_EQ(merge(held, R"({"in":{"b":1}})"), R"({"in":{"a":2,"b":1},"n":0})");
@@ -776,10 +779,9 @@ TEST(Presence, AnnotatedKeys)
               R"({"a":1,"b":2,"addr":{"zip":"z"}})");
     EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"b":2,"addr":{"zip":"z"}})"), missing("PreAnnotatedKeys", "a"));
     EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"a":1,"b":-1,"addr":{"zip":"z"}})"),
-              error("the value of the key \"b\" of PreAnnotatedKeys is less than the minimum 0 at /b"));
+              error(R"(the number is less than the minimum 0 at /b; reading the key "b" of PreAnnotatedKeys)"));
     EXPECT_EQ(read_with<PreAnnotatedKeys>(R"({"a":1,"b":2,"addr":{}})"),
-              error("the value of the key \"addr\" of PreAnnotatedKeys does not have the keys and the values that "
-                    "yyjson::property and required give at /addr"));
+              error(R"(the object does not satisfy properties at /addr; reading the key "addr" of PreAnnotatedKeys)"));
 }
 #endif
 

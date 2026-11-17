@@ -147,6 +147,17 @@ namespace yyjson
     {
         struct bad_cast_access;
 
+        // What tells apart the texts of failures of one kind.
+        enum class failure_detail : std::uint8_t
+        {
+            none,
+            key,      // a keyword that a key of an object, not the value, does not satisfy
+            element,  // an element of an array, not a member of an object
+            tag_missing,
+            tag_unknown,
+            tag_not_string,
+            tag_without_value,
+        };
         // A number that a failure records, such as the input of a value out of range or the limit of a keyword.
         struct failure_number
         {
@@ -182,6 +193,9 @@ namespace yyjson
             bool at_most = false;        // whether `limit` is a capacity rather than the size
             std::uint16_t got = 0;       // the `json_kind` of the input value; 0 if not known
             std::uint16_t accepted = 0;  // the `json_kind` mask of the target; 0 if not known
+            std::uint8_t detail = 0;     // a `failure_detail`, which tells apart the texts of one kind
+            // the length of the text before the note of the developer, where the path goes; 0 for the end
+            std::uint32_t note_at = 0;
             failure_number value;        // the number of the input that is out of range
             failure_number limit;        // the number or the count that the schema gives
             const void* list_data = nullptr;
@@ -243,6 +257,9 @@ namespace yyjson
         }
         // The category of the failure; `error_kind::other` for an exception that a user caster constructs.
         [[nodiscard]] error_kind kind() const noexcept { return failure_.kind; }
+        // What the failure is in the words of JSON, such as "expected an integer, got a string", without the path,
+        // the input, or a C++ type.  Fixed for an exception that a user caster constructs.
+        [[nodiscard]] std::string message() const;
         // The JSON Schema keyword that the value does not satisfy, such as "maxLength"; empty unless `kind()` is
         // `error_kind::keyword`.
         [[nodiscard]] std::string_view keyword() const noexcept;
@@ -262,12 +279,21 @@ namespace yyjson
         template <typename E>
         const cast_failure& failure_of(const E& e) noexcept;
 
-        // Formats the message out of line, which keeps the casts that may throw small enough to be inlined.
+        // The text of `facts` and then the note of the developer `note`, if not empty, whose start `facts.note_at`
+        // then marks.
+        template <typename = void>
+        std::string failure_text(cast_failure& facts, std::string_view note);
+        // The note of the developer that names the C++ type, or the key and the type that has it, of `facts`.
+        template <typename = void>
+        std::string default_note(const cast_failure& facts);
+
+        // Formats the note out of line, which keeps the casts that may throw small enough to be inlined.
         template <typename... Args>
-        [[noreturn]] CPPYYJSON_COLD void throw_bad_cast(const cast_failure& facts, std::format_string<Args...> fmt,
+        [[noreturn]] CPPYYJSON_COLD void throw_bad_cast(cast_failure facts, std::format_string<Args...> fmt,
                                                         Args&&... args)
         {
-            auto e = bad_cast(std::format(fmt, std::forward<Args>(args)...));
+            const auto note = std::format(fmt, std::forward<Args>(args)...);
+            auto e = bad_cast(failure_text(facts, note.empty() ? default_note(facts) : note));
             failure_of(e) = facts;
             throw e;
         }
@@ -283,8 +309,10 @@ namespace yyjson
         template <typename... Args>
         [[noreturn]] CPPYYJSON_COLD void throw_recursion_limit(std::format_string<Args...> fmt, Args&&... args)
         {
-            auto e = recursion_limit_error(std::format(fmt, std::forward<Args>(args)...));
-            failure_of(e).kind = error_kind::recursion_limit;
+            auto facts = cast_failure();
+            facts.kind = error_kind::recursion_limit;
+            auto e = recursion_limit_error(failure_text(facts, std::format(fmt, std::forward<Args>(args)...)));
+            failure_of(e) = facts;
             throw e;
         }
 
@@ -422,7 +450,10 @@ namespace yyjson
             static void update_what(bad_cast& e)
             {
                 auto& s = *e.state_;
-                auto what = std::string(e.std::runtime_error::what());
+                const auto text = std::string_view(e.std::runtime_error::what());
+                const auto head =
+                    e.failure_.note_at == 0 ? text.size() : std::min<std::size_t>(e.failure_.note_at, text.size());
+                auto what = std::string(text.substr(0, head));
                 if (!s.path.empty())
                 {
                     what += " at ";
@@ -433,7 +464,74 @@ namespace yyjson
                     what += std::format(" (line {}, column {}, pos {})", s.position->line, s.position->column,
                                         s.position->pos);
                 }
+                what += text.substr(head);
                 s.what = std::move(what);
+            }
+
+            // Makes the text of `e` again from its facts, which have changed since it was thrown, and keeps its note.
+            template <typename = void>
+            CPPYYJSON_COLD static void rewrite(bad_cast& e)
+            {
+                auto& facts = e.failure_;
+                if (facts.note_at == 0) return;
+                const auto text = std::string_view(e.std::runtime_error::what());
+                const auto note = text.substr(std::min<std::size_t>(facts.note_at, text.size()));
+                auto rewritten = failure_text(facts, note.starts_with("; ") ? note.substr(2) : note);
+                static_cast<std::runtime_error&>(e) = std::runtime_error(rewritten);
+                if (e.state_ != nullptr) update_what(e);
+            }
+
+            // The text of `e` without its path, with its note in parentheses, for a list of the reasons of a
+            // variant.
+            template <typename = void>
+            CPPYYJSON_COLD static std::string reason(const bad_cast& e)
+            {
+                const auto text = std::string_view(e.std::runtime_error::what());
+                const auto at = std::min<std::size_t>(e.failure_.note_at, text.size());
+                if (at == 0 || at == text.size()) return std::string(text);
+                const auto note = text.substr(at);
+                return std::format("{} ({})", text.substr(0, at), note.starts_with("; ") ? note.substr(2) : note);
+            }
+
+            // A copy of `x`, thrown by a cast of the value `from` of another document, whose path starts at the
+            // value `at` and goes on by the path of `x` from `from`.  The position stays that of `at`.
+            template <typename At>
+            CPPYYJSON_COLD static bad_cast moved_to(const bad_cast& x, const At& at, const At& from)
+            {
+                auto e = bad_cast(std::string(x.std::runtime_error::what()));
+                e.failure_ = x.failure_;
+                set_target(e, at.value(), at.mutable_value());
+                if (x.state_ != nullptr)
+                {
+                    try
+                    {
+                        const auto& s = *x.state_;
+                        auto segments = std::vector<segment>();
+                        const auto found = s.mutable_value != from.mutable_value() ? false
+                                           : s.mutable_value
+                                               ? find_path(static_cast<const yyjson_mut_val*>(from.value()),
+                                                           static_cast<const yyjson_mut_val*>(s.value), segments)
+                                               : find_path(static_cast<const yyjson_val*>(from.value()),
+                                                           static_cast<const yyjson_val*>(s.value), segments);
+                        auto inner = std::string();
+                        if (found)
+                            for (const auto& segment : segments) inner += '/' + segment.token;
+                        if (found || s.value == nullptr) inner += s.path;
+                        if (e.state_ == nullptr)
+                        {
+                            e.state_ = std::make_shared<bad_cast::state>();
+                            e.state_->what = e.std::runtime_error::what();
+                        }
+                        e.state_->path = std::move(inner);
+                        update_what(e);
+                    }
+                    catch (...)  // NOLINT(bugprone-empty-catch)
+                    {
+                        // without memory for the path, the exception is thrown without the inner path
+                    }
+                }
+                if (!x.failure_.input.empty()) e.failure_.input = keep_input(e, x.failure_.input);
+                return e;
             }
 
             static cast_failure& failure(bad_cast& e) noexcept { return e.failure_; }
@@ -6409,8 +6507,9 @@ namespace yyjson
                 if (++recursion_depth > std::size_t{CPPYYJSON_RECURSION_DEPTH_LIMIT}) [[unlikely]]
                 {
                     --recursion_depth;
-                    throw_recursion_limit("{} is nested deeper than CPPYYJSON_RECURSION_DEPTH_LIMIT ({})",
-                                          type_name<T>(), CPPYYJSON_RECURSION_DEPTH_LIMIT);
+                    throw_recursion_limit(
+                        "reading {}, which is nested deeper than CPPYYJSON_RECURSION_DEPTH_LIMIT ({})", type_name<T>(),
+                        CPPYYJSON_RECURSION_DEPTH_LIMIT);
                 }
             }
             ~recursion_guard() { --recursion_depth; }
@@ -6541,14 +6640,26 @@ namespace yyjson
             return n;
         }
 
+        template <typename>
+        CPPYYJSON_COLD std::string default_note(const cast_failure& facts)
+        {
+            if (!facts.key.empty() && !facts.owner.empty())
+                return std::format("reading the key \"{}\" of {}", facts.key, facts.owner);
+            if (!facts.type.empty()) return std::format("reading {}", facts.type);
+            if (!facts.owner.empty()) return std::format("reading {}", facts.owner);
+            return {};
+        }
+
         // Throws the `bad_cast` of `facts` at `at`.  `input` is a text of the input that `facts.input` then views.
+        // The format gives the note of the developer, or `default_note` if it gives the empty text.
         template <typename... Args>
         [[noreturn]] CPPYYJSON_COLD void throw_cast_failure(cast_failure facts, cast_target at, std::string_view input,
                                                             std::format_string<Args...> fmt, Args&&... args)
         {
-            auto e = bad_cast(std::format(fmt, std::forward<Args>(args)...));
-            bad_cast_access::set_target(e, at.value(), at.mutable_value());
             if (facts.got == 0) facts.got = json_kind_at(at);
+            const auto note = std::format(fmt, std::forward<Args>(args)...);
+            auto e = bad_cast(failure_text(facts, note.empty() ? default_note(facts) : note));
+            bad_cast_access::set_target(e, at.value(), at.mutable_value());
             facts.input = input.empty() ? std::string_view() : bad_cast_access::keep_input(e, input);
             bad_cast_access::failure(e) = facts;
             throw e;
@@ -6615,12 +6726,7 @@ namespace yyjson
         template <typename T, typename V>
         [[noreturn]] CPPYYJSON_COLD void throw_overflow(cast_target at, V value)
         {
-            if constexpr (std::floating_point<V>)
-                throw_out_of_range<T>(at, value, "overflow detected: {} is not constructible from JSON number {}",
-                                      type_name<T>(), value);
-            else
-                throw_out_of_range<T>(at, value, "overflow detected: {} is not constructible from JSON integer {}",
-                                      type_name<T>(), value);
+            throw_out_of_range<T>(at, value, "");
         }
 
         // Selects the overload of a member `cast` that does not add the path, for a cast nested in another one.
@@ -6747,14 +6853,9 @@ namespace yyjson
                 facts.accepted = c_array_from_object<F, typename decltype(json.as_object())::value_type>()
                                      ? json_kind_array | json_kind_object
                                      : json_kind_array;
-                throw_cast_failure(facts, target_of(json), {},
-                                   "a C array of {} is not constructible from JSON other than array",
-                                   type_name<std::remove_all_extents_t<F>>());
+                throw_cast_failure(facts, target_of(json), {}, "");
             }
-            if (arr->size() != size)
-                throw_size_mismatch<F>(target_of(json), size,
-                                       "the size of JSON array differs from the size of a C array of {}",
-                                       type_name<std::remove_all_extents_t<F>>());
+            if (arr->size() != size) throw_size_mismatch<F>(target_of(json), size, "");
             auto i = std::size_t{0};
             for (const auto& e : *arr)
             {
@@ -7136,9 +7237,8 @@ namespace yyjson
             auto facts = failure_facts<error_kind::tag>();
             facts.type = type;
             facts.text = key;
-            throw_cast_failure(facts, at, {},
-                               "{} is not constructible from JSON without the tag \"{}\" that names an alternative",
-                               type, key);
+            facts.detail = static_cast<std::uint8_t>(failure_detail::tag_missing);
+            throw_cast_failure(facts, at, {}, "");
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_unknown(cast_target at, std::string_view key,
                                                                           std::string_view id, std::string_view type)
@@ -7146,9 +7246,8 @@ namespace yyjson
             auto facts = failure_facts<error_kind::tag>();
             facts.type = type;
             facts.text = key;
-            throw_cast_failure(facts, at, id,
-                               "{} is not constructible from JSON: the tag \"{}\": \"{}\" names no alternative", type,
-                               key, id);
+            facts.detail = static_cast<std::uint8_t>(failure_detail::tag_unknown);
+            throw_cast_failure(facts, at, id, "");
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_not_string(cast_target at, std::string_view key,
                                                                              std::string_view type)
@@ -7156,8 +7255,8 @@ namespace yyjson
             auto facts = failure_facts<error_kind::tag>();
             facts.type = type;
             facts.text = key;
-            throw_cast_failure(facts, at, {}, "{} is not constructible from JSON: the tag \"{}\" is not a string", type,
-                               key);
+            facts.detail = static_cast<std::uint8_t>(failure_detail::tag_not_string);
+            throw_cast_failure(facts, at, {}, "");
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_without_value(cast_target at, std::string_view key,
                                                                                 std::string_view id,
@@ -7168,10 +7267,11 @@ namespace yyjson
             facts.type = type;
             facts.text = key;
             facts.key = field;
+            facts.detail = static_cast<std::uint8_t>(failure_detail::tag_without_value);
             throw_cast_failure(facts, at, id,
-                               "{} is not constructible from JSON: the tag \"{}\": \"{}\" has no member \"{}\", and "
-                               "the variant does not hold that alternative",
-                               type, key, id, field);
+                               "reading {}: the member \"{}\" is missing, and the variant does not hold the "
+                               "alternative that the tag names",
+                               type, field);
         }
 
         // The member name and the type of the field R of a reflected struct or of a `VISITABLE_STRUCT`, by its
@@ -10404,115 +10504,6 @@ namespace yyjson
             return constraint_kind::none;
         }
 
-        // What the value does that the keyword `kind` of `Schema` rejects, such as "is less than the minimum 0".
-        template <typename Schema>
-        CPPYYJSON_COLD std::string constraint_what(constraint_kind kind)
-        {
-            constexpr const field_constraints& c = Schema::constraints;
-            constexpr auto values = Schema::values;
-            constexpr auto patterns = Schema::patterns;
-            switch (kind)
-            {
-                case constraint_kind::const_:
-                    return "is not equal to the constant " + scalar_text(values[0]);
-                case constraint_kind::enum_:
-                {
-                    auto text = std::string("is not one of ");
-                    const auto listed = values.subspan(c.template has<const_<>>() ? 1 : 0);
-                    for (std::size_t i = 0; i < listed.size(); ++i)
-                        text += (i == 0 ? "" : ", ") + scalar_text(listed[i]);
-                    return text;
-                }
-                case constraint_kind::format:
-                    return std::format("does not have the format \"{}\"", c.assertion_name.view());
-                case constraint_kind::minimum:
-                    return "is less than the minimum " + bound_text(c.minimum);
-                case constraint_kind::maximum:
-                    return "is greater than the maximum " + bound_text(c.maximum);
-                case constraint_kind::exclusive_minimum:
-                    return "is not greater than the exclusive minimum " + bound_text(c.exclusive_minimum);
-                case constraint_kind::exclusive_maximum:
-                    return "is not less than the exclusive maximum " + bound_text(c.exclusive_maximum);
-                case constraint_kind::multiple_of:
-                    return "is not a multiple of " + bound_text(c.multiple_of);
-                case constraint_kind::min_length:
-                    return std::format("is shorter than the minimum length {}", c.min_length);
-                case constraint_kind::max_length:
-                    return std::format("is longer than the maximum length {}", c.max_length);
-                case constraint_kind::min_items:
-                    return std::format("has fewer items than the minimum {}", c.min_items);
-                case constraint_kind::max_items:
-                    return std::format("has more items than the maximum {}", c.max_items);
-                case constraint_kind::unique_items:
-                    return "has duplicate items";
-                case constraint_kind::duplicate_item:
-                    return "is equal to an earlier element";
-                case constraint_kind::prefix_items:
-                    return "has an element that does not satisfy the constraints of yyjson::prefix_items";
-                case constraint_kind::items:
-                    return "has an element that does not satisfy the constraints of yyjson::items";
-                case constraint_kind::contains:
-                    return "has no item that satisfies the constraints of yyjson::contains";
-                case constraint_kind::min_contains:
-                    return std::format("has fewer than {} {} the constraints of yyjson::contains", c.min_contains,
-                                       c.min_contains == 1 ? "item that satisfies" : "items that satisfy");
-                case constraint_kind::max_contains:
-                    return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
-                                       c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
-                case constraint_kind::min_properties:
-                    return std::format("has fewer properties than the minimum {}", c.min_properties);
-                case constraint_kind::max_properties:
-                    return std::format("has more properties than the maximum {}", c.max_properties);
-                case constraint_kind::additional_properties:
-                    return "has a value that does not satisfy the constraints of yyjson::additional_properties";
-                case constraint_kind::property_names:
-                    return "has a key that does not satisfy the constraints of yyjson::property_names";
-                case constraint_kind::properties:
-                    return "does not have the keys and the values that yyjson::property and required give";
-                case constraint_kind::matches:
-                    return std::format("is not read as {} by yyjson::matches", c.matches.name());
-                case constraint_kind::not_:
-                    return "satisfies the settings of yyjson::not_";
-                case constraint_kind::then:
-                    return "satisfies the settings of yyjson::if_ and not those of yyjson::then";
-                case constraint_kind::else_:
-                    return "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_";
-                case constraint_kind::branches:
-                    return "satisfies neither the settings of yyjson::then nor those of yyjson::else_";
-                case constraint_kind::all_of:
-                    return "does not satisfy all the subschemas of yyjson::all_of";
-                case constraint_kind::any_of:
-                    return "satisfies none of the subschemas of yyjson::any_of";
-                case constraint_kind::one_of_none:
-                    return "satisfies none of the subschemas of yyjson::one_of";
-                case constraint_kind::one_of_many:
-                    return "satisfies more than one subschema of yyjson::one_of";
-                case constraint_kind::closed_key:
-                    return "has a key that yyjson::additional_properties(false) rejects";
-                case constraint_kind::dependent_required:
-                    return "does not have all the keys that yyjson::dependent_required requires";
-                case constraint_kind::required_groups_none:
-                case constraint_kind::one_of_groups_none:
-                    return "does not have all the keys that one subschema of yyjson::one_of or any_of requires";
-                case constraint_kind::required_groups_many:
-                    return "has all the keys that more than one subschema of yyjson::one_of requires";
-                case constraint_kind::pattern:
-                {
-                    if (patterns.size() == 1) return std::format("does not match the pattern \"{}\"", patterns[0]);
-                    auto text = std::string("does not match all of the patterns");
-                    for (std::size_t i = 0; i < patterns.size(); ++i)
-                    {
-                        text += i == 0 ? " \"" : ", \"";
-                        text += patterns[i];
-                        text += '"';
-                    }
-                    return text;
-                }
-                default:
-                    return "is rejected by yyjson::satisfies";
-            }
-        }
-
         template <typename B>
         requires std::same_as<B, bound_number>
         constexpr failure_number bound_failure_number(const B& b) noexcept
@@ -10528,8 +10519,7 @@ namespace yyjson
             }
         }
 
-        // The facts of a value that the keyword `kind` of `Schema` rejects, with the limit that `constraint_what`
-        // gives in the text.
+        // The facts of a value that the keyword `kind` of `Schema` rejects, with the limit of the schema.
         template <typename Schema>
         cast_failure constraint_facts(constraint_kind kind) noexcept
         {
@@ -10606,12 +10596,14 @@ namespace yyjson
         }
 
         // Throws the `bad_cast` of a value at `at` that the keyword `kind` of `Schema` rejects, in a read of Owner.
-        template <typename Schema, typename Owner, typename... Args>
+        // A `Key` keyword checks a key, and not the value of the member.
+        template <typename Schema, typename Owner, bool Key = false, typename... Args>
         [[noreturn]] CPPYYJSON_COLD void throw_keyword_at(cast_target at, constraint_kind kind,
                                                           std::format_string<Args...> fmt, Args&&... args)
         {
             auto facts = constraint_facts<Schema>(kind);
             facts.owner = type_name<Owner>();
+            if constexpr (Key) facts.detail = static_cast<std::uint8_t>(failure_detail::key);
             throw_cast_failure(facts, at, {}, fmt, std::forward<Args>(args)...);
         }
 
@@ -10700,6 +10692,316 @@ namespace yyjson
                 default:
                     return {};
             }
+        }
+
+        template <typename = void>
+        std::string failure_number_text(const failure_number& n)
+        {
+            switch (n.form)
+            {
+                case failure_number::form_t::sint:
+                    return std::format("{}", n.sint);
+                case failure_number::form_t::uint:
+                    return std::format("{}", n.uint);
+                case failure_number::form_t::real:
+                    return std::format("{}", n.real);
+                default:
+                    return {};
+            }
+        }
+
+        // The JSON kind of a value of the `json_kind` `kind`, such as "a string".
+        constexpr std::string_view json_kind_text(std::uint16_t kind) noexcept
+        {
+            if ((kind & json_kind_null) != 0) return "null";
+            if ((kind & json_kind_bool) != 0) return "a boolean";
+            if ((kind & json_kind_number) != 0) return "a number";
+            if ((kind & json_kind_string) != 0) return "a string";
+            if ((kind & json_kind_array) != 0) return "an array";
+            return "an object";
+        }
+
+        // The JSON kinds of the `json_kind` mask `kinds`, such as "an integer or a string".
+        template <typename = void>
+        std::string json_kinds_text(std::uint16_t kinds)
+        {
+            auto names = std::array<std::string_view, 6>();
+            auto n = std::size_t{0};
+            if ((kinds & json_kind_null) != 0) names[n++] = "null";
+            if ((kinds & json_kind_bool) != 0) names[n++] = "a boolean";
+            if ((kinds & json_kind_real) != 0)
+                names[n++] = "a number";
+            else if ((kinds & json_kind_integer) != 0)
+                names[n++] = "an integer";
+            if ((kinds & json_kind_string) != 0) names[n++] = "a string";
+            if ((kinds & json_kind_array) != 0) names[n++] = "an array";
+            if ((kinds & json_kind_object) != 0) names[n++] = "an object";
+            auto text = std::string();
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                if (i != 0) text += i + 1 == n ? " or " : ", ";
+                text += names[i];
+            }
+            return text;
+        }
+
+        // What a value does that the keyword of `f` rejects, such as "the string is longer than the maximum
+        // length 20".  The limits are those of the schema, not of the input.
+        template <typename = void>
+        std::string keyword_failure_text(const cast_failure& f)
+        {
+            const auto kind = static_cast<constraint_kind>(f.keyword);
+            const auto limit = failure_number_text(f.limit);
+            const auto count = f.limit.form == failure_number::form_t::uint ? f.limit.uint : std::uint64_t{0};
+            const auto* scalars = static_cast<const json_scalar*>(f.list_data);
+            const auto* patterns = static_cast<const std::string_view*>(f.list_data);
+            auto subject = std::string_view("the value");
+            auto text = std::string();
+            switch (kind)
+            {
+                case constraint_kind::minimum:
+                    subject = "the number";
+                    text = "is less than the minimum " + limit;
+                    break;
+                case constraint_kind::maximum:
+                    subject = "the number";
+                    text = "is greater than the maximum " + limit;
+                    break;
+                case constraint_kind::exclusive_minimum:
+                    subject = "the number";
+                    text = "is not greater than the exclusive minimum " + limit;
+                    break;
+                case constraint_kind::exclusive_maximum:
+                    subject = "the number";
+                    text = "is not less than the exclusive maximum " + limit;
+                    break;
+                case constraint_kind::multiple_of:
+                    subject = "the number";
+                    text = "is not a multiple of " + limit;
+                    break;
+                case constraint_kind::min_length:
+                    subject = "the string";
+                    text = "is shorter than the minimum length " + limit;
+                    break;
+                case constraint_kind::max_length:
+                    subject = "the string";
+                    text = "is longer than the maximum length " + limit;
+                    break;
+                case constraint_kind::pattern:
+                    subject = "the string";
+                    if (f.list_size == 1)
+                        text = std::format("does not match the pattern \"{}\"", patterns[0]);
+                    else
+                    {
+                        text = "does not match all of the patterns";
+                        for (std::size_t i = 0; i < f.list_size; ++i)
+                            text += std::format("{}\"{}\"", i == 0 ? " " : ", ", patterns[i]);
+                    }
+                    break;
+                case constraint_kind::format:
+                    subject = "the string";
+                    text = std::format("does not have the format \"{}\"", f.text);
+                    break;
+                case constraint_kind::const_:
+                    text = "is not equal to the constant " + scalar_text(scalars[0]);
+                    break;
+                case constraint_kind::enum_:
+                    text = "is not one of ";
+                    for (std::size_t i = 0; i < f.list_size; ++i)
+                        text += (i == 0 ? "" : ", ") + scalar_text(scalars[i]);
+                    break;
+                case constraint_kind::min_items:
+                    subject = "the array";
+                    text = "has fewer items than the minimum " + limit;
+                    break;
+                case constraint_kind::max_items:
+                    subject = "the array";
+                    text = "has more items than the maximum " + limit;
+                    break;
+                case constraint_kind::unique_items:
+                    subject = "the array";
+                    text = "has duplicate items";
+                    break;
+                case constraint_kind::duplicate_item:
+                    subject = "the item";
+                    text = "is equal to an earlier item";
+                    break;
+                case constraint_kind::prefix_items:
+                    subject = "the array";
+                    text = "has an item that does not satisfy prefixItems";
+                    break;
+                case constraint_kind::items:
+                    subject = "the array";
+                    text = "has an item that does not satisfy items";
+                    break;
+                case constraint_kind::contains:
+                    subject = "the array";
+                    text = "has no item that satisfies contains";
+                    break;
+                case constraint_kind::min_contains:
+                    subject = "the array";
+                    text = std::format("has fewer than {} {} contains", limit,
+                                       count == 1 ? "item that satisfies" : "items that satisfy");
+                    break;
+                case constraint_kind::max_contains:
+                    subject = "the array";
+                    text = std::format("has more than {} {} contains", limit,
+                                       count == 1 ? "item that satisfies" : "items that satisfy");
+                    break;
+                case constraint_kind::min_properties:
+                    subject = "the object";
+                    text = "has fewer properties than the minimum " + limit;
+                    break;
+                case constraint_kind::max_properties:
+                    subject = "the object";
+                    text = "has more properties than the maximum " + limit;
+                    break;
+                case constraint_kind::additional_properties:
+                    subject = "the object";
+                    text = "has a value that does not satisfy additionalProperties";
+                    break;
+                case constraint_kind::closed_key:
+                    subject = "the object";
+                    text = "has a key that additionalProperties does not allow";
+                    break;
+                case constraint_kind::property_names:
+                    subject = "the object";
+                    text = "has a key that does not satisfy propertyNames";
+                    break;
+                case constraint_kind::properties:
+                    subject = "the object";
+                    text = "does not satisfy properties";
+                    break;
+                case constraint_kind::dependent_required:
+                    subject = "the object";
+                    text = "does not have all the keys that dependentRequired requires";
+                    break;
+                case constraint_kind::required:
+                    return "a required key is missing";
+                case constraint_kind::required_groups_none:
+                    subject = "the object";
+                    text = "does not have all the keys that one subschema of anyOf requires";
+                    break;
+                case constraint_kind::one_of_groups_none:
+                    subject = "the object";
+                    text = "does not have all the keys that one subschema of oneOf requires";
+                    break;
+                case constraint_kind::required_groups_many:
+                    subject = "the object";
+                    text = "has all the keys that more than one subschema of oneOf requires";
+                    break;
+                case constraint_kind::matches:
+                    text = "does not satisfy matches";
+                    break;
+                case constraint_kind::not_:
+                    text = "satisfies the subschema of not";
+                    break;
+                case constraint_kind::then:
+                    text = "satisfies if and not then";
+                    break;
+                case constraint_kind::else_:
+                    text = "satisfies neither if nor else";
+                    break;
+                case constraint_kind::branches:
+                    text = "satisfies neither then nor else";
+                    break;
+                case constraint_kind::all_of:
+                    text = "does not satisfy all the subschemas of allOf";
+                    break;
+                case constraint_kind::any_of:
+                    text = "satisfies none of the subschemas of anyOf";
+                    break;
+                case constraint_kind::one_of_none:
+                    text = "satisfies none of the subschemas of oneOf";
+                    break;
+                case constraint_kind::one_of_many:
+                    text = "satisfies more than one subschema of oneOf";
+                    break;
+                default:
+                    text = "does not satisfy the predicate";
+                    break;
+            }
+            if (static_cast<failure_detail>(f.detail) == failure_detail::key) subject = "the key";
+            return std::string(subject) + ' ' + text;
+        }
+
+        // The text of the failure `f` in the words of JSON, with the number of the input that is out of range if
+        // `with_value`.
+        template <typename = void>
+        std::string failure_head(const cast_failure& f, bool with_value)
+        {
+            const auto element = static_cast<failure_detail>(f.detail) == failure_detail::element;
+            switch (f.kind)
+            {
+                case error_kind::type:
+                {
+                    auto text = f.accepted != 0 ? "expected " + json_kinds_text(f.accepted)
+                                                : std::string("the value has a JSON kind that is not read");
+                    if (f.got != 0) text += std::format(", got {}", json_kind_text(f.got));
+                    return text;
+                }
+                case error_kind::out_of_range:
+                {
+                    auto text = std::string("the number is out of range");
+                    if (with_value && f.value.form != failure_number::form_t::none)
+                        text += ", got " + failure_number_text(f.value);
+                    return text;
+                }
+                case error_kind::size:
+                {
+                    const auto object = f.got == json_kind_object;
+                    const auto count = f.limit.form == failure_number::form_t::uint ? f.limit.uint : std::uint64_t{0};
+                    return std::format(
+                        "expected {} of {}{} {}", object ? "an object" : "an array", f.at_most ? "at most " : "", count,
+                        object ? (count == 1 ? "member" : "members") : (count == 1 ? "element" : "elements"));
+                }
+                case error_kind::unknown_key:
+                    return element ? "the array has an element that is not allowed"
+                                   : "the object has a key that is not allowed";
+                case error_kind::missing_key:
+                    return element ? "a required element is missing" : "a required key is missing";
+                case error_kind::duplicate:
+                    return element ? "the array has a duplicate element" : "the object has a duplicate key";
+                case error_kind::null:
+                    return "the value must not be null";
+                case error_kind::unknown_enum:
+                    return "the value is not one of the allowed values";
+                case error_kind::tag:
+                    switch (static_cast<failure_detail>(f.detail))
+                    {
+                        case failure_detail::tag_unknown:
+                            return std::format("the tag \"{}\" names no alternative", f.text);
+                        case failure_detail::tag_not_string:
+                            return std::format("the tag \"{}\" is not a string", f.text);
+                        case failure_detail::tag_without_value:
+                            return std::format("the object has no value for the tag \"{}\"", f.text);
+                        default:
+                            return std::format("the object has no tag \"{}\"", f.text);
+                    }
+                case error_kind::no_alternative:
+                    return "no alternative accepts the value";
+                case error_kind::ambiguous_alternative:
+                    return "the value matches more than one alternative";
+                case error_kind::keyword:
+                    return keyword_failure_text(f);
+                case error_kind::recursion_limit:
+                    return "the value is nested too deeply";
+                default:
+                    return "the value is not valid";
+            }
+        }
+
+        template <typename>
+        std::string failure_text(cast_failure& facts, std::string_view note)
+        {
+            auto text = failure_head(facts, true);
+            facts.note_at = static_cast<std::uint32_t>(text.size());
+            if (!note.empty())
+            {
+                text += "; ";
+                text += note;
+            }
+            return text;
         }
 
         // Whether the pattern I of `Schema` matches `s`.
@@ -11972,35 +12274,35 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_constraint_violation(const Json& json, constraint_kind kind,
                                                                     constraint_subject subject)
         {
-            const auto what = constraint_what<Schema>(kind);
-            const auto subject_text = subject == constraint_subject::element ? "an element of the value"
-                                      : subject == constraint_subject::key   ? "a key of the value"
-                                                                             : "the value";
+            const auto subject_text = subject == constraint_subject::element ? "an element of "
+                                      : subject == constraint_subject::key   ? "a key of "
+                                                                             : "";
             auto facts = constraint_facts<Schema>(kind);
             facts.owner = type_name<S>();
+            if (subject == constraint_subject::key) facts.detail = static_cast<std::uint8_t>(failure_detail::key);
             if constexpr (transparent_struct<S>)
-                throw_cast_failure(facts, target_of(json), {}, "{} of {} {}", subject_text, type_name<S>(), what);
+                throw_cast_failure(facts, target_of(json), {}, "reading {}{}", subject_text, type_name<S>());
             else if constexpr (as_array_struct<S> && K < array_position_count<S>)
             {
                 // a position is an element of the array of S, as an element of a range is
-                const auto position_subject = subject == constraint_subject::value     ? "an element"
-                                              : subject == constraint_subject::element ? "an element of an element"
-                                                                                       : "a key of an element";
-                throw_cast_failure(facts, target_of(json), {}, "{} of the value of {} {}", position_subject,
-                                   type_name<S>(), what);
+                const auto position_subject = subject == constraint_subject::value     ? "an element of "
+                                              : subject == constraint_subject::element ? "an element of an element of "
+                                                                                       : "a key of an element of ";
+                throw_cast_failure(facts, target_of(json), {}, "reading {}{}", position_subject, type_name<S>());
             }
             else if constexpr (as_array_struct<S>)
             {
                 // the JSON array has no key for the elements of `yyjson::extra_items`, which are its elements
                 const auto extra_subject =
-                    subject == constraint_subject::key ? "a key of an element of the value" : subject_text;
-                throw_cast_failure(facts, target_of(json), {}, "{} of {} {}", extra_subject, type_name<S>(), what);
+                    subject == constraint_subject::key ? "a key of an element of " : subject_text;
+                throw_cast_failure(facts, target_of(json), {}, "reading {}{}", extra_subject, type_name<S>());
             }
             else
             {
                 facts.key = struct_field_key<S, K>;
-                throw_cast_failure(facts, target_of(json), {}, "{} of the key \"{}\" of {} {}", subject_text,
-                                   struct_field_key<S, K>, type_name<S>(), what);
+                throw_cast_failure(facts, target_of(json), {}, "reading {}{}the key \"{}\" of {}", subject_text,
+                                   subject_text[0] != '\0' ? "the value at " : "", struct_field_key<S, K>,
+                                   type_name<S>());
             }
         }
 
@@ -12643,12 +12945,9 @@ namespace yyjson
             if (!via.empty()) facts.keyword = static_cast<std::uint8_t>(constraint_kind::required);
             facts.owner = type_name<T>();
             facts.key = key;
-            if (via.empty())
-                throw_cast_failure(facts, at, {}, "{} is not constructible from JSON without the key \"{}\"",
-                                   type_name<T>(), key);
-            throw_cast_failure(facts, at, {},
-                               "{} is not constructible from JSON without the key \"{}\", which yyjson::{} requires",
-                               type_name<T>(), key, via);
+            if (via.empty()) throw_cast_failure(facts, at, {}, "");
+            throw_cast_failure(facts, at, {}, "reading the key \"{}\" of {}, which yyjson::{} requires", key,
+                               type_name<T>(), via);
         }
 
         // Throws for the first `yyjson::field` from M that does not hold: at the object for a missing key, which the
@@ -12666,8 +12965,7 @@ namespace yyjson
                         auto facts = constraint_facts<N>(kind);
                         facts.owner = type_name<T>();
                         facts.key = N::node.key.view();
-                        throw_cast_failure(facts, target_of(value), {}, "the value of the key \"{}\" of {} {}",
-                                           N::node.key.view(), type_name<T>(), constraint_what<N>(kind));
+                        throw_cast_failure(facts, target_of(value), {}, "");
                     }
                 });
                 if (!present && N::node.required) throw_required_missing<T>(target_of(obj), N::node.key.view(), via);
@@ -12749,7 +13047,9 @@ namespace yyjson
                     named.owner = facts.owner;
                     named.key = facts.key;
                     named.input = facts.input;
+                    named.note_at = facts.note_at;
                     facts = named;
+                    bad_cast_access::rewrite(e);
                 }
                 throw;
             }
@@ -12781,8 +13081,7 @@ namespace yyjson
                                                      : none ? constraint_kind::one_of_none
                                                             : constraint_kind::one_of_many);
                     facts.owner = type_name<T>();
-                    throw_cast_failure(facts, target_of(obj), {}, "{} is not constructible from JSON {} of {}",
-                                       type_name<T>(),
+                    throw_cast_failure(facts, target_of(obj), {}, "reading {} {} of {}", type_name<T>(),
                                        none ? "without all the keys of one" : "with all the keys of more than one",
                                        std::string_view(groups.data(), groups.size()));
                 }
@@ -12813,8 +13112,7 @@ namespace yyjson
                 {
                     auto facts = constraint_facts<N>(constraint_kind::any_of);
                     facts.owner = type_name<T>();
-                    throw_cast_failure(facts, target_of(obj), {},
-                                       "{} satisfies none of the subschemas of yyjson::any_of", type_name<T>());
+                    throw_cast_failure(facts, target_of(obj), {}, "");
                 }
                 else if constexpr (N::node.combinator == combinator_kind::one_of)
                 {
@@ -12824,8 +13122,7 @@ namespace yyjson
                     auto facts =
                         constraint_facts<N>(none ? constraint_kind::one_of_none : constraint_kind::one_of_many);
                     facts.owner = type_name<T>();
-                    throw_cast_failure(facts, target_of(obj), {}, "{} satisfies {} of yyjson::one_of", type_name<T>(),
-                                       none ? "none of the subschemas" : "more than one subschema");
+                    throw_cast_failure(facts, target_of(obj), {}, "");
                 }
                 constexpr auto rejected = kind == combinator_kind::not_           ? constraint_kind::not_
                                           : kind == combinator_kind::if_then_else ? constraint_kind::branches
@@ -12835,8 +13132,7 @@ namespace yyjson
                                               : constraint_kind::one_of_none;
                 auto facts = constraint_facts<N>(rejected);
                 facts.owner = type_name<T>();
-                throw_cast_failure(facts, target_of(obj), {}, "{} has the keys and the values that yyjson::{} rejects",
-                                   type_name<T>(), name);
+                throw_cast_failure(facts, target_of(obj), {}, "reading {} in yyjson::{}", type_name<T>(), name);
             }
             if constexpr (N::node.next != 0) throw_struct_combinators<T, N::node.next>(t, seen, obj);
         }
@@ -12849,26 +13145,23 @@ namespace yyjson
             using N = node_schema<struct_tree<T>, I>;
             auto facts = constraint_facts<N>(r.kind);
             facts.owner = type_name<T>();
+            const auto in = via.empty() ? std::string_view() : std::string_view(" in yyjson::");
             if (r.kind == constraint_kind::min_properties || r.kind == constraint_kind::max_properties)
-                throw_cast_failure(facts, target_of(obj), {}, "{} {} of yyjson::{}", type_name<T>(),
-                                   constraint_what<N>(r.kind), via);
+                throw_cast_failure(facts, target_of(obj), {}, "reading {}{}{}", type_name<T>(), in, via);
             const auto throw_at = [&](const auto& target) {
                 if (r.kind == constraint_kind::closed_key)
-                    throw_cast_failure(
-                        facts, target, r.key,
-                        "{} has the key \"{}\", which yyjson::additional_properties(false) of yyjson::{} "
-                        "rejects",
-                        type_name<T>(), r.key, via);
+                    throw_cast_failure(facts, target, r.key, "reading {}{}{}", type_name<T>(), in, via);
                 auto key_facts = constraint_facts<typename N::template at<N::node.keys>>(r.kind);
                 key_facts.owner = type_name<T>();
-                throw_cast_failure(key_facts, target, r.key, "a key of {} {} in yyjson::property_names of yyjson::{}",
-                                   type_name<T>(), constraint_what<typename N::template at<N::node.keys>>(r.kind), via);
+                key_facts.detail = static_cast<std::uint8_t>(failure_detail::key);
+                throw_cast_failure(key_facts, target, r.key, "reading a key of {} in yyjson::property_names{}{}",
+                                   type_name<T>(), in.empty() ? "" : " of yyjson::", via);
             };
             for (auto&& [key, value] : obj)
                 if (key == r.key) throw_at(target_of(value));
             // after a merge, the key can be one that the patch does not name
             if (!r.key.empty()) throw_at(target_of(obj));
-            throw_cast_failure(facts, target_of(obj), {}, "{} does not satisfy its conditions", type_name<T>());
+            throw_cast_failure(facts, target_of(obj), {}, "");
         }
 
         template <typename T, std::size_t I, typename Seen, typename Json>
@@ -12984,8 +13277,7 @@ namespace yyjson
             if (!struct_node_holds<T, 0>(t, seen, &obj)) [[unlikely]]
             {
                 throw_struct_node<T, 0>(t, seen, obj, {});
-                throw_bad_cast_at<error_kind::keyword>(target_of(obj), "{} does not satisfy its conditions",
-                                                       type_name<T>());
+                throw_bad_cast_at<error_kind::keyword>(target_of(obj), "reading {}", type_name<T>());
             }
         }
 
@@ -13573,7 +13865,7 @@ namespace yyjson
         {
             auto facts = failure_facts<error_kind::unknown_key>();
             facts.owner = type;
-            throw_cast_failure(facts, at, key, "{} has no field of the key \"{}\"", type, key);
+            throw_cast_failure(facts, at, key, "");
         }
         // A template, so that only a struct annotated with `yyjson::additional_properties(false)` has it.
         template <typename = void>
@@ -13582,15 +13874,14 @@ namespace yyjson
             auto facts = failure_facts<error_kind::unknown_key>();
             facts.keyword = static_cast<std::uint8_t>(constraint_kind::closed_key);
             facts.owner = type;
-            throw_cast_failure(facts, at, key,
-                               "{} has the key \"{}\", which yyjson::additional_properties(false) rejects", type, key);
+            throw_cast_failure(facts, at, key, "reading {}, which yyjson::additional_properties(false) closes", type);
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_key(cast_target at, std::string_view key,
                                                                    std::string_view type)
         {
             auto facts = failure_facts<error_kind::duplicate>();
             facts.owner = type;
-            throw_cast_failure(facts, at, key, "the object read into {} has the key \"{}\" twice", type, key);
+            throw_cast_failure(facts, at, key, "");
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_missing_key(cast_target at, std::string_view key,
                                                                   std::string_view type)
@@ -13598,14 +13889,13 @@ namespace yyjson
             auto facts = failure_facts<error_kind::missing_key>();
             facts.owner = type;
             facts.key = key;
-            throw_cast_failure(facts, at, {}, "{} is not constructible from JSON without the key \"{}\"", type, key);
+            throw_cast_failure(facts, at, {}, "");
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_null_as_missing(cast_target at, std::string_view type)
         {
             auto facts = failure_facts<error_kind::null>();
             facts.type = type;
-            throw_cast_failure(facts, at, {},
-                               "{} is not constructible from JSON null under yyjson::reject_null_as_missing", type);
+            throw_cast_failure(facts, at, {}, "reading {} under yyjson::reject_null_as_missing", type);
         }
         // Null at a position of a struct annotated with `yyjson::as_array` for a field F that cannot hold null.
         template <typename F>
@@ -13613,7 +13903,7 @@ namespace yyjson
         {
             auto facts = failure_facts<error_kind::null>();
             facts.type = null_missing_type_name<F>();
-            throw_cast_failure(facts, at, {}, "{} is not constructible from JSON null", null_missing_type_name<F>());
+            throw_cast_failure(facts, at, {}, "");
         }
         // Null in a merge patch for a field that may not be left out, which null would give its value in `T()`.
         [[noreturn]] CPPYYJSON_COLD inline void throw_null_for_required_key(cast_target at, std::string_view key,
@@ -13622,16 +13912,15 @@ namespace yyjson
             auto facts = failure_facts<error_kind::null>();
             facts.owner = type;
             facts.key = key;
-            throw_cast_failure(facts, at, {},
-                               "{} is not constructible from JSON null for the key \"{}\" under "
-                               "yyjson::reject_missing_keys",
-                               type, key);
+            throw_cast_failure(facts, at, {}, "reading the key \"{}\" of {} under yyjson::reject_missing_keys", key,
+                               type);
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_element(cast_target at, std::string_view type)
         {
             auto facts = failure_facts<error_kind::duplicate>();
             facts.type = type;
-            throw_cast_failure(facts, at, {}, "the array read into {} has an element twice", type);
+            facts.detail = static_cast<std::uint8_t>(failure_detail::element);
+            throw_cast_failure(facts, at, {}, "");
         }
 
         // The key of the tag of `yyjson::internal_tag` in the object that is being read as an alternative of the
@@ -13907,8 +14196,7 @@ namespace yyjson
         {
             const auto members = unsafe_yyjson_get_len(const_cast<Val*>(obj));
             if (const auto kind = struct_count_violation<T>(members); kind != constraint_kind::none) [[unlikely]]
-                throw_keyword_at<struct_count_schema<T>, T>(target_of(obj), kind, "{} {}", type_name<T>(),
-                                                            constraint_what<struct_count_schema<T>>(kind));
+                throw_keyword_at<struct_count_schema<T>, T>(target_of(obj), kind, "reading {}", type_name<T>());
         }
 
         // Whether `yyjson::satisfies` in `yyjson::property_names` of the struct S takes a key as a `std::string`,
@@ -13963,9 +14251,8 @@ namespace yyjson
                 const auto i = rules.find(key, hint);
                 if (i < rules.size) hint = i + 1;
                 if (const auto kind = struct_name_violation<T>(key, i); kind != constraint_kind::none) [[unlikely]]
-                    throw_keyword_at<struct_names_schema<T>, T>(target_of(value), kind, "a key of {} {}",
-                                                                type_name<T>(),
-                                                                constraint_what<struct_names_schema<T>>(kind));
+                    throw_keyword_at<struct_names_schema<T>, T, true>(target_of(value), kind, "reading a key of {}",
+                                                                      type_name<T>());
             });
         }
 
@@ -14020,9 +14307,8 @@ namespace yyjson
             if constexpr (struct_property_names<T>)
                 for_each_member(obj, [&](std::string_view key, const Val* value) {
                     if (const auto kind = struct_key_violation<T>(key); kind != constraint_kind::none)
-                        throw_keyword_at<struct_names_schema<T>, T>(target_of(value), kind, "a key of {} {}",
-                                                                    type_name<T>(),
-                                                                    constraint_what<struct_names_schema<T>>(kind));
+                        throw_keyword_at<struct_names_schema<T>, T, true>(target_of(value), kind, "reading a key of {}",
+                                                                          type_name<T>());
                 });
         }
 
@@ -14057,8 +14343,8 @@ namespace yyjson
         {
             if (const auto kind = constraint_violation<caster_type_schema<T>>(json); kind != constraint_kind::none)
                 throw_keyword_at<caster_type_schema<T>, T>(
-                    target_of(dependent_t<writer::detail::json_value_access, Json>::get(json)), kind, "{} {}",
-                    type_name<T>(), constraint_what<caster_type_schema<T>>(kind));
+                    target_of(dependent_t<writer::detail::json_value_access, Json>::get(json)), kind, "reading {}",
+                    type_name<T>());
         }
 
         // Throws when the JSON value `json` that the caster of the user reads into T violates a keyword of T.
@@ -14479,16 +14765,7 @@ namespace yyjson
         {
             if (const auto e = enum_from_key<E>(key); e.has_value()) [[likely]]
                 return *e;
-            if constexpr (enum_name_only<E>)
-                throw_bad_cast_at<error_kind::unknown_enum, E>(
-                    at, "JSON object key is not the name of an enumerator of {}", type_name<E>());
-            else if constexpr (enum_integer_only<E>)
-                throw_bad_cast_at<error_kind::unknown_enum, E>(at, "JSON object key is not an integer of {}",
-                                                               type_name<E>());
-            else
-                throw_bad_cast_at<error_kind::unknown_enum, E>(
-                    at, "JSON object key is neither the name of an enumerator of {} nor an integer of it",
-                    type_name<E>());
+            throw_bad_cast_at<error_kind::unknown_enum, E>(at, "reading a key as {}", type_name<E>());
         }
 
         template <typename F>
@@ -14733,6 +15010,8 @@ namespace yyjson
             }
         }
     }  // namespace detail
+
+    inline std::string bad_cast::message() const { return detail::failure_head(failure_, false); }
 
     inline std::string_view bad_cast::keyword() const noexcept
     {
@@ -16989,7 +17268,7 @@ namespace yyjson
                 {
                     if (!t.is_array()) [[unlikely]]
                         yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_array>(
-                            yyjson::detail::target_of(this->val_), "Could not cast to JSON array");
+                            yyjson::detail::target_of(this->val_), "");
                 }
                 // The value is checked after the copy, since a reference to an array or an object of a read
                 // document has no `is_array`.
@@ -16999,7 +17278,7 @@ namespace yyjson
                 {
                     if (!yyjson_mut_is_arr(base::val_)) [[unlikely]]
                         yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_array>(
-                            yyjson::detail::target_of(this->val_), "Could not cast to JSON array");
+                            yyjson::detail::target_of(this->val_), "");
                 }
 
                 const_array_base& operator=(const const_array_base&) = delete;
@@ -17772,7 +18051,7 @@ namespace yyjson
                 {
                     if (!t.is_object()) [[unlikely]]
                         yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_object>(
-                            yyjson::detail::target_of(this->val_), "Could not cast to JSON object");
+                            yyjson::detail::target_of(this->val_), "");
                 }
                 // The value is checked after the copy, since a reference to an array or an object of a read
                 // document has no `is_object`.
@@ -17782,7 +18061,7 @@ namespace yyjson
                 {
                     if (!yyjson_mut_is_obj(base::val_)) [[unlikely]]
                         yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_object>(
-                            yyjson::detail::target_of(this->val_), "Could not cast to JSON object");
+                            yyjson::detail::target_of(this->val_), "");
                 }
 
                 const_object_base& operator=(const const_object_base&) = delete;
@@ -18648,7 +18927,7 @@ namespace yyjson
             {
                 if (!v.is_array()) [[unlikely]]
                     yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_array>(
-                        yyjson::detail::target_of(this->val_), "Could not cast to JSON array");
+                        yyjson::detail::target_of(this->val_), "");
             }
 
             [[nodiscard]] auto cbegin() const noexcept { return const_array_iter(array_iter_begin()); }
@@ -18796,7 +19075,7 @@ namespace yyjson
             {
                 if (!v.is_object()) [[unlikely]]
                     yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_object>(
-                        yyjson::detail::target_of(this->val_), "Could not cast to JSON object");
+                        yyjson::detail::target_of(this->val_), "");
             }
 
             [[nodiscard]] auto cbegin() const noexcept { return const_object_iter(object_iter_begin()); }
@@ -19023,13 +19302,13 @@ namespace yyjson
             {
                 if (!v.is_array()) [[unlikely]]
                     yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_array>(
-                        yyjson::detail::target_of(this->val_), "Could not cast to JSON array");
+                        yyjson::detail::target_of(this->val_), "");
             }
             explicit array(value&& v) : base(v.val_), doc_(std::move(v.doc_))
             {
                 if (!v.is_array()) [[unlikely]]
                     yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_array>(
-                        yyjson::detail::target_of(this->val_), "Could not cast to JSON array");
+                        yyjson::detail::target_of(this->val_), "");
             }
 
             array& operator=(const array&) = default;
@@ -19054,13 +19333,13 @@ namespace yyjson
             {
                 if (!v.is_object()) [[unlikely]]
                     yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_object>(
-                        yyjson::detail::target_of(this->val_), "Could not cast to JSON object");
+                        yyjson::detail::target_of(this->val_), "");
             }
             explicit object(value&& v) : base(v.val_), doc_(std::move(v.doc_))
             {
                 if (!v.is_object()) [[unlikely]]
                     yyjson::detail::throw_kind_mismatch<yyjson::detail::json_kind_object>(
-                        yyjson::detail::target_of(this->val_), "Could not cast to JSON object");
+                        yyjson::detail::target_of(this->val_), "");
             }
 
             object& operator=(const object&) = default;
@@ -20255,8 +20534,7 @@ namespace yyjson
                 auto facts = failure_facts<error_kind::size>();
                 facts.type = type;
                 facts.limit = failure_number_of(size);
-                throw_cast_failure(facts, target_of(obj), {}, "the size of JSON object differs from the size of {}",
-                                   type);
+                throw_cast_failure(facts, target_of(obj), {}, "");
             }
             check_object_keys_unique(dependent_t<writer::detail::json_value_access, Json>::get(obj), type);
             for (auto&& kv : obj)
@@ -22163,8 +22441,8 @@ namespace yyjson
             using keys = typename schema::template at<schema::node.keys>;
             auto facts = constraint_facts<keys>(kind);
             facts.owner = type_name<S>();
-            throw_cast_failure(facts, target_of(json), key, "a key of {} {}", type_name<S>(),
-                               constraint_what<keys>(kind));
+            facts.detail = static_cast<std::uint8_t>(failure_detail::key);
+            throw_cast_failure(facts, target_of(json), key, "reading a key of {}", type_name<S>());
         }
         template <typename S, std::size_t R = extra_keys_index<S>, typename Json>
         [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_value_violation(const Json& json,
@@ -22175,8 +22453,7 @@ namespace yyjson
             using values = typename schema::template at<schema::node.properties>;
             auto facts = constraint_facts<values>(kind);
             facts.owner = type_name<S>();
-            throw_cast_failure(facts, target_of(json), key, "the value of the key \"{}\" of {} {}", key, type_name<S>(),
-                               constraint_what<values>(kind));
+            throw_cast_failure(facts, target_of(json), key, "reading a member value of {}", type_name<S>());
         }
 
         // Throws at `json`, the value of the key `key` that the field R of S receives, if the key does not satisfy
@@ -22843,9 +23120,7 @@ namespace yyjson
             if constexpr (bounded_range<T>)
             {
                 if (arr.size() > bounded_capacity<T>)
-                    detail::throw_size_mismatch<T, true>(detail::target_of(arr), bounded_capacity<T>,
-                                                         "the size of JSON array exceeds the capacity of {}",
-                                                         detail::type_name<T>());
+                    detail::throw_size_mismatch<T, true>(detail::target_of(arr), bounded_capacity<T>, "");
             }
             auto result = T();
 
@@ -22938,9 +23213,7 @@ namespace yyjson
         {
             using value_type = std::ranges::range_value_t<T>;
             if (arr.size() != std::ranges::size(result))
-                detail::throw_size_mismatch<T>(detail::target_of(arr), std::ranges::size(result),
-                                               "the size of JSON array differs from the size of {}",
-                                               detail::type_name<T>());
+                detail::throw_size_mismatch<T>(detail::target_of(arr), std::ranges::size(result), "");
             if constexpr (requires { std::tuple_size<T>::value; } && std::tuple_size_v<T> <= 16)
             {
                 // unrolled over the size of the type, which compilers do not always do for a loop over the
@@ -22973,8 +23246,7 @@ namespace yyjson
             // Before C++23 a string type converts from `nullptr` through its `const char*` constructor, which
             // reads the null pointer as a C string.
             if constexpr (!json_null_constructible<U>)
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "{} is not constructible from JSON null",
-                                                                       detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
             else if constexpr (detail::null_pointer_constructible<U> && !std::constructible_from<U, std::string_view>)
             {
                 return U(nullptr);
@@ -22989,8 +23261,8 @@ namespace yyjson
         {
             detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
                 at,
-                "{} is read from the names of its enumerators, not from a JSON number: give it "
-                "yyjson::enum_format::integer or name_or_integer to read integers",
+                "reading {}, which reads the names of its enumerators: give it yyjson::enum_format::integer or "
+                "name_or_integer to read integers",
                 detail::type_name<T>());
         }
 
@@ -23000,8 +23272,7 @@ namespace yyjson
             if constexpr (json_scalar_constructible<U, bool>)
                 return U(value);
             else
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "{} is not constructible from JSON bool",
-                                                                       detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
         }
 
         // Whether `from_json_uint`, `from_json_sint` and `from_json_real` read the value into U without an
@@ -23048,9 +23319,7 @@ namespace yyjson
             {
                 // the value is read only if it is an integer that fits in U
                 if (std::trunc(value) != value) [[unlikely]]
-                    detail::throw_bad_cast_at<yyjson::error_kind::type, U>(
-                        at, "{} is not constructible from JSON number {}, which is not an integer",
-                        detail::type_name<U>(), value);
+                    detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
                 if (fits_json_real<U>(value)) [[likely]]
                 {
                     return static_cast<U>(static_cast<integer_of_t<U>>(value));
@@ -23072,8 +23341,7 @@ namespace yyjson
             else if constexpr (std::is_enum_v<U>)
                 throw_enum_not_integer(at);
             else
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "{} is not constructible from JSON number",
-                                                                       detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
         }
 
         template <typename U = T>
@@ -23083,16 +23351,12 @@ namespace yyjson
             {
                 if (const auto e = enum_from_name<U>(value); e.has_value()) [[likely]]
                     return *e;
-                detail::throw_bad_cast_at<yyjson::error_kind::unknown_enum, U>(
-                    at, "JSON string is not the name of an enumerator of {}", detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::unknown_enum, U>(at, "");
             }
             else if constexpr (std::is_enum_v<U>)
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(
-                    at, "{} of yyjson::enum_format::integer is not constructible from JSON string",
-                    detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
             else if constexpr (!json_string_constructible<U>)
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "{} is not constructible from JSON string",
-                                                                       detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
             else if constexpr (std::constructible_from<U, std::string_view>)
                 return U(value);
             else if constexpr (std::constructible_from<U, std::string>)
@@ -23121,8 +23385,7 @@ namespace yyjson
             else if constexpr (std::is_enum_v<U>)
                 throw_enum_not_integer(at);
             else
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "{} is not constructible from JSON integer",
-                                                                       detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
         }
 
         template <typename U = T>
@@ -23143,8 +23406,7 @@ namespace yyjson
             else if constexpr (std::is_enum_v<U>)
                 throw_enum_not_integer(at);
             else
-                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "{} is not constructible from JSON integer",
-                                                                       detail::type_name<U>());
+                detail::throw_bad_cast_at<yyjson::error_kind::type, U>(at, "");
         }
 
         // Assigns a value of a read document to a field as `field = cast<T>(json)` does if the value has the
@@ -23256,8 +23518,7 @@ namespace yyjson
             {
                 // `inspect` takes raw JSON for a bool
                 if (yyjson_is_raw(const_cast<yyjson_val*>(json.val_))) [[unlikely]]
-                    detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
-                        detail::target_of(json), "{} is not constructible from raw json", detail::type_name<T>());
+                    detail::throw_bad_cast_at<yyjson::error_kind::type, T>(detail::target_of(json), "");
                 return json.inspect([&json](const auto& value) -> T {
                     using value_type = std::remove_cvref_t<decltype(value)>;
                     if constexpr (std::same_as<value_type, reader::const_object_ref>)
@@ -23267,9 +23528,7 @@ namespace yyjson
                             return from_json(value);
                         }
                         else
-                            detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
-                                detail::target_of(json), "{} is not constructible from JSON object",
-                                detail::type_name<T>());
+                            detail::throw_bad_cast_at<yyjson::error_kind::type, T>(detail::target_of(json), "");
                     }
                     else if constexpr (std::same_as<value_type, reader::const_array_ref>)
                     {
@@ -23278,9 +23537,7 @@ namespace yyjson
                             return from_json(value);
                         }
                         else
-                            detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
-                                detail::target_of(json), "{} is not constructible from JSON array",
-                                detail::type_name<T>());
+                            detail::throw_bad_cast_at<yyjson::error_kind::type, T>(detail::target_of(json), "");
                     }
                     else if constexpr (std::same_as<value_type, std::nullptr_t>)
                     {
@@ -23315,8 +23572,7 @@ namespace yyjson
                     return from_json(*obj);
                 }
                 else
-                    detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
-                        detail::target_of(json), "{} is not constructible from JSON object", detail::type_name<T>());
+                    detail::throw_bad_cast_at<yyjson::error_kind::type, T>(detail::target_of(json), "");
             }
             else if (const auto arr = json.as_array(); arr.has_value())
             {
@@ -23325,8 +23581,7 @@ namespace yyjson
                     return from_json(*arr);
                 }
                 else
-                    detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
-                        detail::target_of(json), "{} is not constructible from JSON array", detail::type_name<T>());
+                    detail::throw_bad_cast_at<yyjson::error_kind::type, T>(detail::target_of(json), "");
             }
             else if (json.is_null())
             {
@@ -23352,8 +23607,7 @@ namespace yyjson
             {
                 return from_json_sint(*vsi, detail::target_of(json));
             }
-            detail::throw_bad_cast_at<yyjson::error_kind::type, T>(
-                detail::target_of(json), "{} is not constructible from raw json", detail::type_name<T>());
+            detail::throw_bad_cast_at<yyjson::error_kind::type, T>(detail::target_of(json), "");
         }
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
@@ -24668,11 +24922,9 @@ namespace yyjson
                     const auto j = array_struct_duplicate(t, std::min(arr->size(), array_position_count<S>));
                     if (j != no_duplicate)
                         throw_keyword_at<schema, S>(target_of((*arr)[j]), constraint_kind::duplicate_item,
-                                                    "an element of the value of {} {}", type_name<S>(),
-                                                    constraint_what<schema>(constraint_kind::duplicate_item));
+                                                    "reading an element of {}", type_name<S>());
                 }
-            throw_keyword_at<schema, S>(target_of(json), kind, "the value of {} {}", type_name<S>(),
-                                        constraint_what<schema>(kind));
+            throw_keyword_at<schema, S>(target_of(json), kind, "reading {}", type_name<S>());
         }
 
         // Throws at the array of the struct T annotated with `yyjson::as_array`, which has no element for the field K.
@@ -24682,16 +24934,17 @@ namespace yyjson
             auto facts = failure_facts<error_kind::missing_key>();
             facts.owner = type_name<T>();
             facts.key = struct_field_key<T, K>;
-            throw_cast_failure(facts, at, {},
-                               "{} is not constructible from JSON without the element {} of the field \"{}\"",
-                               type_name<T>(), K, struct_field_key<T, K>);
+            facts.detail = static_cast<std::uint8_t>(failure_detail::element);
+            throw_cast_failure(facts, at, {}, "reading the field \"{}\" of {} from the element {}",
+                               struct_field_key<T, K>, type_name<T>(), K);
         }
         template <typename T>
-        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_element(cast_target at, std::size_t n)
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_element(cast_target at)
         {
             auto facts = failure_facts<error_kind::unknown_key>();
-            facts.owner = type_name<T>();
-            throw_cast_failure(facts, at, {}, "{} has no field of the element {}", type_name<T>(), n);
+            facts.type = type_name<T>();
+            facts.detail = static_cast<std::uint8_t>(failure_detail::element);
+            throw_cast_failure(facts, at, {}, "");
         }
 
         // Reads the field K of `t`, a struct annotated with `yyjson::as_array`, from the element `e` at its position.
@@ -24719,8 +24972,7 @@ namespace yyjson
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             const auto arr = json.as_array();
             if (!arr.has_value()) [[unlikely]]
-                throw_kind_mismatch<json_kind_array>(target_of(json), "{} is not constructible from JSON",
-                                                     type_name<T>());
+                throw_kind_mismatch<json_kind_array, T>(target_of(json), "");
             constexpr auto n = array_position_count<T>;
             const auto policies = static_cast<std::uint8_t>(read_policies | struct_policies<T>);
             const auto size = arr->size();
@@ -24755,9 +25007,7 @@ namespace yyjson
                 {
                     if constexpr (bounded_range<X>)
                         if (count == bounded_capacity<X>) [[unlikely]]
-                            throw_size_mismatch<X, true>(target_of(json), bounded_capacity<X>,
-                                                         "the size of JSON array exceeds the capacity of {}",
-                                                         type_name<X>());
+                            throw_size_mismatch<X, true>(target_of(json), bounded_capacity<X>, "");
                     extra.push_back(cast_nested<E>(*it));
                 }
                 if constexpr (constrained_field<T, n>)
@@ -24767,7 +25017,7 @@ namespace yyjson
                         throw_extra_items_violation<T, n>(*arr, json, kind);
             }
             else if (size > n && ((policies & unknown_keys_policy) != 0 || array_struct_table<T>.second)) [[unlikely]]
-                throw_extra_element<T>(target_of(*it), n);
+                throw_extra_element<T>(target_of(*it));
             if constexpr (has_array_struct_keywords<T>)
                 if (const auto kind =
                         array_struct_node_violation<array_struct_schema<T>>(t, std::min(size, n), size, &*arr);
@@ -26319,8 +26569,8 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_variant_reread_limit()
         {
             throw_recursion_limit(
-                "{} failed to be read as {}, and is nested too deeply in variants of recursive alternatives to try "
-                "another",
+                "reading {} as {}, which fails and is nested too deeply in variants of recursive alternatives to "
+                "try another",
                 type_name<Variant>(), type_name<Alternative>());
         }
 
@@ -27172,16 +27422,15 @@ namespace yyjson
             ~alternative_reasons_scope() { collecting_alternative_reasons = outer_; }
         };
 
-        // The reason of an alternative that does not read a JSON value of `kind`.
-        inline std::string no_kind_reason(std::uint16_t kind)
+        // The reason of an alternative that reads the JSON kinds `accepted` and not a JSON value of `kind`.
+        template <typename = void>
+        std::string no_kind_reason(std::uint16_t accepted, std::uint16_t kind)
         {
-            const auto text = (kind & json_kind_null) != 0     ? "null"
-                              : (kind & json_kind_bool) != 0   ? "bool"
-                              : (kind & json_kind_string) != 0 ? "string"
-                              : (kind & json_kind_array) != 0  ? "array"
-                              : (kind & json_kind_object) != 0 ? "object"
-                                                               : "number";
-            return std::format("reads no JSON {}", text);
+            auto facts = cast_failure();
+            facts.kind = error_kind::type;
+            facts.accepted = accepted;
+            facts.got = kind;
+            return failure_head(facts, false);
         }
 
         // Why an alternative of a variant does not read a JSON value, and where in that value if not at the value.
@@ -27208,7 +27457,7 @@ namespace yyjson
             catch (const bad_cast& e)
             {
                 // the path from the alternative's value only, as the message gives that of the variant once
-                return {bad_cast_access::path_from(e, at.value(), at.mutable_value()), e.std::runtime_error::what()};
+                return {bad_cast_access::path_from(e, at.value(), at.mutable_value()), bad_cast_access::reason(e)};
             }
             catch (const alternative_rejected& e)
             {
@@ -27231,7 +27480,7 @@ namespace yyjson
                                                                           std::span<const std::string_view> names,
                                                                           std::span<const alternative_failure> reasons)
         {
-            auto what = std::format("{} is not constructible from JSON", variant);
+            auto what = std::format("reading {}", variant);
             for (std::size_t i = 0; i < reasons.size(); ++i)
             {
                 what += std::format("{} alternative {} ({})", i == 0 ? ":" : ";", i, names[i]);
@@ -27256,7 +27505,7 @@ namespace yyjson
             {
                 auto facts = failure_facts<error_kind::no_alternative>();
                 facts.type = variant;
-                throw_cast_failure(facts, at, {}, "{} is not constructible from JSON", variant);
+                throw_cast_failure(facts, at, {}, "reading {}", variant);
             }
             auto reasons = std::vector<alternative_failure>(names.size());
             {
@@ -27264,7 +27513,7 @@ namespace yyjson
                 for (std::size_t i = 0; i < reasons.size(); ++i)
                 {
                     if ((kinds[i] & kind) == 0)
-                        reasons[i].reason = no_kind_reason(kind);
+                        reasons[i].reason = no_kind_reason(kinds[i], kind);
                     else if (auto reason = reasons_of[i](json))
                         reasons[i] = std::move(*reason);
                     else
@@ -27386,7 +27635,7 @@ namespace yyjson
                 {
                     if (rejected != constraint_kind::none)
                         return alternative_failure{
-                            {}, "the value " + constraint_what<union_alternative_schema<V, I>>(rejected)};
+                            {}, keyword_failure_text(constraint_facts<union_alternative_schema<V, I>>(rejected))};
                 }
                 return failure;
             }
@@ -27596,8 +27845,7 @@ namespace yyjson
         {
             auto facts = failure_facts<error_kind::ambiguous_alternative>();
             facts.type = variant_name<V>();
-            throw_cast_failure(facts, at, {}, "the value matches the alternatives {} and {} of {}", i, j,
-                               variant_name<V>());
+            throw_cast_failure(facts, at, {}, "reading {}: the alternatives {} and {} match", variant_name<V>(), i, j);
         }
 
         // Reads a `yyjson::one_of_variant` V: counts the alternatives that read the value under the policies of
@@ -27670,8 +27918,7 @@ namespace yyjson
                 {
                     auto facts = failure_facts<error_kind::no_alternative>();
                     facts.type = variant_name<V>();
-                    throw_cast_failure(facts, target_of(json), {}, "{} is not constructible from JSON",
-                                       variant_name<V>());
+                    throw_cast_failure(facts, target_of(json), {}, "reading {}", variant_name<V>());
                 }
                 const auto kind = json_kind_of(json);
                 const auto counting = counting_under(read_policies);
@@ -27691,7 +27938,8 @@ namespace yyjson
                     {
                         if (i == selected) continue;
                         if ((alternative_cast::template alternative_kinds<Json>[i] & kind) == 0)
-                            reasons[i].reason = no_kind_reason(kind);
+                            reasons[i].reason =
+                                no_kind_reason(alternative_cast::template alternative_kinds<Json>[i], kind);
                         else
                             reasons[i] = reason(i);
                     }
@@ -27815,9 +28063,7 @@ namespace yyjson
                 }
                 const auto obj = json.as_object();
                 if (!obj.has_value())
-                    detail::throw_kind_mismatch<detail::json_kind_object, V>(
-                        detail::target_of(json), "{} is not constructible from JSON other than an object",
-                        detail::type_name<V>());
+                    detail::throw_kind_mismatch<detail::json_kind_object, V>(detail::target_of(json), "");
                 const auto index = detail::tagged_alternative<V, tags>(*obj);
                 if (index == std::variant_npos)
                     detail::throw_variant_tag_missing(detail::target_of(json), tags::key, detail::type_name<V>());
@@ -28006,9 +28252,8 @@ namespace yyjson
                     auto result = Tuple<Ts...>();
 
                     if (obj->size() != std::tuple_size_v<Tuple<Ts...>>)
-                        detail::throw_size_mismatch<Tuple<Ts...>>(
-                            detail::target_of(json), std::tuple_size_v<Tuple<Ts...>>,
-                            "the size of JSON object differs from the size of {}", detail::type_name<Tuple<Ts...>>());
+                        detail::throw_size_mismatch<Tuple<Ts...>>(detail::target_of(json),
+                                                                  std::tuple_size_v<Tuple<Ts...>>, "");
                     detail::check_object_keys_unique(
                         detail::dependent_t<writer::detail::json_value_access, Json>::get(*obj),
                         detail::type_name<Tuple<Ts...>>());
@@ -28033,9 +28278,8 @@ namespace yyjson
                     auto result = Tuple<Ts...>();
 
                     if (arr->size() != std::tuple_size_v<Tuple<Ts...>>)
-                        detail::throw_size_mismatch<Tuple<Ts...>>(
-                            detail::target_of(json), std::tuple_size_v<Tuple<Ts...>>,
-                            "the size of JSON array differs from the size of {}", detail::type_name<Tuple<Ts...>>());
+                        detail::throw_size_mismatch<Tuple<Ts...>>(detail::target_of(json),
+                                                                  std::tuple_size_v<Tuple<Ts...>>, "");
 
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
@@ -28048,8 +28292,7 @@ namespace yyjson
                 }
             }
 
-            detail::throw_bad_cast_at<yyjson::error_kind::type, Tuple<Ts...>>(
-                detail::target_of(json), "{} is not constructible from JSON", detail::type_name<Tuple<Ts...>>());
+            detail::throw_bad_cast_at<yyjson::error_kind::type, Tuple<Ts...>>(detail::target_of(json), "");
         }
 
         template <typename... Args>
@@ -31651,8 +31894,7 @@ namespace yyjson
                 }
                 catch (const bad_cast& x)
                 {
-                    const auto& facts = d::failure_of(x);
-                    d::throw_cast_failure(facts, d::target_of(value), facts.input, "{}", x.what());
+                    throw d::bad_cast_access::moved_to(x, d::target_of(value), d::target_of(json));
                 }
             }();
             if (const auto kind = d::extra_value_violation<S, R>(e, &json); kind != d::constraint_kind::none)
@@ -32859,14 +33101,8 @@ namespace yyjson
                 const auto at = target_of(value);
                 auto facts = constraint_facts<P>(kind);
                 facts.owner = type_name<T>();
-                if (via.empty())
-                    throw_cast_failure(facts, at, key,
-                                       "the value of the key \"{}\" of {} {} in yyjson::additional_properties", key,
-                                       type_name<T>(), constraint_what<P>(kind));
-                throw_cast_failure(
-                    facts, at, key,
-                    "the value of the key \"{}\" of {} {} in yyjson::additional_properties of yyjson::{}", key,
-                    type_name<T>(), constraint_what<P>(kind), via);
+                throw_cast_failure(facts, at, key, "reading a value of {} in yyjson::additional_properties{}{}",
+                                   type_name<T>(), via.empty() ? "" : " of yyjson::", via);
             });
         }
 
@@ -33126,22 +33362,8 @@ namespace yyjson
                 const auto f = facts();
                 switch (what)
                 {
-                    case mismatch::kind:
-                        throw_bad_cast(f, "{} is not constructible from JSON {}", type,
-                                       first == '{' ? "object" : "array");
-                    case mismatch::value:
-                        throw_bad_cast(f, "{} is not constructible from JSON", type);
-                    case mismatch::object_size:
-                        throw_bad_cast(f, "the size of JSON object differs from the size of {}", type);
-                    case mismatch::array_size:
-                        throw_bad_cast(f, "the size of JSON array differs from the size of {}", type);
-                    case mismatch::capacity:
-                        throw_bad_cast(f, "the size of JSON array exceeds the capacity of {}", type);
-                    case mismatch::c_array_kind:
-                        throw_bad_cast(f, "a C array of {} is not constructible from JSON other than array", type);
-                    case mismatch::c_array_size:
                     default:
-                        throw_bad_cast(f, "the size of JSON array differs from the size of a C array of {}", type);
+                        throw_bad_cast(f, "");
                 }
             }
         };
@@ -36594,8 +36816,7 @@ namespace yyjson
                             facts.type = name<T>;
                             facts.accepted = yyjson::detail::json_kind_object;
                             facts.got = direct_read_failure::kind_at(start);
-                            yyjson::detail::throw_bad_cast(
-                                facts, "{} is not constructible from JSON other than an object", name<T>);
+                            yyjson::detail::throw_bad_cast(facts, "");
                         });
                     const auto index = find_variant_tag<T>(start);
                     if (index == std::variant_npos) [[unlikely]]
@@ -39596,15 +39817,14 @@ namespace yyjson
                         return;
                     }
                 if (*cur_ != '[') [[unlikely]]
-                    fail(mismatch::c_array_kind, name<std::remove_all_extents_t<F>>, cur_, 0,
+                    fail(mismatch::c_array_kind, name<F>, cur_, 0,
                          yyjson::detail::json_kind_array | (yyjson::detail::c_array_from_object<F, const_object_ref>()
                                                                 ? yyjson::detail::json_kind_object
                                                                 : 0));
                 if constexpr (!Counted)
                 {
                     return read_counted(
-                        cur_, [](std::size_t n) { return n == size; },
-                        size_mismatch<std::remove_all_extents_t<F>>(mismatch::c_array_size, size),
+                        cur_, [](std::size_t n) { return n == size; }, size_mismatch<F>(mismatch::c_array_size, size),
                         [&] { read_c_array<F, true>(field); });
                 }
                 const char* const open = cur_;
@@ -41183,7 +41403,17 @@ namespace yyjson
             if ((facts.got & containers) != 0) return;
             const auto kind =
                 reader::detail::direct_read_failure::kind_at(json.data() + value, json.data() + json.size());
-            facts.got = (kind & containers) != 0 ? kind : json_kind_of_text(json.substr(value), read_flag);
+            const auto got = (kind & containers) != 0 ? kind : json_kind_of_text(json.substr(value), read_flag);
+            if (got == facts.got) return;
+            facts.got = got;
+            try
+            {
+                bad_cast_access::rewrite(e);
+            }
+            catch (...)  // NOLINT(bugprone-empty-catch)
+            {
+                // without memory, the text keeps the kind that the exception had when it was thrown
+            }
         }
 
         // Throws the `bad_cast` of `failure` with the path and the position of the value that does not match.
@@ -42748,10 +42978,12 @@ namespace yyjson
         template <typename S, std::size_t K>
         [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_read_back_default()
         {
-            auto e =
-                bad_cast(std::format("the key \"{}\" of {} holds an empty std::optional, which is not written "
-                                     "and reads back as the default value",
-                                     struct_field_key<S, K>, type_name<S>()));
+            auto facts = failure_facts<error_kind::other>();
+            auto e = bad_cast(failure_text(
+                facts, std::format("validating {}: the field \"{}\" holds an empty std::optional, which write leaves "
+                                   "out and a read gives the default value",
+                                   type_name<S>(), struct_field_key<S, K>)));
+            bad_cast_access::failure(e) = facts;
             bad_cast_access::prepend_path(e, struct_field_key<S, K>);
             throw e;
         }
@@ -43071,13 +43303,10 @@ namespace yyjson
                     if (const auto j = array_struct_duplicate(s, count); j != no_duplicate)
                         validate_at([j] { return std::to_string(j); },
                                     [] {
-                                        throw_keyword_at<schema, S>(
-                                            cast_target{}, constraint_kind::duplicate_item,
-                                            "an element of the value of {} {}", type_name<S>(),
-                                            constraint_what<schema>(constraint_kind::duplicate_item));
+                                        throw_keyword_at<schema, S>(cast_target{}, constraint_kind::duplicate_item,
+                                                                    "reading an element of {}", type_name<S>());
                                     });
-            throw_keyword_at<schema, S>(cast_target{}, kind, "the value of {} {}", type_name<S>(),
-                                        constraint_what<schema>(kind));
+            throw_keyword_at<schema, S>(cast_target{}, kind, "reading {}", type_name<S>());
         }
 
         // The same with the JSON array of `s`, `json`, or the array that write gives for `s` if `json` is null, for
@@ -43582,15 +43811,19 @@ namespace yyjson
         template <typename S, std::size_t R, std::size_t Into>
         [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_key_read_into(std::string_view key)
         {
+            auto facts = failure_facts<error_kind::other>();
             auto e = [&] {
                 if constexpr (Into == no_field_index)
-                    return bad_cast(std::format("the key \"{}\" of the field \"{}\" of {} is read into no field", key,
-                                                declared_member_name<S, R>, type_name<S>()));
+                    return bad_cast(failure_text(
+                        facts, std::format("validating {}: a read gives this key of the field \"{}\" to no field",
+                                           type_name<S>(), declared_member_name<S, R>)));
                 else
-                    return bad_cast(
-                        std::format("the key \"{}\" of the field \"{}\" of {} is read into the field \"{}\"", key,
-                                    declared_member_name<S, R>, type_name<S>(), declared_member_name<S, Into>));
+                    return bad_cast(failure_text(
+                        facts,
+                        std::format("validating {}: a read gives this key of the field \"{}\" to the field \"{}\"",
+                                    type_name<S>(), declared_member_name<S, R>, declared_member_name<S, Into>)));
             }();
+            bad_cast_access::failure(e) = facts;
             bad_cast_access::prepend_path(e, key);
             throw e;
         }

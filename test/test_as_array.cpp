@@ -501,14 +501,14 @@ namespace
         }
     }
 
-    // every read of `json` under the read policies `ps` throws `bad_cast` whose message holds `message`, about the
+    // every read of `json` under the read policies `ps` throws `bad_cast` with `message`, about the
     // value at `path`; the reader without a document leaves it to the document; `merge_into` follows the merge of
     // `json` into what T() writes
     template <typename T, typename... Ps>
-    void expect_rejected(std::string_view json, std::string_view message, std::string_view path, Ps... ps)
+    void expect_rejected(std::string_view json, const expected_text& message, std::string_view path, Ps... ps)
     {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_NE(std::string_view(e.what()).find(message), std::string_view::npos) << json << "\n" << e.what();
+            expect_text(what_without_position(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json, ps...); }));
@@ -588,9 +588,10 @@ TEST(AsArray, Positions)
     expect_read<Point>(" [ 1 , 2 ] ", {1, 2});
 
     // a JSON value other than an array, and a position of another type
-    expect_rejected<Point>(R"({"x":1,"y":2})", "Point is not constructible from JSON", "");
-    expect_rejected<Point>(R"([1,"2"])", "int is not constructible from JSON", "/1");
-    expect_rejected<std::vector<Point>>(R"([[1,2],[3,true]])", "int is not constructible from JSON", "/1/1");
+    expect_rejected<Point>(R"({"x":1,"y":2})", "expected an array, got an object; reading Point", "");
+    expect_rejected<Point>(R"([1,"2"])", "expected an integer, got a string at /1; reading int", "/1");
+    expect_rejected<std::vector<Point>>(R"([[1,2],[3,true]])",
+                                        "expected an integer, got a boolean at /1/1; reading int", "/1/1");
 }
 
 TEST(AsArray, MissingPositions)
@@ -599,33 +600,40 @@ TEST(AsArray, MissingPositions)
     // unless an object could leave its key out
     expect_read<Point>("[1]", {1, 0}, false);
     expect_read<Point>("[]", {0, 0}, false);
-    expect_rejected<Point>("[1]", "Point is not constructible from JSON without the element 1 of the field \"y\"", "",
-                           yyjson::strict);
-    expect_rejected<Point>("[]", "Point is not constructible from JSON without the element 0 of the field \"x\"", "",
-                           yyjson::reject_missing_keys);
+    expect_rejected<Point>("[1]", R"(a required element is missing; reading the field "y" of Point from the element 1)",
+                           "", yyjson::strict);
+    expect_rejected<Point>("[]", R"(a required element is missing; reading the field "x" of Point from the element 0)",
+                           "", yyjson::reject_missing_keys);
     expect_read<Rule>("[1]", {1, std::nullopt, std::nullopt});
     expect_read<Rule>(R"([1,"a"])", {1, "a", std::nullopt});
-    expect_rejected<Rule>("[]", "Rule is not constructible from JSON without the element 0 of the field \"level\"", "",
+    expect_rejected<Rule>("[]",
+                          R"(a required element is missing; reading the field "level" of Rule from the element 0)", "",
                           yyjson::strict);
 
     // `yyjson::required` rejects a missing position always
     expect_read<Closed>("[1,4]", {1, 4, 3}, false);
     expect_read<Closed>("[1,4,5]", {1, 4, 5});
-    expect_rejected<Closed>("[1]", "Closed is not constructible from JSON without the element 1 of the field \"b\"",
-                            "");
+    expect_rejected<Closed>("[1]",
+                            R"(a required element is missing; reading the field "b" of Closed from the element 1)", "");
 
     // `yyjson::default_` and `yyjson::default_from` let a position be missing under `yyjson::strict`, and
     // `yyjson::default_from` gives its value to a missing position but not to null
     expect_read<Defaulted>("[1]", {1, 5, "made"});
     expect_read<Defaulted>("[1,6]", {1, 6, "made"});
-    expect_rejected<Defaulted>(R"([1,6,null])", "is not constructible from JSON null at /2", "/2");
+    expect_rejected<Defaulted>(R"([1,6,null])",
+                               std::format("the value must not be null at /2; reading {}",
+                                           yyjson::detail::type_name<std::optional<std::string>>()),
+                               "/2");
     expect_read<Defaulted>(R"([1,6,"s"])", {1, 6, "s"});
-    expect_rejected<Defaulted>("[]", "Defaulted is not constructible from JSON without the element 0", "",
-                               yyjson::reject_missing_keys);
+    expect_rejected<Defaulted>(
+        "[]", R"(a required element is missing; reading the field "a" of Defaulted from the element 0)", "",
+        yyjson::reject_missing_keys);
 
     // the read policies of the struct apply without those of the call
-    expect_rejected<OwnPolicies>("[1]", "OwnPolicies is not constructible from JSON without the element 1", "");
-    expect_rejected<OwnPolicies>("[1,2,3]", "OwnPolicies has no field of the element 2", "/2");
+    expect_rejected<OwnPolicies>(
+        "[1]", R"(a required element is missing; reading the field "b" of OwnPolicies from the element 1)", "");
+    expect_rejected<OwnPolicies>("[1,2,3]", "the array has an element that is not allowed at /2; reading OwnPolicies",
+                                 "/2");
     expect_read<OwnPolicies>("[1,2]", {1, 2});
 }
 
@@ -636,8 +644,9 @@ TEST(AsArray, ExtraElements)
     expect_read<Point>("[1,2,3]", {1, 2});
     expect_read<Point>(R"([1,2,{"k":[null]},"s"])", {1, 2});
     expect_read<Rule>(R"([1,"a",3,4,"x"])", {1, "a", 3});
-    expect_rejected<Point>("[1,2,3]", "Point has no field of the element 2", "/2", yyjson::reject_unknown_keys);
-    expect_rejected<Closed>("[1,4,5,6]", "Closed has no field of the element 3", "/3");
+    expect_rejected<Point>("[1,2,3]", "the array has an element that is not allowed at /2; reading Point", "/2",
+                           yyjson::reject_unknown_keys);
+    expect_rejected<Closed>("[1,4,5,6]", "the array has an element that is not allowed at /3; reading Closed", "/3");
 
     // the elements after the positions in a field of `yyjson::extra_items`
     expect_read<Series>(R"(["s"])", {"s", {}});
@@ -645,7 +654,7 @@ TEST(AsArray, ExtraElements)
     expect_read<Series>(R"(["s",1,2.5])", {"s", {1, 2.5}});
     expect_written(Series{"s", {1, 2.5}}, R"(["s",1.0,2.5])");
     expect_written(Series{"s", {}}, R"(["s"])");
-    expect_rejected<Series>(R"(["s",1,true])", "double is not constructible from JSON", "/2");
+    expect_rejected<Series>(R"(["s",1,true])", "expected a number, got a boolean at /2; reading double", "/2");
     auto into = Series{"old", {7, 8, 9}};
     yyjson::read_into(R"(["s",1])", into);
     EXPECT_EQ(into, (Series{"s", {1}}));
@@ -656,13 +665,19 @@ TEST(AsArray, Null)
 {
     // null at the position of a field that cannot hold null is an error in every read, as a position is never
     // left out before a later one
-    expect_rejected<Rule>(R"([1,"a",null])", "std::optional<int> is not constructible from JSON null at /2", "/2");
-    expect_rejected<Rule>(R"([1,"a",null])", "std::optional<int> is not constructible from JSON null at /2", "/2",
+    expect_rejected<Rule>(R"([1,"a",null])", "the value must not be null at /2; reading std::optional<int>", "/2");
+    expect_rejected<Rule>(R"([1,"a",null])", "the value must not be null at /2; reading std::optional<int>", "/2",
                           yyjson::reject_null_as_missing);
-    expect_rejected<Rule>(R"([1,null])", "is not constructible from JSON null at /1", "/1", yyjson::strict);
-    expect_rejected<Gap>("[null]", "std::optional<int> is not constructible from JSON null at /0", "/0");
-    expect_rejected<Point>("[null,1]", "int is not constructible from JSON", "/0");
-    expect_rejected<std::vector<Rule>>(R"([[1],[2,null]])", "is not constructible from JSON null at /1/1", "/1/1");
+    expect_rejected<Rule>(R"([1,null])",
+                          std::format("the value must not be null at /1; reading {}",
+                                      yyjson::detail::type_name<std::optional<std::string>>()),
+                          "/1", yyjson::strict);
+    expect_rejected<Gap>("[null]", "the value must not be null at /0; reading std::optional<int>", "/0");
+    expect_rejected<Point>("[null,1]", "expected an integer, got null at /0; reading int", "/0");
+    expect_rejected<std::vector<Rule>>(R"([[1],[2,null]])",
+                                       std::format("the value must not be null at /1/1; reading {}",
+                                                   yyjson::detail::type_name<std::optional<std::string>>()),
+                                       "/1/1");
     auto rule = Rule{1, "a", 2};
     EXPECT_THROW(yyjson::merge_into(R"([3,null])", rule), yyjson::bad_cast);
 
@@ -675,11 +690,14 @@ TEST(AsArray, Null)
 TEST(AsArray, Constraints)
 {
     // a message names the struct of a position or of an element after them, and the path names the element
-    expect_rejected<Rule>("[-1]", "an element of the value of Rule is less than the minimum 0", "/0");
-    expect_rejected<Series>(R"(["s",1,-2])", "an element of the value of Series is less than the minimum 0", "/2");
+    expect_rejected<Rule>("[-1]", "the number is less than the minimum 0 at /0; reading an element of Rule", "/0");
+    expect_rejected<Series>(R"(["s",1,-2])",
+                            "the number is less than the minimum 0 at /2; reading an element of Series", "/2");
     expect_rejected<Drawing>(R"({"series":{"k":["s",-1]}})",
-                             "an element of the value of Series is less than the minimum 0", "/series/k/1");
-    expect_rejected<Drawing>(R"({"rules":[[0],[-1]]})", "an element of the value of Rule is less than the minimum 0",
+                             "the number is less than the minimum 0 at /series/k/1; reading an element of Series",
+                             "/series/k/1");
+    expect_rejected<Drawing>(R"({"rules":[[0],[-1]]})",
+                             "the number is less than the minimum 0 at /rules/1/0; reading an element of Rule",
                              "/rules/1/0");
     expect_read<Series>(R"(["s",0,3])", {"s", {0, 3}});
 }
@@ -745,7 +763,10 @@ TEST(AsArray, Nesting)
     const auto tree = Node{"a", {{"b", {}}, {"c", {{"d", {}}}}}};
     expect_read<Node>(R"(["a",["b"],["c",["d"]]])", tree);
     expect_written(tree, R"(["a",["b"],["c",["d"]]])");
-    expect_rejected<Node>(R"(["a",["b"],["c",[1]]])", " is not constructible from JSON integer", "/2/1/0");
+    expect_rejected<Node>(
+        R"(["a",["b"],["c",[1]]])",
+        std::format("expected a string, got a number at /2/1/0; reading {}", yyjson::detail::type_name<std::string>()),
+        "/2/1/0");
 
     // fields that own their values
     auto owning = Owning();
@@ -765,43 +786,54 @@ TEST(AsArray, ArrayKeywords)
     // the keywords of the struct count and check the elements of the array that the read reads
     expect_read<Banner>(R"(["a","kk"])", {"a", "kk", {}});
     expect_read<Banner>(R"(["kk","a","b"])", {"kk", "a", {"b"}});
-    expect_rejected<Banner>(R"(["kk",null,"a"])", "is not constructible from JSON null at /1", "/1");
+    expect_rejected<Banner>(R"(["kk",null,"a"])",
+                            std::format("the value must not be null at /1; reading {}",
+                                        yyjson::detail::type_name<std::optional<std::string>>()),
+                            "/1");
     // an element after the positions keeps null as its value, which the keywords check
     expect_read<OptionalRanks>("[0,1]", {0, 1, {}});
-    expect_rejected<OptionalRanks>("[0,1,null]", "the value of OptionalRanks has more than 1 item", "");
-    expect_rejected<OptionalRanks>("[0,2,null,null]",
-                                   "an element of the value of OptionalRanks is equal to an earlier element", "/3");
-    expect_rejected<OptionalRanks>("[1,1]", "an element of the value of OptionalRanks is equal to an earlier element",
-                                   "/1");
+    expect_rejected<OptionalRanks>("[0,1,null]",
+                                   "the array has more than 1 item that satisfies contains; reading OptionalRanks", "");
     expect_rejected<OptionalRanks>(
-        "[0,-1]", "the value of OptionalRanks has no item that satisfies the constraints of yyjson::contains", "");
-    expect_rejected<OptionalRanks>("[0,2,3]", "the value of OptionalRanks has more than 1 item", "");
-    expect_rejected<Banner>(R"(["kk"])", "the value of Banner has fewer items than the minimum 2", "");
-    expect_rejected<Banner>(R"(["a","kk","b","c","d"])", "the value of Banner has more items than the maximum 4", "");
-    expect_rejected<Banner>(R"(["a","b"])",
-                            "the value of Banner has no item that satisfies the constraints of yyjson::contains", "");
-    expect_rejected<Banner>(R"(["kk","ab"])", "the value of Banner has more than 1 item", "");
-    expect_rejected<Banner>(R"(["a","b","cc","dd"])", "the value of Banner has more than 1 item", "");
-    expect_rejected<BannerHolder>(R"({"shape":["a","b","c"]})", "the value of Banner has no item", "/shape");
-    expect_rejected<BannerHolder>(R"({"shape":["kk"]})", "the value of Banner has fewer items", "/shape");
+        "[0,2,null,null]", "the item is equal to an earlier item at /3; reading an element of OptionalRanks", "/3");
+    expect_rejected<OptionalRanks>(
+        "[1,1]", "the item is equal to an earlier item at /1; reading an element of OptionalRanks", "/1");
+    expect_rejected<OptionalRanks>("[0,-1]", "the array has no item that satisfies contains; reading OptionalRanks",
+                                   "");
+    expect_rejected<OptionalRanks>("[0,2,3]",
+                                   "the array has more than 1 item that satisfies contains; reading OptionalRanks", "");
+    expect_rejected<Banner>(R"(["kk"])", "the array has fewer items than the minimum 2; reading Banner", "");
+    expect_rejected<Banner>(R"(["a","kk","b","c","d"])", "the array has more items than the maximum 4; reading Banner",
+                            "");
+    expect_rejected<Banner>(R"(["a","b"])", "the array has no item that satisfies contains; reading Banner", "");
+    expect_rejected<Banner>(R"(["kk","ab"])", "the array has more than 1 item that satisfies contains; reading Banner",
+                            "");
+    expect_rejected<Banner>(R"(["a","b","cc","dd"])",
+                            "the array has more than 1 item that satisfies contains; reading Banner", "");
+    expect_rejected<BannerHolder>(R"({"shape":["a","b","c"]})",
+                                  "the array has no item that satisfies contains at /shape; reading Banner", "/shape");
+    expect_rejected<BannerHolder>(R"({"shape":["kk"]})",
+                                  "the array has fewer items than the minimum 2 at /shape; reading Banner", "/shape");
     // a missing position that takes its initializer is no element, and so not counted or compared
     expect_read<Ranks>("[5,6]", {5, 6, {}});
     expect_read<Ranks>("[5,6,1,7]", {5, 6, {1, 7}});
-    expect_rejected<Ranks>("[5,5]", "an element of the value of Ranks is equal to an earlier element", "/1");
-    expect_rejected<Ranks>("[5,6,1,6]", "an element of the value of Ranks is equal to an earlier element", "/3");
-    expect_rejected<Ranks>("[6]", "the value of Ranks has fewer than 2 items that satisfy", "");
-    expect_rejected<Ranks>("[0]", "the value of Ranks has fewer than 2 items that satisfy", "");
-    expect_rejected<Ranks>("[5,6,7,8]", "the value of Ranks has more than 3 items that satisfy", "");
+    expect_rejected<Ranks>("[5,5]", "the item is equal to an earlier item at /1; reading an element of Ranks", "/1");
+    expect_rejected<Ranks>("[5,6,1,6]", "the item is equal to an earlier item at /3; reading an element of Ranks",
+                           "/3");
+    expect_rejected<Ranks>("[6]", "the array has fewer than 2 items that satisfy contains; reading Ranks", "");
+    expect_rejected<Ranks>("[0]", "the array has fewer than 2 items that satisfy contains; reading Ranks", "");
+    expect_rejected<Ranks>("[5,6,7,8]", "the array has more than 3 items that satisfy contains; reading Ranks", "");
     expect_read<Labels>(R"([1,"1",2])", {1, "1", {2}});
-    expect_rejected<Labels>(R"([1,"x",2,1])", "an element of the value of Labels is equal to an earlier element", "/3");
+    expect_rejected<Labels>(R"([1,"x",2,1])",
+                            "the item is equal to an earlier item at /3; reading an element of Labels", "/3");
 
     // the elements that the read ignores are counted too
     expect_read<Envelope>(R"([1,"a"])", {1, "a"});
     expect_read<Envelope>(R"([1,"a",{"k":0}])", {1, "a"});
-    expect_rejected<Envelope>("[1]", "the value of Envelope has fewer items than the minimum 2", "");
-    expect_rejected<Envelope>(R"([1,"a",3,4])", "the value of Envelope has more items than the maximum 3", "");
-    expect_rejected<Envelope>(R"([1,"a",3])", "Envelope has no field of the element 2", "/2",
-                              yyjson::reject_unknown_keys);
+    expect_rejected<Envelope>("[1]", "the array has fewer items than the minimum 2; reading Envelope", "");
+    expect_rejected<Envelope>(R"([1,"a",3,4])", "the array has more items than the maximum 3; reading Envelope", "");
+    expect_rejected<Envelope>(R"([1,"a",3])", "the array has an element that is not allowed at /2; reading Envelope",
+                              "/2", yyjson::reject_unknown_keys);
 }
 
 TEST(AsArray, FieldArrayKeywords)
@@ -813,36 +845,40 @@ TEST(AsArray, FieldArrayKeywords)
     panel.o = Point{3, 0};
     expect_read<Panel>(R"({"e":[1,"a"],"o":[3]})", panel, false);
     expect_rejected<Panel>(R"({"e":[1,"a",3]})",
-                           "the value of the key \"e\" of Panel has more items than the maximum 2", "/e");
-    expect_rejected<Panel>(R"({"o":[3,4]})", "the value of the key \"o\" of Panel has more items than the maximum 1",
-                           "/o");
+                           R"(the array has more items than the maximum 2 at /e; reading the key "e" of Panel)", "/e");
+    expect_rejected<Panel>(R"({"o":[3,4]})",
+                           R"(the array has more items than the maximum 1 at /o; reading the key "o" of Panel)", "/o");
     // the elements that the read of a Point ignores are counted too
     panel = Panel();
     panel.v = {{1, 2}};
     panel.m = {{"k", {5, 0}}};
     expect_read<Panel>(R"({"v":[[1,2,3]],"m":{"k":[5]}})", panel, false);
-    expect_rejected<Panel>(R"({"v":[[1,2],[1]]})",
-                           "an element of the value of the key \"v\" of Panel has fewer items than the minimum 2",
-                           "/v/1");
-    expect_rejected<Panel>(R"({"m":{"k":[5,6]}})",
-                           "an element of the value of the key \"m\" of Panel has more items than the maximum 1",
-                           "/m/k");
+    expect_rejected<Panel>(
+        R"({"v":[[1,2],[1]]})",
+        R"(the array has fewer items than the minimum 2 at /v/1; reading an element of the value at the key "v" of Panel)", "/v/1");
+    expect_rejected<Panel>(
+        R"({"m":{"k":[5,6]}})",
+        R"(the array has more items than the maximum 1 at /m/k; reading an element of the value at the key "m" of Panel)", "/m/k");
     // the keywords that check the elements, on an alternative of a variant
     panel = Panel();
     panel.w = Ranks{5, 6, {}};
     expect_read<Panel>(R"({"w":[5,6]})", panel, false);
     panel.w = Ranks{5, 7, {}};
     expect_read<Panel>(R"({"w":[5,7]})", panel, false);
-    expect_rejected<Panel>(R"({"w":[5,6,1]})", "the value of the key \"w\" of Panel has more than 2 items that satisfy",
-                           "/w");
-    expect_rejected<Panel>(R"({"w":[7,8]})", "the value of the key \"w\" of Panel has no item that satisfies", "/w");
-    expect_rejected<Panel>(R"({"w":[5,6,7,1]})", "the value of the key \"w\" of Panel has more", "/w");
+    expect_rejected<Panel>(
+        R"({"w":[5,6,1]})",
+        R"(the array has more than 2 items that satisfy contains at /w; reading the key "w" of Panel)", "/w");
+    expect_rejected<Panel>(
+        R"({"w":[7,8]})", R"(the array has no item that satisfies contains at /w; reading the key "w" of Panel)", "/w");
+    expect_rejected<Panel>(R"({"w":[5,6,7,1]})",
+                           R"(the array has more items than the maximum 3 at /w; reading the key "w" of Panel)", "/w");
     expect_read<UniqueTails>(R"({"t":[1,2],"u":[[3,4]]})", {{1, {2}}, {{3, {4}}}});
     expect_rejected<UniqueTails>(
-        R"({"t":[1,2,1]})", "an element of the value of the key \"t\" of UniqueTails is equal to an earlier element",
-        "/t/2");
+        R"({"t":[1,2,1]})",
+        R"(the item is equal to an earlier item at /t/2; reading an element of the value at the key "t" of UniqueTails)", "/t/2");
     expect_rejected<UniqueTails>(
-        R"({"u":[[3,4,4]]})", "an element of the value of the key \"u\" of UniqueTails is equal to an earlier element",
+        R"({"u":[[3,4,4]]})",
+        R"(the item is equal to an earlier item at /u/0/2; reading an element of the value at the key "u" of UniqueTails)",
         "/u/0/2");
 }
 
@@ -851,8 +887,9 @@ TEST(AsArray, FieldArrayConditions)
     // a condition counts the elements of the JSON array, which `read_into` and `merge_into` read too
     expect_read<PointGate>(R"({"p":[1,2]})", {{1, 2}, 0}, false);
     expect_read<PointGate>(R"({"p":[1,2,3],"k":1})", {{1, 2}, 1});
-    const auto missing = R"(PointGate is not constructible from JSON without the key "k")";
-    expect_rejected<PointGate>(R"({"p":[1,2,3]})", missing, "");
+    expect_rejected<PointGate>(
+        R"({"p":[1,2,3]})",
+        R"(a required key is missing; reading the key "k" of PointGate, which yyjson::if_then_else requires)", "");
     auto gate = PointGate{{1, 2}, 4};
     yyjson::merge_into(R"({"p":[3,4,5],"k":2})", gate);
     EXPECT_EQ(gate, (PointGate{{3, 4}, 2}));
@@ -867,18 +904,19 @@ TEST(AsArray, ArrayConditions)
     expect_read<Gated>("[1]", {1, {}});
     expect_read<Gated>("[1,10]", {1, {10}});
     expect_read<Gated>("[1,10,2]", {1, {10, 2}});
-    expect_rejected<Gated>("[1,2]", "the value of Gated satisfies none of the subschemas of yyjson::any_of", "");
-    expect_rejected<Gated>(
-        "[1,10,1]", "the value of Gated satisfies the settings of yyjson::if_ and not those of yyjson::then", "");
-    expect_rejected<Gated>("[1,10,2,3]", "the value of Gated satisfies the settings of yyjson::not_", "");
+    expect_rejected<Gated>("[1,2]", "the value satisfies none of the subschemas of anyOf; reading Gated", "");
+    expect_rejected<Gated>("[1,10,1]", "the value satisfies if and not then; reading Gated", "");
+    expect_rejected<Gated>("[1,10,2,3]", "the value satisfies the subschema of not; reading Gated", "");
     // in a field, an element, a value of a map and a std::optional
     auto holder = GatedHolder{{1, {}}, {{2, {10}}, {3, {}}}, {{"k", {4, {11, 5}}}}, Gated{5, {}}};
     expect_read<GatedHolder>(R"({"g":[1],"v":[[2,10],[3]],"m":{"k":[4,11,5]},"o":[5]})", holder);
-    expect_rejected<GatedHolder>(R"({"g":[1,2]})", "the value of Gated satisfies none of the subschemas", "/g");
-    expect_rejected<GatedHolder>(R"({"v":[[1],[2,3]]})", "the value of Gated satisfies none of the subschemas", "/v/1");
-    expect_rejected<GatedHolder>(R"({"m":{"k":[1,10,10]}})", "the value of Gated satisfies the settings of yyjson::if_",
-                                 "/m/k");
-    expect_rejected<GatedHolder>(R"({"o":[1,10,2,3]})", "the value of Gated satisfies the settings of yyjson::not_",
+    expect_rejected<GatedHolder>(R"({"g":[1,2]})",
+                                 "the value satisfies none of the subschemas of anyOf at /g; reading Gated", "/g");
+    expect_rejected<GatedHolder>(R"({"v":[[1],[2,3]]})",
+                                 "the value satisfies none of the subschemas of anyOf at /v/1; reading Gated", "/v/1");
+    expect_rejected<GatedHolder>(R"({"m":{"k":[1,10,10]}})",
+                                 "the value satisfies if and not then at /m/k; reading Gated", "/m/k");
+    expect_rejected<GatedHolder>(R"({"o":[1,10,2,3]})", "the value satisfies the subschema of not at /o; reading Gated",
                                  "/o");
     auto into = Gated{7, {8}};
     yyjson::merge_into("[1,10]", into);
@@ -886,13 +924,11 @@ TEST(AsArray, ArrayConditions)
     EXPECT_THROW(yyjson::merge_into("[1,2]", into), yyjson::bad_cast);
     // a dead subschema satisfies nothing, and the keywords of a field apply with those of the type
     expect_read<DeadGate>("[1,2]", {1, {2}});
-    expect_rejected<DeadGate>("[1,2,3]", "the value of DeadGate satisfies none of the subschemas of yyjson::one_of",
-                              "");
+    expect_rejected<DeadGate>("[1,2,3]", "the value satisfies none of the subschemas of oneOf; reading DeadGate", "");
     expect_read<DeadGateHolder>(R"({"d":[1,2]})", {{1, {2}}});
-    expect_rejected<DeadGateHolder>(R"({"d":[1]})",
-                                    "the value of the key \"d\" of DeadGateHolder satisfies the "
-                                    "settings of yyjson::not_",
-                                    "/d");
+    expect_rejected<DeadGateHolder>(
+        R"({"d":[1]})", R"(the value satisfies the subschema of not at /d; reading the key "d" of DeadGateHolder)",
+        "/d");
 }
 
 TEST(AsArray, Visitable)
@@ -900,22 +936,25 @@ TEST(AsArray, Visitable)
     expect_read<VisitablePoint>(R"([1,"a"])", {1, "a", {}});
     expect_read<VisitablePoint>(R"([1,"a",2,3])", {1, "a", {2, 3}});
     expect_written(VisitablePoint{1, "a", {2, 3}}, R"([1,"a",2,3])");
-    expect_rejected<VisitablePoint>(R"([10,"a"])",
-                                    "an element of the value of VisitablePoint is greater than the maximum 9", "/0");
-    expect_rejected<VisitablePoint>(R"([1])", "VisitablePoint is not constructible from JSON without the element 1", "",
-                                    yyjson::strict);
-    expect_rejected<VisitablePoint>(R"([1,"a",2,3,4])", "the value of VisitablePoint has more items than the maximum 4",
-                                    "");
+    expect_rejected<VisitablePoint>(
+        R"([10,"a"])", "the number is greater than the maximum 9 at /0; reading an element of VisitablePoint", "/0");
+    expect_rejected<VisitablePoint>(
+        R"([1])", R"(a required element is missing; reading the field "label" of VisitablePoint from the element 1)",
+        "", yyjson::strict);
+    expect_rejected<VisitablePoint>(R"([1,"a",2,3,4])",
+                                    "the array has more items than the maximum 4; reading VisitablePoint", "");
 }
 
 TEST(AsArray, VisitableOrder)
 {
     expect_written(Reordered{1, "x", 7}, R"(["x",1,7])");
     expect_read<Reordered>(R"(["x",1,7])", {1, "x", 7});
-    expect_rejected<Reordered>(R"(["x",9,1])", "is less than the minimum 5", "/2");
+    expect_rejected<Reordered>(R"(["x",9,1])",
+                               "the number is less than the minimum 5 at /2; reading an element of Reordered", "/2");
     expect_written(Constructed{1, "x"}, R"(["x",1])");
     expect_read<Constructed>(R"(["x",1])", {1, "x"});
-    expect_rejected<Constructed>(R"(["x",10])", "is greater than the maximum 9", "/1");
+    expect_rejected<Constructed>(
+        R"(["x",10])", "the number is greater than the maximum 9 at /1; reading an element of Constructed", "/1");
 }
 
 TEST(AsArray, Differential)
@@ -988,28 +1027,31 @@ TEST(AsArray, Annotations)
 {
     expect_read<AnnotatedPair>("[1,2]", {1, 2});
     expect_written(AnnotatedPair{1, 2}, "[1,2]");
-    expect_rejected<AnnotatedPair>("[1,2,3]", "AnnotatedPair has no field of the element 2", "/2");
-    expect_rejected<AnnotatedPair>("[1,-2]", "an element of the value of AnnotatedPair is less than the minimum 0",
-                                   "/1");
+    expect_rejected<AnnotatedPair>("[1,2,3]",
+                                   "the array has an element that is not allowed at /2; reading AnnotatedPair", "/2");
+    expect_rejected<AnnotatedPair>(
+        "[1,-2]", "the number is less than the minimum 0 at /1; reading an element of AnnotatedPair", "/1");
     expect_read<AnnotatedTail>(R"(["a",1,2])", {"a", {1, 2}});
     expect_written(AnnotatedTail{"a", {1, 2}}, R"(["a",1,2])");
-    expect_rejected<AnnotatedTail>(R"(["a",1,20])",
-                                   "an element of the value of AnnotatedTail is greater than the "
-                                   "maximum 9",
-                                   "/2");
+    expect_rejected<AnnotatedTail>(
+        R"(["a",1,20])", "the number is greater than the maximum 9 at /2; reading an element of AnnotatedTail", "/2");
     expect_read<AnnotatedScores>("[1,5]", {1, {5}});
-    expect_rejected<AnnotatedScores>("[1,2]", "the value of AnnotatedScores has no item", "");
-    expect_rejected<AnnotatedScores>("[5,5]",
-                                     "an element of the value of AnnotatedScores is equal to an earlier element", "/1");
-    expect_rejected<AnnotatedScores>("[5,6,7,8]", "the value of AnnotatedScores has more items than the maximum 3", "");
+    expect_rejected<AnnotatedScores>("[1,2]", "the array has no item that satisfies contains; reading AnnotatedScores",
+                                     "");
+    expect_rejected<AnnotatedScores>(
+        "[5,5]", "the item is equal to an earlier item at /1; reading an element of AnnotatedScores", "/1");
+    expect_rejected<AnnotatedScores>("[5,6,7,8]",
+                                     "the array has more items than the maximum 3; reading AnnotatedScores", "");
     expect_read<AnnotatedGate>("[1,2]", {1, {2}});
-    expect_rejected<AnnotatedGate>("[1,2,3]", "the value of AnnotatedGate satisfies the settings of yyjson::not_", "");
+    expect_rejected<AnnotatedGate>("[1,2,3]", "the value satisfies the subschema of not; reading AnnotatedGate", "");
     // the keywords of a field count and check the elements of the JSON array
-    expect_read<AnnotatedHolder>(R"({"p":[1],"s":[5,1]})", {{1, 0}, {5, {1}}}, false, false);
+    expect_read<AnnotatedHolder>(R"({"p":[1],"s":[5,1]})", {{1, 0}, {5, {1}}}, false);
     expect_rejected<AnnotatedHolder>(
-        R"({"p":[1,2]})", "the value of the key \"p\" of AnnotatedHolder has more items than the maximum 1", "/p");
-    expect_rejected<AnnotatedHolder>(R"({"s":[5,6]})", "the value of the key \"s\" of AnnotatedHolder has no item",
-                                     "/s");
+        R"({"p":[1,2]})",
+        R"(the array has more items than the maximum 1 at /p; reading the key "p" of AnnotatedHolder)", "/p");
+    expect_rejected<AnnotatedHolder>(
+        R"({"s":[5,6]})",
+        R"(the array has no item that satisfies contains at /s; reading the key "s" of AnnotatedHolder)", "/s");
 }
 #endif
 
@@ -1025,23 +1067,22 @@ TEST(AsArray, Validate)
     expect_valid(Drawing{{1, 2}, Point{3, 4}, {{0, "a", 1}}, {{"k", {"s", {1}}}}, Point{5, 6}});
 
     // the keywords of a position and of the elements after the positions
-    expect_invalid(Rule{-1, std::nullopt, std::nullopt}, "an element of the value of Rule is less than the minimum 0",
-                   "/0");
-    expect_invalid(Series{"s", {1, -2}}, "an element of the value of Series is less than the minimum 0", "/2");
+    expect_invalid(Rule{-1, std::nullopt, std::nullopt},
+                   "the number is less than the minimum 0 at /0; reading an element of Rule", "/0");
+    expect_invalid(Series{"s", {1, -2}}, "the number is less than the minimum 0 at /2; reading an element of Series",
+                   "/2");
     expect_invalid(Drawing{{}, {}, {{0, {}, {}}, {-1, {}, {}}}, {}, 0},
-                   "an element of the value of Rule is less than the minimum 0", "/rules/1/0");
+                   "the number is less than the minimum 0 at /rules/1/0; reading an element of Rule", "/rules/1/0");
     expect_invalid(Drawing{{}, {}, {}, {{"k", {"s", {-1}}}}, 0},
-                   "an element of the value of Series is less than the minimum 0", "/series/k/1");
+                   "the number is less than the minimum 0 at /series/k/1; reading an element of Series", "/series/k/1");
 
     // the keywords of the whole array
     expect_valid(Banner{"a", "kk", {"x"}});
-    expect_invalid(BannerHolder{{"kk", std::nullopt, {}}}, "the value of Banner has fewer items than the minimum 2",
-                   "/shape");
-    expect_invalid(Banner{"a", "b", {}},
-                   "the value of Banner has no item that satisfies the constraints of yyjson::contains", "");
+    expect_invalid(BannerHolder{{"kk", std::nullopt, {}}},
+                   "the array has fewer items than the minimum 2 at /shape; reading Banner", "/shape");
+    expect_invalid(Banner{"a", "b", {}}, "the array has no item that satisfies contains; reading Banner", "");
     expect_invalid(BannerHolder{{"kk", "a", {"bb"}}},
-                   "the value of Banner has more than 1 item that satisfies the constraints of yyjson::contains",
-                   "/shape");
+                   "the array has more than 1 item that satisfies contains at /shape; reading Banner", "/shape");
 }
 
 // NOLINTEND

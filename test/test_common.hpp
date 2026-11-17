@@ -20,6 +20,7 @@
 #include <numeric>
 #include <random>
 #include <set>
+#include <source_location>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -39,6 +40,40 @@
 
 namespace
 {
+    // A text that a test expects, with the place of the call that gives it.
+    struct expected_text
+    {
+        template <typename S>
+        requires std::convertible_to<const S&, std::string_view>
+        expected_text(const S& s, std::source_location where = std::source_location::current())  // NOLINT
+            : text(s), where(where)
+        {
+        }
+        std::string_view text;
+        std::source_location where;
+    };
+
+    // `actual` is the text that `expected` gives, and else the failure names the place of the call
+    inline void expect_text(std::string_view actual, const expected_text& expected, std::string_view context = {})
+    {
+        EXPECT_EQ(actual, expected.text) << expected.where.file_name() << ":" << expected.where.line() << " "
+                                         << context;
+    }
+
+    // `e.what()` without the position in the text that a read gives
+    inline std::string what_without_position(const yyjson::bad_cast& e)
+    {
+        auto what = std::string(e.what());
+        if (const auto pos = e.position())
+        {
+            const auto text = std::format(" (line {}, column {}, pos {})", pos->line, pos->column, pos->pos);
+            const auto at = what.find(text);
+            EXPECT_NE(at, std::string::npos) << what;
+            if (at != std::string::npos) what.erase(at, text.size());
+        }
+        return what;
+    }
+
     // what writing `t` gives, or the error it throws
     template <typename F>
     std::string written_or_error(F&& write)
@@ -142,14 +177,7 @@ namespace
         catch (const yyjson::bad_cast& e)
         {
             // a document cast knows no text, so the position that `yyjson::read<T>` adds is left out
-            auto what = std::string_view(e.what());
-            if (const auto pos = e.position())
-            {
-                const auto suffix = std::format(" (line {}, column {}, pos {})", pos->line, pos->column, pos->pos);
-                EXPECT_TRUE(what.ends_with(suffix)) << what;
-                what.remove_suffix(std::min(suffix.size(), what.size()));
-            }
-            return std::format("bad cast: {}", what);
+            return std::format("bad cast: {}", what_without_position(e));
         }
     }
 

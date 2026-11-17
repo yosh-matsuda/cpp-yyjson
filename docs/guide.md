@@ -125,7 +125,7 @@ catch (const yyjson::read_error& e)
 catch (const yyjson::bad_cast& e)
 {
     std::cerr << e.what() << '\n';
-    // -> int is not constructible from JSON string at /age (line 1, column 21, pos 20)
+    // -> expected an integer, got a string at /age (line 1, column 21, pos 20); reading int
 }
 ```
 
@@ -286,7 +286,7 @@ struct Config
 
 auto c = yyjson::read<Config>(R"({"host":"a","port":80})", yyjson::strict, yyjson::reject_unknown_keys);
 yyjson::read<Config>(R"({"host":"a"})", yyjson::strict);
-// throws yyjson::bad_cast: Config is not constructible from JSON without the key "port" (line 1, column 1, pos 0)
+// throws yyjson::bad_cast: a required key is missing (line 1, column 1, pos 0); reading the key "port" of Config
 ```
 
 `yyjson::strict` rejects missing keys, `null` in a `std::optional` field, and repeated keys. It accepts unknown keys, so that a reader of an older version accepts the keys that a newer writer adds. To make every read of a struct use a policy, declare it in `yyjson::annotations<T>`:

@@ -208,7 +208,7 @@ A `std::variant` is read by trying its alternatives, unless a member of the JSON
 
 A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. If a JSON array has another number of elements than a tuple or a `std::array`, the variant skips that alternative in the same way. If the array is longer than the [fixed capacity](#values-that-do-not-convert) of a range, the variant skips the range too. Only a `yyjson::bad_cast` thrown while an alternative is tried passes the value to the next alternative. Another exception propagates out of the read, such as a `std::bad_alloc` or an exception that a user-defined caster throws for its own reasons.
 
-If no alternative reads the value, the read throws `yyjson::bad_cast`. The message gives the reason of each alternative, in the order of the template arguments. The path and the position of the variant follow once, at the end. For example, `yyjson::read<std::variant<int, Point>>(R"({"x":"a"})")` throws `std::variant<int, Point> is not constructible from JSON: alternative 0 (int): reads no JSON object; alternative 1 (Point) at /x: int is not constructible from JSON string (line 1, column 1, pos 0)`. A reason about a value within the alternative has a path. ` at ` and a JSON Pointer then follow the index and the type of the alternative. The pointer starts at the value of the alternative, so `/x` is the key `x` of the object. A variant within an alternative gives only `... is not constructible from JSON` as its reason.
+If no alternative reads the value, the read throws `yyjson::bad_cast`. The message is `no alternative accepts the value`. The path and the position of the variant follow it. The note at the end of `what()` gives the reason of each alternative, in the order of the template arguments. For example, `yyjson::read<std::variant<int, Point>>(R"({"x":"a"})")` throws `no alternative accepts the value (line 1, column 1, pos 0); reading std::variant<int, Point>: alternative 0 (int): expected an integer, got an object; alternative 1 (Point) at /x: expected an integer, got a string (reading int)`. A reason about a value within the alternative has a path. ` at ` and a JSON Pointer then follow the index and the type of the alternative. The pointer starts at the value of the alternative, so `/x` is the key `x` of the object. The note of the reason follows it in parentheses. A variant `V` within an alternative gives only its message and `(reading V)` as its reason, without the reasons of its own alternatives.
 
 A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
 
@@ -260,14 +260,14 @@ using Id = yyjson::any_of_variant<
 auto num = yyjson::read<Id>("7");          // -> holds the int 7, index() is 0
 auto text = yyjson::read<Id>(R"("ab")");   // -> holds the std::string "ab", index() is 1
 yyjson::read<Id>("0");
-// throws yyjson::bad_cast: yyjson::any_of_variant<int, std::__cxx11::basic_string<char>> is not constructible from
-// JSON: alternative 0 (int): the value is less than the minimum 1; alternative 1 (std::__cxx11::basic_string<char>):
-// reads no JSON number (line 1, column 1, pos 0)
+// throws yyjson::bad_cast: no alternative accepts the value (line 1, column 1, pos 0); reading
+// yyjson::any_of_variant<int, std::__cxx11::basic_string<char>>: alternative 0 (int): the number is less than the
+// minimum 1; alternative 1 (std::__cxx11::basic_string<char>): expected a string, got a number
 ```
 
 `yyjson::any_of_variant<As...>` derives from the `std::variant` of the types of `As`, and has its constructors and assignments. `index()`, `std::get`, `std::holds_alternative` and `std::visit` work on it. Two alternatives can have the same type. Their indexes tell them apart, and `std::in_place_index` constructs a value of one of them.
 
-A read uses the steps of an [untagged variant](#untagged-variants), with the same candidates in the same order. An alternative reads a JSON value only if the value converts to `T` and satisfies the settings of the alternative. If not, the next alternative tries the value. If no alternative reads the value, the read throws `yyjson::bad_cast` with the reason of each alternative, as for an [untagged variant](#untagged-variants). The reason of a setting that the value does not satisfy has the subject `the value`. It has no path, also when the setting is about an element or a member. The message names the variant by the types of its alternatives, without their settings.
+A read uses the steps of an [untagged variant](#untagged-variants), with the same candidates in the same order. An alternative reads a JSON value only if the value converts to `T` and satisfies the settings of the alternative. If not, the next alternative tries the value. If no alternative reads the value, the read throws `yyjson::bad_cast` with the reason of each alternative, as for an [untagged variant](#untagged-variants). The reason of a setting that the value does not satisfy is the message of the setting, such as `the number is less than the minimum 1`. It has no path, also when the setting is about an element or a member. The note names the variant by the types of its alternatives, without their settings.
 
 *   The settings of a struct alternative that apply to an object, such as `yyjson::min_properties`, check the keys of the JSON object. They check them after the struct reads the object.
 *   `yyjson::property(k, s...)` in an alternative constrains the member `k` of the object, as for [a field that holds a struct](validation.md#keywords-of-an-object-at-a-field). Its settings `s` are the settings of the value of that member. `yyjson::required(k, ...)` in an alternative needs the keys. `T` takes them where a field of `T` takes them: `T` is a struct, `yyjson::value`, `yyjson::object` or a `std::variant` whose struct alternatives have the key `k`. Thus a member with a constant can choose the alternative:
@@ -331,7 +331,7 @@ using Shape = yyjson::one_of_variant<Point, Box>;
 
 yyjson::read<Shape>(R"({"x":1,"y":2})").index();  // -> 0: Box has no "z"
 yyjson::read<Shape>(R"({"x":1,"y":2,"z":3})");
-// throws yyjson::bad_cast: the value matches the alternatives 0 and 1 of yyjson::one_of_variant<Point, Box> ...
+// throws yyjson::bad_cast: the value matches more than one alternative ... the alternatives 0 and 1 match
 ```
 
 A read counts the alternatives that match the JSON value. The schema of the type decides the count. Of the policies of the call, only `yyjson::reject_unknown_keys` changes it:
@@ -340,7 +340,7 @@ A read counts the alternatives that match the JSON value. The schema of the type
 *   A set that the schema gives `uniqueItems`, such as `std::set<int>`, does not match an array with a repeated element. A repeated key does not change the count, because no keyword of a schema rejects it.
 *   When the call gives `yyjson::reject_unknown_keys`, the alternatives are also read under it. Every struct that they read is then closed, also the structs in their fields. A struct with `yyjson::extra_keys` or `yyjson::pattern_properties` still takes other keys. Thus a struct does not match an object with a key that names none of its fields.
 *   If exactly one alternative matches, the read gives that alternative. The read then applies the policies of the call to it, and throws `yyjson::bad_cast` if they reject the value.
-*   If no alternative matches, the read throws `yyjson::bad_cast` with `... is not constructible from JSON` and the reason of each alternative. Each reason comes from a read under the policies that count the matches. If two alternatives match, the read throws `yyjson::bad_cast` with the indexes of the two.
+*   If no alternative matches, the read throws `yyjson::bad_cast` with `no alternative accepts the value` and the reason of each alternative. Each reason comes from a read under the policies that count the matches. If two alternatives match, the read throws `yyjson::bad_cast` with `the value matches more than one alternative`, and the note gives the indexes of the two.
 
 A struct can match an object that has none of its keys, if all its fields have defaults:
 
@@ -584,7 +584,7 @@ yyjson::write(q);
 yyjson::write(q, yyjson::emit_defaults);
 // -> {"text":"cpp","limit":20,"user":"guest","version":1}
 yyjson::read<Query>(R"({"limit":5})");
-// throws yyjson::bad_cast: Query is not constructible from JSON without the key "text" ...
+// throws yyjson::bad_cast: a required key is missing ... reading the key "text" of Query
 ```
 
 *   `yyjson::read<T>`, `read_into` and `cast<T>` give a field with a default its default when the key is missing. `merge_into` keeps the value that the field has, and `null` resets the field to its default.
@@ -722,15 +722,15 @@ auto rule = yyjson::read<Rule>(R"([2,"always"])");
 auto json = yyjson::write(rule);
 // -> [2,"always"]
 yyjson::read<Rule>("[-1]");
-// throws: an element of the value of Rule is less than the minimum 0 at /0 (line 1, column 2, pos 1)
+// throws: the number is less than the minimum 0 at /0 (line 1, column 2, pos 1); reading an element of Rule
 ```
 
 A [`std::tuple`](#standard-library-types) also converts to an array of elements of different types. But it reads only an array of exactly as many elements as it has, and its elements have no names.
 
 *   **Positions.** Each field that is not [skipped](#skipped-fields) is an element of the array. The first one is at the index 0. A skipped field is no element, and it keeps its value in `T()`.
-*   **Missing elements.** An array can end before the last fields. A field whose element is missing follows the rules of a missing key. It keeps its value in `T()`, or gets its [default](#default-values-and-required-keys). `yyjson::reject_missing_keys` and `yyjson::strict` reject a missing element of a field without a default, and `yyjson::required` rejects a missing element always. The message names the element and its field, as in `Rule is not constructible from JSON without the element 0 of the field "level"`.
-*   **`null`.** An object can leave out a key, but an array cannot leave out an element before a later one. Thus `null` at the element of a field that cannot hold `null` is an error in every read, also without `yyjson::reject_null_as_missing`. `yyjson::read<Rule>(R"([2,"always",null])")` throws `std::optional<int> is not constructible from JSON null at /2`. A field of a type that holds `null` reads it as its value. These types are `yyjson::nullable<U>`, a smart pointer, a `std::variant` with `std::monostate` and a `std::optional` of one of them. An element of the field of `yyjson::extra_items` reads `null` as an element of a range does. Thus a `std::optional<U>` element reads it as `std::nullopt`.
-*   **Elements after the fields.** An array can have more elements than the struct has fields. The read ignores them. `yyjson::strict` does not reject them. `yyjson::reject_unknown_keys` rejects them, with the message `Point has no field of the element 2` at `/2`. `yyjson::items(false)` on the struct rejects them in every read, as `items: false` does in JSON Schema.
+*   **Missing elements.** An array can end before the last fields. A field whose element is missing follows the rules of a missing key. It keeps its value in `T()`, or gets its [default](#default-values-and-required-keys). `yyjson::reject_missing_keys` and `yyjson::strict` reject a missing element of a field without a default, and `yyjson::required` rejects a missing element always. The message is `a required element is missing`, and the note names the element and its field, as in `reading the field "level" of Rule from the element 0`.
+*   **`null`.** An object can leave out a key, but an array cannot leave out an element before a later one. Thus `null` at the element of a field that cannot hold `null` is an error in every read, also without `yyjson::reject_null_as_missing`. `yyjson::read<Rule>(R"([2,"always",null])")` throws `the value must not be null at /2 (line 1, column 13, pos 12); reading std::optional<int>`. A field of a type that holds `null` reads it as its value. These types are `yyjson::nullable<U>`, a smart pointer, a `std::variant` with `std::monostate` and a `std::optional` of one of them. An element of the field of `yyjson::extra_items` reads `null` as an element of a range does. Thus a `std::optional<U>` element reads it as `std::nullopt`.
+*   **Elements after the fields.** An array can have more elements than the struct has fields. The read ignores them. `yyjson::strict` does not reject them. `yyjson::reject_unknown_keys` rejects them, with the message `the array has an element that is not allowed` at the index of the first such element, such as `/3` for `Rule`. `yyjson::items(false)` on the struct rejects them in every read, as `items: false` does in JSON Schema.
 *   **A field for the elements after the others.** `yyjson::field("member", yyjson::extra_items)` gives the last field that is not skipped the elements after those of the other fields. The write writes them after the other fields. The field is a range with `push_back` and `clear`, such as `std::vector<double>` or `std::vector<yyjson::value>`. `yyjson::items(settings...)` on the field constrains these elements. A struct that holds a range of its own type in such a field reads a tree of arrays:
 
     ```cpp
@@ -747,7 +747,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     auto series = yyjson::read<Series>(R"(["cpu",0.5,0.75])");
     // -> Series{"cpu", {0.5, 0.75}}
     yyjson::read<Series>(R"(["cpu",0.5,-1])");
-    // throws: an element of the value of Series is less than the minimum 0 at /2 (line 1, column 12, pos 11)
+    // throws: the number is less than the minimum 0 at /2 (line 1, column 12, pos 11); reading an element of Series
 
     struct Node
     {
@@ -764,7 +764,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     ```
 
 *   **Writing.** The write writes the fields in order. It leaves out the empty `std::optional` fields at the end of the array. In an array whose length varies, make the fields from the first one that may be left out to the last one `std::optional`. Only an optional with no later value may be empty. An empty optional before a value makes the write throw `yyjson::write_error`, because the array has no place for the missing element. Thus `yyjson::write(Rule{1, std::nullopt, 3})` throws `Rule cannot be written as an array: the field "mode" at the element 1 has no value and a later element has one`. The elements of the field of `yyjson::extra_items` are later values too. To write `null`, use `yyjson::nullable<U>`. A smart pointer and a `std::variant` with `std::monostate` also write `null`. A field of `std::optional<yyjson::nullable<int>>` is left out when it is empty, and it is written as `null` when it holds an empty `yyjson::nullable`. A value equal to its default is written, also a sentinel.
-*   **Settings of the whole array.** The struct takes `yyjson::min_items(n)`, `yyjson::max_items(n)`, `yyjson::unique_items`, `yyjson::contains(settings...)`, `yyjson::min_contains(n)` and `yyjson::max_contains(n)`. They are the keywords `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains` and `maxContains` beside `prefixItems` in JSON Schema. The read checks them after it reads the fields. The message is `the value of T`, and then the text of the [constraint](validation.md#constraints), at the path of the struct. For `yyjson::unique_items`, the message is `an element of the value of T is equal to an earlier element`, at the path of the later element, as for a `std::vector`.
+*   **Settings of the whole array.** The struct takes `yyjson::min_items(n)`, `yyjson::max_items(n)`, `yyjson::unique_items`, `yyjson::contains(settings...)`, `yyjson::min_contains(n)` and `yyjson::max_contains(n)`. They are the keywords `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains` and `maxContains` beside `prefixItems` in JSON Schema. The read checks them after it reads the fields. The message is the text of the [constraint](validation.md#constraints), at the path of the struct, and the note is `reading T`. For `yyjson::unique_items`, the message is `the item is equal to an earlier item`, at the path of the later element, as for a `std::vector`.
 *   **What they count.** The read checks these settings on the elements of the JSON array, as JSON Schema does. A missing element is no element, also when its field gets the value in `T()` or a default. A `null` is an element. Its value is the value that the field reads from it, such as an empty `yyjson::nullable<U>`. An element after the fields that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`:
 
     ```cpp
@@ -781,7 +781,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
 
     yyjson::read<Banner>(R"(["kk","a"])");  // -> accepted
     yyjson::read<Banner>(R"(["kk"])");
-    // throws: the value of Banner has fewer items than the minimum 2 (line 1, column 1, pos 0)
+    // throws: the array has fewer items than the minimum 2 (line 1, column 1, pos 0); reading Banner
 
     struct Ranks
     {
@@ -796,7 +796,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
 
     yyjson::read<Ranks>("[0]");  // -> accepted
     yyjson::read<Ranks>("[1,2,1]");
-    // throws: an element of the value of Ranks is equal to an earlier element at /2 (line 1, column 6, pos 5)
+    // throws: the item is equal to an earlier item at /2 (line 1, column 6, pos 5); reading an element of Ranks
     ```
 
     `["kk","a"]` has two elements. `[0]` gives `Ranks{0, 0, {}}`, but it has only one element, so the read compares no `0` with another.
@@ -805,7 +805,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
 
     Another struct can give these settings to a field of such a struct, as in `yyjson::field("p", yyjson::min_items(2))`. They also apply to its elements, its values and its alternatives through `yyjson::items` and the other settings of elements. The same rules apply there. The message then names the field, at the path of the field.
 *   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains` on the struct or on a field of its type check every element of the array. Thus the struct must have a field of `yyjson::extra_items` or `yyjson::items(false)`, so that the read reads every element. `yyjson::unique_items` compares the elements as JSON values, also when the fields have different types.
-*   **Errors.** A message about the value of a field names it as an element of the struct, as `an element of the value of Rule` above. The JSON array has no key for a field, so the message does not name the field. This applies also to an element of the field of `yyjson::extra_items`, as `an element of the value of Series` above. The path is the index of the element, such as `/0` above and `/rules/1/0` for the struct in the element 1 of a field `rules`. A JSON value that is not an array, such as an object, throws `Rule is not constructible from JSON`.
+*   **Errors.** The note of a constraint error about the value of a field names it as an element of the struct, as `reading an element of Rule` above. The JSON array has no key for a field, so the note does not name the field. This applies also to an element of the field of `yyjson::extra_items`, as `reading an element of Series` above. The note of a type error names the type of the field, as in `reading int`. The path is the index of the element, such as `/0` above and `/rules/1/0` for the struct in the element 1 of a field `rules`. A JSON value that is not an array, such as an object, throws `expected an array, got an object`.
 *   **Where it applies.** The struct is an array everywhere: as a field of another struct, an element, a value of a map, an alternative of a `std::variant` and the root. An untagged `std::variant` chooses it for a JSON array, as it chooses a `std::vector`. `read_into` and `merge_into` read the whole array into the struct. `merge_into` does not merge an array into the fields that the struct has: `yyjson::merge_into("[7]", point)` gives `Point{7, 0}` when `point` was `Point{5, 6}`.
 *   **Settings of the fields.** The fields take the [constraints](validation.md#constraints), `yyjson::required`, `yyjson::default_`, `yyjson::default_from<f>` and `yyjson::skip`. The struct takes the [read policies](validation.md#read-policies), `yyjson::items(false)`, the settings of the whole array and the combinators of them. `VISITABLE_STRUCT` registers such a struct too.
 *   The following fail to compile with a `static_assert`:

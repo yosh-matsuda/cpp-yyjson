@@ -2577,6 +2577,36 @@ template <>
 inline constexpr auto yyjson::annotations<PatternStrict> = yyjson::annotate(
     yyjson::field("a", yyjson::pattern_properties("^a")), yyjson::field("b", yyjson::pattern_properties("b$")),
     yyjson::field("v", yyjson::pattern_properties("^v")));
+// a pattern that keeps the value as JSON, and a later one that reads it again
+struct PatternInner
+{
+    int x = 0;
+};
+struct PatternOuter
+{
+    PatternInner in;
+};
+struct PatternReread
+{
+    std::map<std::string, yyjson::value> v;
+    std::map<std::string, PatternOuter> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternReread> = yyjson::annotate(
+    yyjson::field("v", yyjson::pattern_properties("^v")), yyjson::field("n", yyjson::pattern_properties("n$")));
+// a declared field that a merge merges in place, and a pattern that matches its key
+struct PatternLoose
+{
+    yyjson::value in;
+};
+struct PatternDeclared
+{
+    PatternLoose vn;
+    std::map<std::string, PatternOuter> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternDeclared> =
+    yyjson::annotate(yyjson::field("n", yyjson::pattern_properties("n$")));
 struct PatternClosed
 {
     std::map<std::string, yyjson::value> x;
@@ -3007,10 +3037,12 @@ struct CombinedAnnotated
 
 namespace
 {
-    // `e.what()` without the "struct ", "class " and "enum " that MSVC writes before the name of a type
+    // `e.what()` without the position of the read, and without the "struct ", "class " and "enum " that MSVC writes
+    // before the name of a type
     std::string message_of(const std::exception& e)
     {
-        auto message = std::string(e.what());
+        const auto* cast = dynamic_cast<const yyjson::bad_cast*>(&e);
+        auto message = cast != nullptr ? what_without_position(*cast) : std::string(e.what());
 #if defined(_MSC_VER) && !defined(__clang__)
         for (const std::string_view keyword : {"struct ", "class ", "enum "})
         {
@@ -3022,6 +3054,21 @@ namespace
         }
 #endif
         return message;
+    }
+
+    // `message` about the value at `path`, with the path of the element 0 of an array that holds the value
+    inline std::string at_element(std::string_view message, std::string_view path)
+    {
+        auto text = std::string(message);
+        if (!path.empty())
+        {
+            const auto at = text.find(" at " + std::string(path));
+            if (at != std::string::npos) text.insert(at + 4, "/0");
+            return text;
+        }
+        const auto note = text.find("; ");
+        text.insert(note == std::string::npos ? text.size() : note, " at /0");
+        return text;
     }
 
     template <typename F>
@@ -3073,12 +3120,12 @@ namespace
     // `path`, and the reader without a document leaves it to the document; `merge_into` too unless `json` is a
     // null that resets the field or T() writes members, and else it follows the merge of `json` into them
     template <typename T>
-    void expect_rejected(std::string_view json, std::string_view message, std::string_view path, bool merged = true)
+    void expect_rejected(std::string_view json, const expected_text& message, std::string_view path, bool merged = true)
     {
         merged = merged && writes_no_member<T>();
         static_cast<void>(expect_merge_rule(T(), json));
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            expect_text(message_of(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json); }));
@@ -3112,16 +3159,20 @@ TEST(Constraints, Numbers)
     expect_accepted<Bounded>(R"({"i":10,"d":1.25,"u":0})", {10, 1.25, 0, {}});
     expect_accepted<Bounded>(R"({"o":null})", {});
 
-    expect_rejected<Bounded>(R"({"i":-1})", R"(the value of the key "i" of Bounded is less than the minimum 0)", "/i");
-    expect_rejected<Bounded>(R"({"i":11})", R"(the value of the key "i" of Bounded is greater than the maximum 10)",
-                             "/i");
+    expect_rejected<Bounded>(R"({"i":-1})",
+                             R"(the number is less than the minimum 0 at /i; reading the key "i" of Bounded)", "/i");
     expect_rejected<Bounded>(
-        R"({"d":0})", R"(the value of the key "d" of Bounded is not greater than the exclusive minimum 0)", "/d");
-    expect_rejected<Bounded>(R"({"d":1.5})",
-                             R"(the value of the key "d" of Bounded is not less than the exclusive maximum 1.5)", "/d");
-    expect_rejected<Bounded>(R"({"u":4})", R"(the value of the key "u" of Bounded is not a multiple of 3)", "/u");
-    expect_rejected<Bounded>(R"({"i":1,"o":-6})", R"(the value of the key "o" of Bounded is less than the minimum -5)",
-                             "/o");
+        R"({"i":11})", R"(the number is greater than the maximum 10 at /i; reading the key "i" of Bounded)", "/i");
+    expect_rejected<Bounded>(
+        R"({"d":0})", R"(the number is not greater than the exclusive minimum 0 at /d; reading the key "d" of Bounded)",
+        "/d");
+    expect_rejected<Bounded>(
+        R"({"d":1.5})",
+        R"(the number is not less than the exclusive maximum 1.5 at /d; reading the key "d" of Bounded)", "/d");
+    expect_rejected<Bounded>(R"({"u":4})", R"(the number is not a multiple of 3 at /u; reading the key "u" of Bounded)",
+                             "/u");
+    expect_rejected<Bounded>(R"({"i":1,"o":-6})",
+                             R"(the number is less than the minimum -5 at /o; reading the key "o" of Bounded)", "/o");
     // the key that the object leaves out is not checked, and the field keeps a value out of the bounds
     EXPECT_EQ(yyjson::read<Bounded>(R"({"i":1})").d, 1);
     // `yyjson::strict` checks the keys besides
@@ -3134,20 +3185,26 @@ TEST(Constraints, Numbers)
     expect_accepted<MixedBounds>(R"({"negative":-9223372036854775807})", {0, 0, 0, -9223372036854775807LL, 0});
     expect_rejected<MixedBounds>(
         R"({"big":9007199254740993})",
-        R"(the value of the key "big" of MixedBounds is greater than the maximum 9007199254740992)", "/big");
+        R"(the number is greater than the maximum 9007199254740992 at /big; reading the key "big" of MixedBounds)",
+        "/big");
     expect_rejected<MixedBounds>(
-        R"({"ubig":1})", R"(the value of the key "ubig" of MixedBounds is not a multiple of 9223372036854775808)",
+        R"({"ubig":1})",
+        R"(the number is not a multiple of 9223372036854775808 at /ubig; reading the key "ubig" of MixedBounds)",
         "/ubig");
     expect_rejected<MixedBounds>(
         R"({"real":9007199254740994})",
-        R"(the value of the key "real" of MixedBounds is greater than the maximum 9007199254740993)", "/real");
+        R"(the number is greater than the maximum 9007199254740993 at /real; reading the key "real" of MixedBounds)",
+        "/real");
     expect_rejected<MixedBounds>(
         R"({"negative":-2})",
-        R"(the value of the key "negative" of MixedBounds is not less than the exclusive maximum -2.5)", "/negative");
+        R"(the number is not less than the exclusive maximum -2.5 at /negative; reading the key "negative" of MixedBounds)",
+        "/negative");
     expect_rejected<MixedBounds>(
-        R"({"negative":-6})", R"(the value of the key "negative" of MixedBounds is not a multiple of 7)", "/negative");
+        R"({"negative":-6})",
+        R"(the number is not a multiple of 7 at /negative; reading the key "negative" of MixedBounds)", "/negative");
     expect_rejected<MixedBounds>(
-        R"({"quarter":0.3})", R"(the value of the key "quarter" of MixedBounds is not a multiple of 0.25)", "/quarter");
+        R"({"quarter":0.3})",
+        R"(the number is not a multiple of 0.25 at /quarter; reading the key "quarter" of MixedBounds)", "/quarter");
 
     // a multiple of a decimal is decided in decimal, which the quotient in binary is not
     for (const auto* json : {R"({"cents":19.99})", R"({"cents":0.07})", R"({"cents":-1234567.89})", R"({"cents":1e-2})",
@@ -3156,10 +3213,12 @@ TEST(Constraints, Numbers)
         EXPECT_NO_THROW((void)yyjson::read<MixedBounds>(json)) << json;
         EXPECT_NO_THROW((void)yyjson::read(json).cast<MixedBounds>()) << json;
     }
-    expect_rejected<MixedBounds>(R"({"cents":0.001})",
-                                 R"(the value of the key "cents" of MixedBounds is not a multiple of 0.01)", "/cents");
-    expect_rejected<MixedBounds>(R"({"cents":19.995})",
-                                 R"(the value of the key "cents" of MixedBounds is not a multiple of 0.01)", "/cents");
+    expect_rejected<MixedBounds>(
+        R"({"cents":0.001})",
+        R"(the number is not a multiple of 0.01 at /cents; reading the key "cents" of MixedBounds)", "/cents");
+    expect_rejected<MixedBounds>(
+        R"({"cents":19.995})",
+        R"(the number is not a multiple of 0.01 at /cents; reading the key "cents" of MixedBounds)", "/cents");
     // an integer field is a multiple of 0.1 whatever it holds
     EXPECT_EQ(yyjson::read<MixedBounds>(R"({"tenths":7})").tenths, 7);
 }
@@ -3171,25 +3230,31 @@ TEST(Constraints, FloatBounds)
                                  {0.1F, 0.09999999F, 16777216.0F, 0.3F});
     for (const auto* json : {R"({"tenth":0.10000001})", R"({"tenth":0.10000000149011612})"})
         expect_rejected<FloatBounds>(
-            json, R"(the value of the key "tenth" of FloatBounds is greater than the maximum 0.1)", "/tenth");
+            json, R"(the number is greater than the maximum 0.1 at /tenth; reading the key "tenth" of FloatBounds)",
+            "/tenth");
     expect_rejected<FloatBounds>(
-        R"({"under":0.1})", R"(the value of the key "under" of FloatBounds is not less than the exclusive maximum 0.1)",
+        R"({"under":0.1})",
+        R"(the number is not less than the exclusive maximum 0.1 at /under; reading the key "under" of FloatBounds)",
         "/under");
-    expect_rejected<FloatBounds>(R"({"big":16777216})",
-                                 R"(the value of the key "big" of FloatBounds is less than the minimum 16777217)",
-                                 "/big");
-    expect_rejected<FloatBounds>(R"({"step":0.30000001})",
-                                 R"(the value of the key "step" of FloatBounds is not a multiple of 0.1)", "/step");
+    expect_rejected<FloatBounds>(
+        R"({"big":16777216})",
+        R"(the number is less than the minimum 16777217 at /big; reading the key "big" of FloatBounds)", "/big");
+    expect_rejected<FloatBounds>(
+        R"({"step":0.30000001})",
+        R"(the number is not a multiple of 0.1 at /step; reading the key "step" of FloatBounds)", "/step");
 
     expect_accepted<FloatElements>(R"({"v":[0.1,0.05],"m":{"a":0.1},"u":0.1})", {{0.1F, 0.05F}, {{"a", 0.1F}}, 0.1F});
     expect_rejected<FloatElements>(
         R"({"v":[0.1,0.10000001]})",
-        R"(an element of the value of the key "v" of FloatElements is greater than the maximum 0.1)", "/v/1");
+        R"(the number is greater than the maximum 0.1 at /v/1; reading an element of the value at the key "v" of FloatElements)",
+        "/v/1");
     expect_rejected<FloatElements>(
         R"({"m":{"a":0.1,"b":0.10000001}})",
-        R"(an element of the value of the key "m" of FloatElements is greater than the maximum 0.1)", "/m/b");
+        R"(the number is greater than the maximum 0.1 at /m/b; reading an element of the value at the key "m" of FloatElements)",
+        "/m/b");
     expect_rejected<FloatElements>(
-        R"({"u":0.10000001})", R"(the value of the key "u" of FloatElements is greater than the maximum 0.1)", "/u");
+        R"({"u":0.10000001})",
+        R"(the number is greater than the maximum 0.1 at /u; reading the key "u" of FloatElements)", "/u");
 }
 
 TEST(Constraints, NaN)
@@ -3209,16 +3274,21 @@ TEST(Constraints, Texts)
     // the length is in code points
     expect_accepted<Texts>(R"({"name":"日本語"})", {"日本語", "ABC", {}});
 
-    expect_rejected<Texts>(R"({"name":"a"})",
-                           R"(the value of the key "name" of Texts is shorter than the minimum length 2)", "/name");
-    expect_rejected<Texts>(R"({"name":"abcd"})",
-                           R"(the value of the key "name" of Texts is longer than the maximum length 3)", "/name");
-    expect_rejected<Texts>(R"({"name":"日本語x"})",
-                           R"(the value of the key "name" of Texts is longer than the maximum length 3)", "/name");
-    expect_rejected<Texts>(R"({"name":"ab","code":"abc"})",
-                           R"(the value of the key "code" of Texts does not match the pattern "^[A-Z]{3}$")", "/code");
+    expect_rejected<Texts>(
+        R"({"name":"a"})",
+        R"(the string is shorter than the minimum length 2 at /name; reading the key "name" of Texts)", "/name");
+    expect_rejected<Texts>(
+        R"({"name":"abcd"})",
+        R"(the string is longer than the maximum length 3 at /name; reading the key "name" of Texts)", "/name");
+    expect_rejected<Texts>(
+        R"({"name":"日本語x"})",
+        R"(the string is longer than the maximum length 3 at /name; reading the key "name" of Texts)", "/name");
+    expect_rejected<Texts>(
+        R"({"name":"ab","code":"abc"})",
+        R"(the string does not match the pattern "^[A-Z]{3}$" at /code; reading the key "code" of Texts)", "/code");
     expect_rejected<Texts>(R"({"name":"ab","note":"x"})",
-                           R"(the value of the key "note" of Texts does not match the pattern "^n")", "/note");
+                           R"(the string does not match the pattern "^n" at /note; reading the key "note" of Texts)",
+                           "/note");
 }
 
 TEST(Constraints, Patterns)
@@ -3226,26 +3296,40 @@ TEST(Constraints, Patterns)
     expect_accepted<Patterns>(R"({"s":"abz","o":"oxo","v":"123"})", {"abz", "oxo", "123"});
     expect_accepted<Patterns>(R"({"s":"az"})", {"az", {}, {}});
 
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Patterns does not match all of the patterns )", key);
-    };
-    expect_rejected<Patterns>(R"({"s":"ab"})", value("s") + R"("^a", "z$")", "/s");
-    expect_rejected<Patterns>(R"({"s":"bz"})", value("s") + R"("^a", "z$")", "/s");
-    expect_rejected<Patterns>(R"({"s":"az","o":"oo"})", value("o") + R"("^o", "o$", "x")", "/o");
-    expect_rejected<Patterns>(R"({"s":"az","o":"xo"})", value("o") + R"("^o", "o$", "x")", "/o");
-    expect_rejected<Patterns>(R"({"s":"az","o":"o"})",
-                              R"(the value of the key "o" of Patterns is shorter than the minimum length 2)", "/o");
-    expect_rejected<Patterns>(R"({"s":"az","v":"1a"})",
-                              R"(the value of the key "v" of Patterns does not match the pattern "^[0-9]*$")", "/v");
+    expect_rejected<Patterns>(
+        R"({"s":"ab"})",
+        R"(the string does not match all of the patterns "^a", "z$" at /s; reading the key "s" of Patterns)", "/s");
+    expect_rejected<Patterns>(
+        R"({"s":"bz"})",
+        R"(the string does not match all of the patterns "^a", "z$" at /s; reading the key "s" of Patterns)", "/s");
+    expect_rejected<Patterns>(
+        R"({"s":"az","o":"oo"})",
+        R"(the string does not match all of the patterns "^o", "o$", "x" at /o; reading the key "o" of Patterns)",
+        "/o");
+    expect_rejected<Patterns>(
+        R"({"s":"az","o":"xo"})",
+        R"(the string does not match all of the patterns "^o", "o$", "x" at /o; reading the key "o" of Patterns)",
+        "/o");
+    expect_rejected<Patterns>(
+        R"({"s":"az","o":"o"})",
+        R"(the string is shorter than the minimum length 2 at /o; reading the key "o" of Patterns)", "/o");
+    expect_rejected<Patterns>(
+        R"({"s":"az","v":"1a"})",
+        R"(the string does not match the pattern "^[0-9]*$" at /v; reading the key "v" of Patterns)", "/v");
 
     // validate and the checked write check them as well
     expect_valid(Patterns{"abz", "oxo", "123"});
-    expect_invalid(Patterns{"ab", {}, {}}, value("s") + R"("^a", "z$")", "/s");
-    expect_invalid(Patterns{"az", "oxx", {}}, value("o") + R"("^o", "o$", "x")", "/o");
+    expect_invalid(Patterns{"ab", {}, {}},
+                   R"(the string does not match all of the patterns "^a", "z$" at /s; reading the key "s" of Patterns)",
+                   "/s");
+    expect_invalid(
+        Patterns{"az", "oxx", {}},
+        R"(the string does not match all of the patterns "^o", "o$", "x" at /o; reading the key "o" of Patterns)",
+        "/o");
     expect_invalid(Patterns{"az", "o", {}},
-                   R"(the value of the key "o" of Patterns is shorter than the minimum length 2)", "/o");
+                   R"(the string is shorter than the minimum length 2 at /o; reading the key "o" of Patterns)", "/o");
     expect_invalid(Patterns{"az", {}, "1a"},
-                   R"(the value of the key "v" of Patterns does not match the pattern "^[0-9]*$")", "/v");
+                   R"(the string does not match the pattern "^[0-9]*$" at /v; reading the key "v" of Patterns)", "/v");
 }
 
 TEST(Constraints, Satisfies)
@@ -3253,36 +3337,41 @@ TEST(Constraints, Satisfies)
     expect_accepted<Validated>(R"({"even":2,"text":"ok","nonzero":null})", {2, "ok", {}});
     expect_accepted<Validated>(R"({"nonzero":1})", {0, {}, 1});
 
-    expect_rejected<Validated>(R"({"even":1})",
-                               R"(the value of the key "even" of Validated is rejected by yyjson::satisfies)", "/even");
-    expect_rejected<Validated>(R"({"text":"bad"})",
-                               R"(the value of the key "text" of Validated is rejected by yyjson::satisfies)", "/text");
-    expect_rejected<Validated>(R"({"nonzero":0})",
-                               R"(the value of the key "nonzero" of Validated is rejected by yyjson::satisfies)",
-                               "/nonzero");
+    expect_rejected<Validated>(
+        R"({"even":1})", R"(the value does not satisfy the predicate at /even; reading the key "even" of Validated)",
+        "/even");
+    expect_rejected<Validated>(
+        R"({"text":"bad"})",
+        R"(the value does not satisfy the predicate at /text; reading the key "text" of Validated)", "/text");
+    expect_rejected<Validated>(
+        R"({"nonzero":0})",
+        R"(the value does not satisfy the predicate at /nonzero; reading the key "nonzero" of Validated)", "/nonzero");
 }
 
 TEST(Constraints, Structs)
 {
     expect_accepted<ConstrainedVisitable>(R"({"b":"x","a":1})", {1, "x"});
     expect_rejected<ConstrainedVisitable>(
-        R"({"a":0})", R"(the value of the key "a" of ConstrainedVisitable is less than the minimum 1)", "/a");
+        R"({"a":0})", R"(the number is less than the minimum 1 at /a; reading the key "a" of ConstrainedVisitable)",
+        "/a");
     expect_rejected<ConstrainedVisitable>(
-        R"({"b":"xy"})", R"(the value of the key "b" of ConstrainedVisitable is longer than the maximum length 1)",
-        "/b");
+        R"({"b":"xy"})",
+        R"(the string is longer than the maximum length 1 at /b; reading the key "b" of ConstrainedVisitable)", "/b");
 
     expect_accepted<ConstrainedLarge>(R"({"i":1,"r":0,"a":5})", {5, 0, 0, 0, 0, 0, 0, 0, 1, 0});
     expect_rejected<ConstrainedLarge>(
-        R"({"a":1,"i":2})", R"(the value of the key "i" of ConstrainedLarge is greater than the maximum 1)", "/i");
+        R"({"a":1,"i":2})",
+        R"(the number is greater than the maximum 1 at /i; reading the key "i" of ConstrainedLarge)", "/i");
     expect_rejected<ConstrainedLarge>(
-        R"({"r":-1})", R"(the value of the key "r" of ConstrainedLarge is less than the minimum 0)", "/r");
+        R"({"r":-1})", R"(the number is less than the minimum 0 at /r; reading the key "r" of ConstrainedLarge)", "/r");
 
-    expect_rejected<ConstrainedOuter>(R"({"items":[{"i":1},{"i":12}]})",
-                                      R"(the value of the key "i" of Bounded is greater than the maximum 10)",
-                                      "/items/1/i");
-    expect_rejected<ConstrainedOuter>(R"({"texts":{"name":"x"}})",
-                                      R"(the value of the key "name" of Texts is shorter than the minimum length 2)",
-                                      "/texts/name");
+    expect_rejected<ConstrainedOuter>(
+        R"({"items":[{"i":1},{"i":12}]})",
+        R"(the number is greater than the maximum 10 at /items/1/i; reading the key "i" of Bounded)", "/items/1/i");
+    expect_rejected<ConstrainedOuter>(
+        R"({"texts":{"name":"x"}})",
+        R"(the string is shorter than the minimum length 2 at /texts/name; reading the key "name" of Texts)",
+        "/texts/name");
     // the position of the value is added
     const auto e = bad_cast_of([] { (void)yyjson::read<ConstrainedOuter>(R"({"items":[{"i":-3}]})"); });
     ASSERT_TRUE(e.position().has_value());
@@ -3291,26 +3380,31 @@ TEST(Constraints, Structs)
     // the fields are checked by their own constraints whatever their places in the struct
     expect_accepted<ConstrainedSkipped>(R"({"a":5,"s":"xy","c":1})", {0, 5, "xy", 1, 5});
     expect_rejected<ConstrainedSkipped>(
-        R"({"a":6})", R"(the value of the key "a" of ConstrainedSkipped is greater than the maximum 5)", "/a");
+        R"({"a":6})", R"(the number is greater than the maximum 5 at /a; reading the key "a" of ConstrainedSkipped)",
+        "/a");
     expect_rejected<ConstrainedSkipped>(
-        R"({"a":1,"s":"x"})", R"(the value of the key "s" of ConstrainedSkipped is shorter than the minimum length 2)",
-        "/s");
+        R"({"a":1,"s":"x"})",
+        R"(the string is shorter than the minimum length 2 at /s; reading the key "s" of ConstrainedSkipped)", "/s");
     expect_rejected<ConstrainedSkipped>(
-        R"({"c":0})", R"(the value of the key "c" of ConstrainedSkipped is less than the minimum 1)", "/c");
+        R"({"c":0})", R"(the number is less than the minimum 1 at /c; reading the key "c" of ConstrainedSkipped)",
+        "/c");
     expect_rejected<ConstrainedSkipped>(
-        R"({"o":4})", R"(the value of the key "o" of ConstrainedSkipped is greater than the maximum 3)", "/o");
+        R"({"o":4})", R"(the number is greater than the maximum 3 at /o; reading the key "o" of ConstrainedSkipped)",
+        "/o");
     expect_accepted<ConstrainedReordered>(R"({"b":"x","a":1})", {1, "x"});
     expect_rejected<ConstrainedReordered>(
         R"({"b":"xy","a":1})",
-        R"(the value of the key "b" of ConstrainedReordered is longer than the maximum length 1)", "/b");
+        R"(the string is longer than the maximum length 1 at /b; reading the key "b" of ConstrainedReordered)", "/b");
     expect_rejected<ConstrainedReordered>(
-        R"({"b":"x","a":0})", R"(the value of the key "a" of ConstrainedReordered is less than the minimum 1)", "/a");
+        R"({"b":"x","a":0})",
+        R"(the number is less than the minimum 1 at /a; reading the key "a" of ConstrainedReordered)", "/a");
 
     // null leaves a field at its value in `T()`, which is not checked
     expect_accepted<ConstrainedSkipped>(R"({"o":null})", {});
     expect_accepted<ConstrainedReordered>(R"({"o":null})", {});
     expect_rejected<ConstrainedReordered>(
-        R"({"o":4})", R"(the value of the key "o" of ConstrainedReordered is greater than the maximum 3)", "/o");
+        R"({"o":4})", R"(the number is greater than the maximum 3 at /o; reading the key "o" of ConstrainedReordered)",
+        "/o");
     EXPECT_THROW((void)yyjson::read<ConstrainedSkipped>(R"({"o":null})", yyjson::strict), yyjson::bad_cast);
 
     // a default value that the key leaves is not checked, and a value that the key gives is
@@ -3318,19 +3412,22 @@ TEST(Constraints, Structs)
     expect_accepted<ConstrainedDefaults>(R"({"o":null})", {});
     expect_accepted<ConstrainedDefaults>(R"({"a":0,"o":0})", {0, 0});
     expect_rejected<ConstrainedDefaults>(
-        R"({"a":-2})", R"(the value of the key "a" of ConstrainedDefaults is less than the minimum 0)", "/a");
+        R"({"a":-2})", R"(the number is less than the minimum 0 at /a; reading the key "a" of ConstrainedDefaults)",
+        "/a");
     expect_rejected<ConstrainedDefaults>(
-        R"({"o":-2})", R"(the value of the key "o" of ConstrainedDefaults is less than the minimum 0)", "/o");
+        R"({"o":-2})", R"(the number is less than the minimum 0 at /o; reading the key "o" of ConstrainedDefaults)",
+        "/o");
 }
 
 TEST(Constraints, Transparent)
 {
     expect_accepted<Percent>("50", {50});
-    expect_rejected<Percent>("101", "the value of Percent is greater than the maximum 100", "");
+    expect_rejected<Percent>("101", "the number is greater than the maximum 100; reading Percent", "");
     expect_accepted<Progress>(R"({"done":100,"steps":[0,100]})", {{100}, {{0}, {100}}});
-    expect_rejected<Progress>(R"({"done":-1})", "the value of Percent is less than the minimum 0", "/done");
-    expect_rejected<Progress>(R"({"steps":[1,200]})", "the value of Percent is greater than the maximum 100",
-                              "/steps/1");
+    expect_rejected<Progress>(R"({"done":-1})", "the number is less than the minimum 0 at /done; reading Percent",
+                              "/done");
+    expect_rejected<Progress>(R"({"steps":[1,200]})",
+                              "the number is greater than the maximum 100 at /steps/1; reading Percent", "/steps/1");
 }
 
 TEST(Constraints, Merge)
@@ -3371,18 +3468,26 @@ TEST(Constraints, Nullables)
     const auto field = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of Nullables )", key);
     };
-    expect_rejected<Nullables>(R"({"code":"abcd"})", field("code") + "is longer than the maximum length 3", "/code");
-    expect_rejected<Nullables>(R"({"ratio":1.5})", field("ratio") + "is greater than the maximum 1", "/ratio");
-    expect_rejected<Nullables>(R"({"name":"abcd"})", field("name") + "is rejected by yyjson::satisfies", "/name");
-    expect_rejected<Nullables>(R"({"boxed":-1})", field("boxed") + "is less than the minimum 0", "/boxed");
+    expect_rejected<Nullables>(
+        R"({"code":"abcd"})",
+        R"(the string is longer than the maximum length 3 at /code; reading the key "code" of Nullables)", "/code");
+    expect_rejected<Nullables>(
+        R"({"ratio":1.5})",
+        R"(the number is greater than the maximum 1 at /ratio; reading the key "ratio" of Nullables)", "/ratio");
+    expect_rejected<Nullables>(
+        R"({"name":"abcd"})",
+        R"(the value does not satisfy the predicate at /name; reading the key "name" of Nullables)", "/name");
+    expect_rejected<Nullables>(
+        R"({"boxed":-1})", R"(the number is less than the minimum 0 at /boxed; reading the key "boxed" of Nullables)",
+        "/boxed");
 
     // std::unique_ptr, in a field and in a std::optional
     const auto owned = yyjson::read<Owned>(R"({"count":null,"level":null})");
     EXPECT_EQ(owned.count, nullptr);
     EXPECT_EQ(written(yyjson::read<Owned>(R"({"count":0,"level":5})")), R"({"count":0,"level":5})");
-    const auto expect_owned_rejected = [](std::string_view json, std::string_view message, std::string_view path) {
+    const auto expect_owned_rejected = [](std::string_view json, const expected_text& message, std::string_view path) {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            expect_text(message_of(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<Owned>(json); }));
@@ -3393,12 +3498,15 @@ TEST(Constraints, Nullables)
         }));
         check(bad_cast_of([&] { (void)yyjson::read(json).cast<Owned>(); }));
     };
-    const auto owned_field = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Owned )", key);
-    };
-    expect_owned_rejected(R"({"count":-1})", owned_field("count") + "is less than the minimum 0", "/count");
-    expect_owned_rejected(R"({"level":6})", owned_field("level") + "is greater than the maximum 5", "/level");
-    expect_owned_rejected(R"({"level":3})", owned_field("level") + "is rejected by yyjson::satisfies", "/level");
+    expect_owned_rejected(R"({"count":-1})",
+                          R"(the number is less than the minimum 0 at /count; reading the key "count" of Owned)",
+                          "/count");
+    expect_owned_rejected(R"({"level":6})",
+                          R"(the number is greater than the maximum 5 at /level; reading the key "level" of Owned)",
+                          "/level");
+    expect_owned_rejected(R"({"level":3})",
+                          R"(the value does not satisfy the predicate at /level; reading the key "level" of Owned)",
+                          "/level");
 }
 
 TEST(Constraints, NullableListed)
@@ -3422,13 +3530,23 @@ TEST(Constraints, NullableListed)
     const auto field = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of NullableListed )", key);
     };
-    expect_rejected<NullableListed>(R"({"level":3})", field("level") + "is not one of 1, 2, null", "/level");
-    expect_rejected<NullableListed>(R"({"mode":1})", field("mode") + "is not equal to the constant null", "/mode");
-    expect_rejected<NullableListed>(R"({"none":[]})", field("none") + "is not equal to the constant null", "/none");
+    expect_rejected<NullableListed>(
+        R"({"level":3})", R"(the value is not one of 1, 2, null at /level; reading the key "level" of NullableListed)",
+        "/level");
+    expect_rejected<NullableListed>(
+        R"({"mode":1})",
+        R"(the value is not equal to the constant null at /mode; reading the key "mode" of NullableListed)", "/mode");
+    expect_rejected<NullableListed>(
+        R"({"none":[]})",
+        R"(the value is not equal to the constant null at /none; reading the key "none" of NullableListed)", "/none");
     // null that a field holds is checked, as JSON Schema checks null, but merge_into resets the field with null
-    expect_rejected<NullableListed>(R"({"unit":null})", field("unit") + R"(is not one of "mm", "cm")", "/unit", false);
-    expect_rejected<NullableListed>(R"({"count":null})", field("count") + "is not equal to the constant 1", "/count",
-                                    false);
+    expect_rejected<NullableListed>(
+        R"({"unit":null})", R"(the value is not one of "mm", "cm" at /unit; reading the key "unit" of NullableListed)",
+        "/unit", false);
+    expect_rejected<NullableListed>(
+        R"({"count":null})",
+        R"(the value is not equal to the constant 1 at /count; reading the key "count" of NullableListed)", "/count",
+        false);
     // null of a std::optional is a missing key
     expect_accepted<NullableListed>(R"({"note":null})", {});
 }
@@ -3436,11 +3554,12 @@ TEST(Constraints, NullableListed)
 TEST(Constraints, StringLiterals)
 {
     expect_accepted<Literals>(R"({"unit":"cm","day":"2024-01-31"})", {"cm", "2024-01-31"});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Literals )", key);
-    };
-    expect_rejected<Literals>(R"({"unit":"km"})", value("unit") + R"(is not one of "mm", "cm")", "/unit");
-    expect_rejected<Literals>(R"({"day":"2024-01-32"})", value("day") + R"(does not have the format "date")", "/day");
+    expect_rejected<Literals>(R"({"unit":"km"})",
+                              R"(the value is not one of "mm", "cm" at /unit; reading the key "unit" of Literals)",
+                              "/unit");
+    expect_rejected<Literals>(
+        R"({"day":"2024-01-32"})",
+        R"(the string does not have the format "date" at /day; reading the key "day" of Literals)", "/day");
 }
 
 TEST(Constraints, ConstAndEnum)
@@ -3450,15 +3569,26 @@ TEST(Constraints, ConstAndEnum)
     // a float equals 0.1 when it holds 0.1F, whatever the JSON writes
     expect_accepted<Listed>(R"({"ratio":0.100000001,"level":null})", {});
     const auto value = [](std::string_view key) { return std::format(R"(the value of the key "{}" of Listed )", key); };
-    expect_rejected<Listed>(R"({"unit":"km"})", value("unit") + R"(is not one of "mm", "cm", "m")", "/unit");
-    expect_rejected<Listed>(R"({"version":3})", value("version") + "is not equal to the constant 2", "/version");
-    expect_rejected<Listed>(R"({"ratio":0.3})", value("ratio") + "is not one of 0.1, 0.5", "/ratio");
-    expect_rejected<Listed>(R"({"flag":false})", value("flag") + "is not equal to the constant true", "/flag");
-    expect_rejected<Listed>(R"({"big":18446744073709551614})",
-                            value("big") + "is not one of -1, 0, 18446744073709551615", "/big");
-    expect_rejected<Listed>(R"({"level":4})", value("level") + "is not one of 1, 2, 3", "/level");
+    expect_rejected<Listed>(R"({"unit":"km"})",
+                            R"(the value is not one of "mm", "cm", "m" at /unit; reading the key "unit" of Listed)",
+                            "/unit");
+    expect_rejected<Listed>(
+        R"({"version":3})",
+        R"(the value is not equal to the constant 2 at /version; reading the key "version" of Listed)", "/version");
+    expect_rejected<Listed>(R"({"ratio":0.3})",
+                            R"(the value is not one of 0.1, 0.5 at /ratio; reading the key "ratio" of Listed)",
+                            "/ratio");
+    expect_rejected<Listed>(R"({"flag":false})",
+                            R"(the value is not equal to the constant true at /flag; reading the key "flag" of Listed)",
+                            "/flag");
+    expect_rejected<Listed>(
+        R"({"big":18446744073709551614})",
+        R"(the value is not one of -1, 0, 18446744073709551615 at /big; reading the key "big" of Listed)", "/big");
+    expect_rejected<Listed>(
+        R"({"level":4})", R"(the value is not one of 1, 2, 3 at /level; reading the key "level" of Listed)", "/level");
     // the constant is checked first; keywords that leave no value, as with enum_(2, 3), do not compile
-    expect_rejected<Listed>(R"({"odd":3})", value("odd") + "is not equal to the constant 1", "/odd");
+    expect_rejected<Listed>(
+        R"({"odd":3})", R"(the value is not equal to the constant 1 at /odd; reading the key "odd" of Listed)", "/odd");
     expect_accepted<Listed>(R"({"odd":1})", {});
 }
 
@@ -3466,14 +3596,15 @@ TEST(Constraints, ConstAndEnumNames)
 {
     expect_accepted<ListedEnums>(R"({"first":"low","loud":"mid","maybe":"mid"})",
                                  {.loud = Tone::mid, .maybe = Tone::mid});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of ListedEnums )", key);
-    };
-    expect_rejected<ListedEnums>(R"({"first":"mid"})", value("first") + R"(is not equal to the constant "low")",
-                                 "/first");
-    expect_rejected<ListedEnums>(R"({"loud":"low"})", value("loud") + R"(is not one of "mid", "HIGH")", "/loud");
-    expect_rejected<ListedEnums>(R"({"maybe":"HIGH"})", value("maybe") + R"(is not equal to the constant "mid")",
-                                 "/maybe");
+    expect_rejected<ListedEnums>(
+        R"({"first":"mid"})",
+        R"(the value is not equal to the constant "low" at /first; reading the key "first" of ListedEnums)", "/first");
+    expect_rejected<ListedEnums>(
+        R"({"loud":"low"})", R"(the value is not one of "mid", "HIGH" at /loud; reading the key "loud" of ListedEnums)",
+        "/loud");
+    expect_rejected<ListedEnums>(
+        R"({"maybe":"HIGH"})",
+        R"(the value is not equal to the constant "mid" at /maybe; reading the key "maybe" of ListedEnums)", "/maybe");
 }
 
 TEST(Constraints, RawNumbers)
@@ -3481,51 +3612,71 @@ TEST(Constraints, RawNumbers)
     const auto raw = [](std::string_view json) {
         return yyjson::read<RawNumbers>(json, yyjson::ReadFlag::NumberAsRaw);
     };
-    const auto expect_raw_rejected = [&](std::string_view json, std::string_view message, std::string_view path) {
+    const auto expect_raw_rejected = [&](std::string_view json, const expected_text& message, std::string_view path) {
         const auto e = bad_cast_of([&] { (void)raw(json); });
-        EXPECT_TRUE(message_of(e).starts_with(
-            std::format(R"(the value of the key "{}" of RawNumbers {})", path.substr(1), message)))
-            << json << "\n"
-            << e.what();
+        expect_text(message_of(e), message, json);
         EXPECT_EQ(e.path(), path) << json;
     };
     EXPECT_EQ(*raw(R"({"n":5,"big":9007199254740993,"half":1.5,"flag":true})").n.as_raw(), "5");
-    expect_raw_rejected(R"({"n":-1})", "is less than the minimum 0", "/n");
-    expect_raw_rejected(R"({"n":1e400})", "is greater than the maximum 100", "/n");
+    expect_raw_rejected(R"({"n":-1})",
+                        R"(the number is less than the minimum 0 at /n; reading the key "n" of RawNumbers)", "/n");
+    expect_raw_rejected(R"({"n":1e400})",
+                        R"(the number is greater than the maximum 100 at /n; reading the key "n" of RawNumbers)", "/n");
     // an integer that fits 64 bits compares exactly, which a double does not
-    expect_raw_rejected(R"({"big":9007199254740992})", "is less than the minimum 9007199254740993", "/big");
-    expect_raw_rejected(R"({"half":1.25})", "is not a multiple of 0.5", "/half");
+    expect_raw_rejected(
+        R"({"big":9007199254740992})",
+        R"(the number is less than the minimum 9007199254740993 at /big; reading the key "big" of RawNumbers)", "/big");
+    expect_raw_rejected(R"({"half":1.25})",
+                        R"(the number is not a multiple of 0.5 at /half; reading the key "half" of RawNumbers)",
+                        "/half");
     // a raw number is a number, which yyjson::matches<bool> does not read
-    expect_raw_rejected(R"({"flag":1})", "is not read as bool by yyjson::matches", "/flag");
+    expect_raw_rejected(R"({"flag":1})",
+                        R"(the value does not satisfy matches at /flag; reading the key "flag" of RawNumbers)",
+                        "/flag");
 }
 
 TEST(Constraints, RawEqualities)
 {
     const auto raw = [](std::string_view json) { return yyjson::read<RawEquals>(json, yyjson::ReadFlag::NumberAsRaw); };
-    const auto expect_raw_rejected = [&](std::string_view json, std::string_view message, std::string_view path) {
+    const auto expect_raw_rejected = [&](std::string_view json, const expected_text& message, std::string_view path) {
         const auto e = bad_cast_of([&] { (void)raw(json); });
-        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        expect_text(message_of(e), message, json);
         EXPECT_EQ(e.path(), path) << json;
     };
     // a raw number equals the number that its text is without the flag
     EXPECT_NO_THROW((void)raw(R"({"one":1,"listed":2.5,"deep":{"a":[1.0,2.50]},"held":{"v":3.0}})"));
     EXPECT_NO_THROW((void)raw(R"({"one":1.0,"listed":"a","unique":[1,"1",2],"items":[[1],[2]]})"));
     // a number that overflows a double is an infinity
-    expect_raw_rejected(R"({"unique":[1e400,2e400]})", "an element of the value", "/unique/1");
-    expect_raw_rejected(R"({"one":2})", R"(the value of the key "one" of RawEquals is not equal to the constant 1)",
+    expect_raw_rejected(
+        R"({"unique":[1e400,2e400]})",
+        R"(the item is equal to an earlier item at /unique/1; reading an element of the value at the key "unique" of RawEquals)",
+        "/unique/1");
+    expect_raw_rejected(R"({"one":2})",
+                        R"(the value is not equal to the constant 1 at /one; reading the key "one" of RawEquals)",
                         "/one");
-    expect_raw_rejected(R"({"listed":2})", R"(the value of the key "listed" of RawEquals is not one of)", "/listed");
-    expect_raw_rejected(R"({"deep":{"a":[1,2.4]}})", R"(the value of the key "deep" of RawEquals is not equal to)",
-                        "/deep");
-    expect_raw_rejected(R"({"held":{"v":4}})", R"(the value of the key "held" of RawEquals is not equal to)", "/held");
+    expect_raw_rejected(R"({"listed":2})",
+                        R"(the value is not one of "a", 2.5 at /listed; reading the key "listed" of RawEquals)",
+                        "/listed");
+    expect_raw_rejected(
+        R"({"deep":{"a":[1,2.4]}})",
+        R"(the value is not equal to the constant {"a":[1,2.5]} at /deep; reading the key "deep" of RawEquals)",
+        "/deep");
+    expect_raw_rejected(
+        R"({"held":{"v":4}})",
+        R"(the value is not equal to the constant {"v":3} at /held; reading the key "held" of RawEquals)", "/held");
     // a duplicate is reported at the later element, as for a std::vector
-    const auto duplicate = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of RawEquals is equal to an earlier element)",
-                           key);
-    };
-    expect_raw_rejected(R"({"unique":[1,1.0]})", duplicate("unique"), "/unique/1");
-    expect_raw_rejected(R"({"items":[[2],[1],[1e0]]})", duplicate("items"), "/items/2");
-    expect_rejected<RawEquals>(R"({"unique":[0,{"a":1},{"a":1.0}]})", duplicate("unique"), "/unique/2");
+    expect_raw_rejected(
+        R"({"unique":[1,1.0]})",
+        R"(the item is equal to an earlier item at /unique/1; reading an element of the value at the key "unique" of RawEquals)",
+        "/unique/1");
+    expect_raw_rejected(
+        R"({"items":[[2],[1],[1e0]]})",
+        R"(the item is equal to an earlier item at /items/2; reading an element of the value at the key "items" of RawEquals)",
+        "/items/2");
+    expect_rejected<RawEquals>(
+        R"({"unique":[0,{"a":1},{"a":1.0}]})",
+        R"(the item is equal to an earlier item at /unique/2; reading an element of the value at the key "unique" of RawEquals)",
+        "/unique/2");
 
     // a raw number equals a number that is not raw, and the public operator== compares the raw text
     const auto doc = yyjson::read(R"([1,1.0])", yyjson::ReadFlag::NumberAsRaw);
@@ -3534,7 +3685,10 @@ TEST(Constraints, RawEqualities)
     auto mixed = yyjson::object(yyjson::read(R"({"unique":[1]})", yyjson::ReadFlag::NumberAsRaw));
     (*mixed["unique"].as_array()).emplace_back(1.0);
     const auto e = bad_cast_of([&] { (void)yyjson::value(mixed).cast<RawEquals>(); });
-    EXPECT_TRUE(message_of(e).starts_with(duplicate("unique"))) << e.what();
+    EXPECT_EQ(
+        message_of(e),
+        R"(the item is equal to an earlier item at /unique/1; reading an element of the value at the key "unique" of RawEquals)")
+        << e.what();
     EXPECT_EQ(e.path(), "/unique/1");
 }
 
@@ -3545,21 +3699,31 @@ TEST(Constraints, RawExtendedNumbers)
     for (const auto flag : {yyjson::ReadFlag::Json5, yyjson::ReadFlag::Json5 | yyjson::ReadFlag::NumberAsRaw})
     {
         const auto read = [flag](std::string_view json) { return yyjson::read<RawExtended>(json, flag); };
-        const auto expect_raw_rejected = [&](std::string_view json, std::string_view message, std::string_view path) {
+        const auto expect_raw_rejected = [&](std::string_view json, const expected_text& message,
+                                             std::string_view path) {
             const auto e = bad_cast_of([&] { (void)read(json); });
-            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            expect_text(message_of(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         EXPECT_NO_THROW((void)read(R"({"n":+5,"c":0x10,"u":[0x10,15],"a":[16.,+15]})"));
         EXPECT_NO_THROW((void)read(R"({"c":16.})"));
-        expect_raw_rejected(R"({"n":0x10})", R"(the value of the key "n" of RawExtended is greater than the maximum 5)",
+        expect_raw_rejected(R"({"n":0x10})",
+                            R"(the number is greater than the maximum 5 at /n; reading the key "n" of RawExtended)",
                             "/n");
-        expect_raw_rejected(R"({"n":+10})", R"(the value of the key "n" of RawExtended is greater than)", "/n");
-        expect_raw_rejected(R"({"c":0x11})", R"(the value of the key "c" of RawExtended is not equal to)", "/c");
-        expect_raw_rejected(R"({"u":[0x10,16]})", R"(an element of the value of the key "u" of RawExtended is equal)",
-                            "/u/1");
-        expect_raw_rejected(R"({"a":[0x10,16.]})", R"(an element of the value of the key "a" of RawExtended is equal)",
-                            "/a/1");
+        expect_raw_rejected(R"({"n":+10})",
+                            R"(the number is greater than the maximum 5 at /n; reading the key "n" of RawExtended)",
+                            "/n");
+        expect_raw_rejected(R"({"c":0x11})",
+                            R"(the value is not equal to the constant 16 at /c; reading the key "c" of RawExtended)",
+                            "/c");
+        expect_raw_rejected(
+            R"({"u":[0x10,16]})",
+            R"(the item is equal to an earlier item at /u/1; reading an element of the value at the key "u" of RawExtended)",
+            "/u/1");
+        expect_raw_rejected(
+            R"({"a":[0x10,16.]})",
+            R"(the item is equal to an earlier item at /a/1; reading an element of the value at the key "a" of RawExtended)",
+            "/a/1");
     }
 }
 #endif
@@ -3569,8 +3733,10 @@ TEST(Constraints, TextUnderStrict)
     // the policies of the read that first compares the constant do not change it
     EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2}})", yyjson::reject_unknown_keys).at, (Spot{1, 2}));
     EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2}})").at, (Spot{1, 2}));
-    expect_rejected<WideText>(R"({"at":{"x":1,"y":3}})", R"(the value of the key "at" of WideText is not equal to)",
-                              "/at");
+    expect_rejected<WideText>(
+        R"({"at":{"x":1,"y":3}})",
+        R"(the value is not equal to the constant {"x":1,"y":2,"z":3} at /at; reading the key "at" of WideText)",
+        "/at");
 }
 
 TEST(Constraints, ConstAndEnumTexts)
@@ -3585,26 +3751,45 @@ TEST(Constraints, ConstAndEnumTexts)
     };
     // the members of an object have no order
     expect_accepted<ListedTexts>(R"({"order":{"b":1,"a":2}})", {.order = {{"b", 1}, {"a", 2}}});
-    expect_rejected<ListedTexts>(R"({"order":{"a":2}})",
-                                 value("order") + R"(is not equal to the constant {"a":2,"b":1})", "/order");
-    expect_rejected<ListedTexts>(R"({"at":{"x":0,"y":1}})",
-                                 value("at") + R"(is not one of { "y": 0, "x": 0 }, {"x":1,"y":1})", "/at");
-    expect_rejected<ListedTexts>(R"({"pair":[2,1]})", value("pair") + "is not equal to the constant [1, 2]", "/pair");
-    expect_rejected<ListedTexts>(R"({"scale":[2.5]})", value("scale") + "is not one of [1], [2.5, 2.5]", "/scale");
+    expect_rejected<ListedTexts>(
+        R"({"order":{"a":2}})",
+        R"(the value is not equal to the constant {"a":2,"b":1} at /order; reading the key "order" of ListedTexts)",
+        "/order");
+    expect_rejected<ListedTexts>(
+        R"({"at":{"x":0,"y":1}})",
+        R"(the value is not one of { "y": 0, "x": 0 }, {"x":1,"y":1} at /at; reading the key "at" of ListedTexts)",
+        "/at");
+    expect_rejected<ListedTexts>(
+        R"({"pair":[2,1]})",
+        R"(the value is not equal to the constant [1, 2] at /pair; reading the key "pair" of ListedTexts)", "/pair");
+    expect_rejected<ListedTexts>(
+        R"({"scale":[2.5]})",
+        R"(the value is not one of [1], [2.5, 2.5] at /scale; reading the key "scale" of ListedTexts)", "/scale");
     // an object is no value of the variant: it reads no constant
-    expect_rejected<ListedTexts>(R"({"mixed":1})", value("mixed") + "is not one of 0, [0], {}", "/mixed");
+    expect_rejected<ListedTexts>(
+        R"({"mixed":1})", R"(the value is not one of 0, [0], {} at /mixed; reading the key "mixed" of ListedTexts)",
+        "/mixed");
 
     // validate and the checked write compare the text that the write gives
     expect_valid(ListedTexts());
     expect_valid(ListedTexts{.at = {1, 1}, .scale = std::vector{2.5, 2.5}, .mixed = std::vector{0}});
     expect_valid(ListedTexts{.order = {{"b", 1}, {"a", 2}}});
-    expect_invalid(ListedTexts{.at = {2, 2}}, value("at") + R"(is not one of { "y": 0, "x": 0 }, {"x":1,"y":1})",
-                   "/at");
-    expect_invalid(ListedTexts{.pair = {}}, value("pair") + "is not equal to the constant [1, 2]", "/pair");
-    expect_invalid(ListedTexts{.scale = std::vector{2.5}}, value("scale") + "is not one of [1], [2.5, 2.5]", "/scale");
-    expect_invalid(ListedTexts{.mixed = 3}, value("mixed") + "is not one of 0, [0], {}", "/mixed");
-    expect_invalid(ListedTexts{.order = {{"a", 2}}}, value("order") + R"(is not equal to the constant {"a":2,"b":1})",
-                   "/order");
+    expect_invalid(
+        ListedTexts{.at = {2, 2}},
+        R"(the value is not one of { "y": 0, "x": 0 }, {"x":1,"y":1} at /at; reading the key "at" of ListedTexts)",
+        "/at");
+    expect_invalid(ListedTexts{.pair = {}},
+                   R"(the value is not equal to the constant [1, 2] at /pair; reading the key "pair" of ListedTexts)",
+                   "/pair");
+    expect_invalid(ListedTexts{.scale = std::vector{2.5}},
+                   R"(the value is not one of [1], [2.5, 2.5] at /scale; reading the key "scale" of ListedTexts)",
+                   "/scale");
+    expect_invalid(ListedTexts{.mixed = 3},
+                   R"(the value is not one of 0, [0], {} at /mixed; reading the key "mixed" of ListedTexts)", "/mixed");
+    expect_invalid(
+        ListedTexts{.order = {{"a", 2}}},
+        R"(the value is not equal to the constant {"a":2,"b":1} at /order; reading the key "order" of ListedTexts)",
+        "/order");
 
     EXPECT_NO_THROW((void)yyjson::read<ListedDom>(R"({"any":{"b":true,"a":[1.0,2]}})"));
     EXPECT_NO_THROW((void)yyjson::read<ListedDom>(R"({"any":null})"));
@@ -3633,18 +3818,22 @@ TEST(Constraints, Format)
     // yyjson::format checks nothing
     expect_accepted<Formatted>(R"({"day":"tomorrow"})", {.day = "tomorrow"});
     expect_accepted<Described>(R"({"id":"anything"})", {"anything"});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Formatted )", key);
-    };
-    expect_rejected<Formatted>(R"({"when":"2023-02-29T00:00:00Z"})",
-                               value("when") + R"(does not have the format "date-time")", "/when");
-    expect_rejected<Formatted>(R"({"when":"2024-01-01T23:59:60+01:00"})",
-                               value("when") + R"(does not have the format "date-time")", "/when");
-    expect_rejected<Formatted>(R"({"mail":"a..b@example.com"})", value("mail") + R"(does not have the format "email")",
-                               "/mail");
-    expect_rejected<Formatted>(R"({"code":"Ab"})", value("code") + R"(does not have the format "upper")", "/code");
+    expect_rejected<Formatted>(
+        R"({"when":"2023-02-29T00:00:00Z"})",
+        R"(the string does not have the format "date-time" at /when; reading the key "when" of Formatted)", "/when");
+    expect_rejected<Formatted>(
+        R"({"when":"2024-01-01T23:59:60+01:00"})",
+        R"(the string does not have the format "date-time" at /when; reading the key "when" of Formatted)", "/when");
+    expect_rejected<Formatted>(
+        R"({"mail":"a..b@example.com"})",
+        R"(the string does not have the format "email" at /mail; reading the key "mail" of Formatted)", "/mail");
+    expect_rejected<Formatted>(
+        R"({"code":"Ab"})",
+        R"(the string does not have the format "upper" at /code; reading the key "code" of Formatted)", "/code");
     expect_accepted<Formatted>(R"({"re":"([abc])+\\s+$"})", {.re = R"(([abc])+\s+$)"});
-    expect_rejected<Formatted>(R"({"re":"^(abc]"})", value("re") + R"(does not have the format "regex")", "/re");
+    expect_rejected<Formatted>(
+        R"({"re":"^(abc]"})",
+        R"(the string does not have the format "regex" at /re; reading the key "re" of Formatted)", "/re");
 }
 
 TEST(Constraints, FormatRegexOutOfMemory)
@@ -3699,27 +3888,27 @@ TEST(Constraints, Formats)
 TEST(Constraints, Strict)
 {
     // yyjson::strict checks the keywords as a read without it does
-    const auto rejected = [](auto read, std::string_view message, std::string_view path) {
+    const auto rejected = [](auto read, const expected_text& message, std::string_view path) {
         const auto e = bad_cast_of(read);
-        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        expect_text(message_of(e), message);
         EXPECT_EQ(e.path(), path);
     };
     rejected([] { (void)yyjson::read<Bounded>(R"({"i":11,"d":0.5,"u":3,"o":1})", yyjson::strict); },
-             R"(the value of the key "i" of Bounded is greater than the maximum 10)", "/i");
+             R"(the number is greater than the maximum 10 at /i; reading the key "i" of Bounded)", "/i");
     rejected(
         [] {
             auto t = Texts();
             yyjson::read_into(R"({"name":"a","code":"ABC"})", t, yyjson::strict);
         },
-        R"(the value of the key "name" of Texts is shorter than the minimum length 2)", "/name");
+        R"(the string is shorter than the minimum length 2 at /name; reading the key "name" of Texts)", "/name");
     rejected(
         [] {
             auto t = Listed();
             yyjson::merge_into(R"({"version":1})", t, yyjson::strict);
         },
-        R"(the value of the key "version" of Listed is not equal to the constant 2)", "/version");
+        R"(the value is not equal to the constant 2 at /version; reading the key "version" of Listed)", "/version");
     rejected([] { (void)yyjson::read(R"({"done":-1,"steps":[]})").cast<Progress>(yyjson::strict); },
-             "the value of Percent is less than the minimum 0", "/done");
+             "the number is less than the minimum 0 at /done; reading Percent", "/done");
 }
 
 // the reader without a document and the cast of a document give the same value or the same error, of which the
@@ -3775,52 +3964,83 @@ TEST(Constraints, Elements)
          {{"abc"}}});
     expect_accepted<Elements>(R"({"tags":null})", {});
 
-    const auto prefix = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of Elements )", key);
-    };
-    expect_rejected<Elements>(R"({"scores":[0,-1]})", prefix("scores") + "is less than the minimum 0", "/scores/1");
-    expect_rejected<Elements>(R"({"pair":[10,0]})", prefix("pair") + "is greater than the maximum 9", "/pair/0");
-    expect_rejected<Elements>(R"({"names":["a","B"]})", prefix("names") + R"(does not match the pattern "^[a-z]+$")",
-                              "/names/1");
+    expect_rejected<Elements>(
+        R"({"scores":[0,-1]})",
+        R"(the number is less than the minimum 0 at /scores/1; reading an element of the value at the key "scores" of Elements)",
+        "/scores/1");
+    expect_rejected<Elements>(
+        R"({"pair":[10,0]})",
+        R"(the number is greater than the maximum 9 at /pair/0; reading an element of the value at the key "pair" of Elements)",
+        "/pair/0");
+    expect_rejected<Elements>(
+        R"({"names":["a","B"]})",
+        R"(the string does not match the pattern "^[a-z]+$" at /names/1; reading an element of the value at the key "names" of Elements)",
+        "/names/1");
     // the element of a set or of an unordered set is found in the array
-    expect_rejected<Elements>(R"({"set":[1,9,3]})", prefix("set") + "is greater than the maximum 5", "/set/1");
-    expect_rejected<Elements>(R"({"uset":[2,4,6,3,8]})", prefix("uset") + "is rejected by yyjson::satisfies",
-                              "/uset/3");
+    expect_rejected<Elements>(
+        R"({"set":[1,9,3]})",
+        R"(the number is greater than the maximum 5 at /set/1; reading an element of the value at the key "set" of Elements)",
+        "/set/1");
+    expect_rejected<Elements>(
+        R"({"uset":[2,4,6,3,8]})",
+        R"(the value does not satisfy the predicate at /uset/3; reading an element of the value at the key "uset" of Elements)",
+        "/uset/3");
     // the values of a map, and the keywords of the map itself
-    expect_rejected<Elements>(R"({"limits":{"a":1,"b":101}})", prefix("limits") + "is greater than the maximum 100",
-                              "/limits/b");
-    expect_rejected<Elements>(R"({"limits":{"a":1,"b":2,"c":3,"d":4}})",
-                              R"(the value of the key "limits" of Elements has more properties than the maximum 3)",
-                              "/limits");
-    expect_rejected<Elements>(R"({"groups":{"g":[1],"h":[]}})", prefix("groups") + "has fewer items than the minimum 1",
-                              "/groups/h");
-    expect_rejected<Elements>(R"({"groups":{"g":[1,0]}})", prefix("groups") + "is less than the minimum 1",
-                              "/groups/g/1");
+    expect_rejected<Elements>(
+        R"({"limits":{"a":1,"b":101}})",
+        R"(the number is greater than the maximum 100 at /limits/b; reading an element of the value at the key "limits" of Elements)",
+        "/limits/b");
+    expect_rejected<Elements>(
+        R"({"limits":{"a":1,"b":2,"c":3,"d":4}})",
+        R"(the object has more properties than the maximum 3 at /limits; reading the key "limits" of Elements)",
+        "/limits");
+    expect_rejected<Elements>(
+        R"({"groups":{"g":[1],"h":[]}})",
+        R"(the array has fewer items than the minimum 1 at /groups/h; reading an element of the value at the key "groups" of Elements)",
+        "/groups/h");
+    expect_rejected<Elements>(
+        R"({"groups":{"g":[1,0]}})",
+        R"(the number is less than the minimum 1 at /groups/g/1; reading an element of the value at the key "groups" of Elements)",
+        "/groups/g/1");
     // a map whose keys are not strings is an array of pairs, whose values are the second elements
-    expect_rejected<Elements>(R"({"by_id":[[1,5],[2,6]]})", prefix("by_id") + "is greater than the maximum 5",
-                              "/by_id/1/1");
-    expect_rejected<Elements>(R"({"ordered":[[1,2],[4,3]]})", prefix("ordered") + "is rejected by yyjson::satisfies",
-                              "/ordered/1");
+    expect_rejected<Elements>(
+        R"({"by_id":[[1,5],[2,6]]})",
+        R"(the number is greater than the maximum 5 at /by_id/1/1; reading an element of the value at the key "by_id" of Elements)",
+        "/by_id/1/1");
+    expect_rejected<Elements>(
+        R"({"ordered":[[1,2],[4,3]]})",
+        R"(the value does not satisfy the predicate at /ordered/1; reading an element of the value at the key "ordered" of Elements)",
+        "/ordered/1");
     // the value of a std::optional element, and the elements of a std::optional field
-    expect_rejected<Elements>(R"({"holes":[null,6]})", prefix("holes") + "is greater than the maximum 5", "/holes/1");
-    expect_rejected<Elements>(R"({"tags":["abcd"]})", prefix("tags") + "is longer than the maximum length 3",
-                              "/tags/0");
+    expect_rejected<Elements>(
+        R"({"holes":[null,6]})",
+        R"(the number is greater than the maximum 5 at /holes/1; reading an element of the value at the key "holes" of Elements)",
+        "/holes/1");
+    expect_rejected<Elements>(
+        R"({"tags":["abcd"]})",
+        R"(the string is longer than the maximum length 3 at /tags/0; reading an element of the value at the key "tags" of Elements)",
+        "/tags/0");
     // the elements of the elements
-    expect_rejected<Elements>(R"({"nested":[["a"],[]]})", prefix("nested") + "has fewer items than the minimum 1",
-                              "/nested/1");
-    expect_rejected<Elements>(R"({"nested":[["a"],["b","abcd"]]})",
-                              prefix("nested") + "is longer than the maximum length 3", "/nested/1/1");
+    expect_rejected<Elements>(
+        R"({"nested":[["a"],[]]})",
+        R"(the array has fewer items than the minimum 1 at /nested/1; reading an element of the value at the key "nested" of Elements)",
+        "/nested/1");
+    expect_rejected<Elements>(
+        R"({"nested":[["a"],["b","abcd"]]})",
+        R"(the string is longer than the maximum length 3 at /nested/1/1; reading an element of the value at the key "nested" of Elements)",
+        "/nested/1/1");
 
     expect_accepted<ElementsVisitable>(R"({"v":[1]})", {{1}});
     expect_rejected<ElementsVisitable>(
         R"({"v":[1,0]})",
-        R"(an element of the value of the key "v" of ElementsVisitable is not greater than the exclusive minimum 0)",
+        R"(the number is not greater than the exclusive minimum 0 at /v/1; reading an element of the value at the key "v" of ElementsVisitable)",
         "/v/1");
 
     // the elements of a transparent struct
     EXPECT_EQ(yyjson::read<Scores>("[0,1]"), (Scores{{0, 1}}));
-    expect_rejected<Scores>("[]", "the value of Scores has fewer items than the minimum 1", "");
-    expect_rejected<Scores>("[0,-1]", "an element of the value of Scores is less than the minimum 0", "/1");
+    expect_rejected<Scores>("[]", "the array has fewer items than the minimum 1; reading Scores", "");
+    expect_rejected<Scores>("[0,-1]", "the number is less than the minimum 0 at /1; reading an element of Scores",
+                            "/1");
 }
 
 TEST(Constraints, ElementNullables)
@@ -3833,30 +4053,41 @@ TEST(Constraints, ElementNullables)
     expected.counts = std::vector{1};
     expect_accepted<ElementNullables>(R"({"list":[9],"ids":[null,1],"steps":[1,2],"counts":[1]})", expected);
 
-    const auto field = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of ElementNullables )", key);
-    };
     const auto element = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of ElementNullables )", key);
     };
-    expect_rejected<ElementNullables>(R"({"list":[]})", field("list") + "has fewer items than the minimum 1", "/list");
-    expect_rejected<ElementNullables>(R"({"list":[1,10]})", element("list") + "is greater than the maximum 9",
-                                      "/list/1");
+    expect_rejected<ElementNullables>(
+        R"({"list":[]})",
+        R"(the array has fewer items than the minimum 1 at /list; reading the key "list" of ElementNullables)",
+        "/list");
+    expect_rejected<ElementNullables>(
+        R"({"list":[1,10]})",
+        R"(the number is greater than the maximum 9 at /list/1; reading an element of the value at the key "list" of ElementNullables)",
+        "/list/1");
     // smart pointers compare the values that they hold, and null is equal to null
-    expect_rejected<ElementNullables>(R"({"ids":[1,2,1]})", element("ids") + "is equal to an earlier element",
-                                      "/ids/2");
-    expect_rejected<ElementNullables>(R"({"ids":[null,1,null]})", element("ids") + "is equal to an earlier element",
-                                      "/ids/2");
+    expect_rejected<ElementNullables>(
+        R"({"ids":[1,2,1]})",
+        R"(the item is equal to an earlier item at /ids/2; reading an element of the value at the key "ids" of ElementNullables)",
+        "/ids/2");
+    expect_rejected<ElementNullables>(
+        R"({"ids":[null,1,null]})",
+        R"(the item is equal to an earlier item at /ids/2; reading an element of the value at the key "ids" of ElementNullables)",
+        "/ids/2");
     // a null element is a value, which yyjson::enum_ without nullptr rejects
-    expect_rejected<ElementNullables>(R"({"steps":[1,null]})", element("steps") + "is not one of 1, 2", "/steps/1");
-    expect_rejected<ElementNullables>(R"({"counts":[1,2]})", field("counts") + "has more items than the maximum 1",
-                                      "/counts");
+    expect_rejected<ElementNullables>(
+        R"({"steps":[1,null]})",
+        R"(the value is not one of 1, 2 at /steps/1; reading an element of the value at the key "steps" of ElementNullables)",
+        "/steps/1");
+    expect_rejected<ElementNullables>(
+        R"({"counts":[1,2]})",
+        R"(the array has more items than the maximum 1 at /counts; reading the key "counts" of ElementNullables)",
+        "/counts");
 
     // std::unique_ptr elements
     EXPECT_EQ(written(yyjson::read<OwnedElements>(R"({"tags":[null,"abc"]})")), R"({"tags":[null,"abc"]})");
-    const auto expect_owned_rejected = [](std::string_view json, std::string_view message, std::string_view path) {
+    const auto expect_owned_rejected = [](std::string_view json, const expected_text& message, std::string_view path) {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            expect_text(message_of(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<OwnedElements>(json); }));
@@ -3869,10 +4100,12 @@ TEST(Constraints, ElementNullables)
     };
     expect_owned_rejected(
         R"({"tags":[null,"abcd"]})",
-        R"(an element of the value of the key "tags" of OwnedElements is longer than the maximum length 3)", "/tags/1");
+        R"(the string is longer than the maximum length 3 at /tags/1; reading an element of the value at the key "tags" of OwnedElements)",
+        "/tags/1");
     expect_owned_rejected(
         R"({"tags":["a",null,"a"]})",
-        R"(an element of the value of the key "tags" of OwnedElements is equal to an earlier element)", "/tags/2");
+        R"(the item is equal to an earlier item at /tags/2; reading an element of the value at the key "tags" of OwnedElements)",
+        "/tags/2");
 }
 
 TEST(Constraints, ElementsMerge)
@@ -3884,25 +4117,28 @@ TEST(Constraints, ElementsMerge)
     EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})").find(R"("limits":{"a":1,"old":50})") !=
                 std::string::npos);
     t.limits = {{"old", 200}};
-    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})")
-                    .starts_with(R"(bad cast: an element of the value of the key "limits" of Elements is greater)"));
+    EXPECT_EQ(
+        expect_merge_into(t, R"({"limits":{"a":1}})"),
+        R"(bad cast: the number is greater than the maximum 100 at /limits/old; reading an element of the value at the key "limits" of Elements)");
     const auto limits = [](std::string_view text) {
         return std::format(R"(the value of the key "limits" of Elements {})", text);
     };
-    const auto expect_merge_rejected = [](Elements value, std::string_view json, std::string_view message,
+    const auto expect_merge_rejected = [](Elements value, std::string_view json, const expected_text& message,
                                           std::string_view path) {
         const auto e = bad_cast_of([&] { yyjson::merge_into(json, value); });
-        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        expect_text(message_of(e), message, json);
         EXPECT_EQ(e.path(), path) << json;
     };
     // the merged map keeps "old" before the new key "a", and read reports the first member that it rejects
-    expect_merge_rejected(t, R"({"limits":{"a":101}})",
-                          R"(an element of the value of the key "limits" of Elements is greater than the maximum 100)",
-                          "/limits/old");
+    expect_merge_rejected(
+        t, R"({"limits":{"a":101}})",
+        R"(the number is greater than the maximum 100 at /limits/old; reading an element of the value at the key "limits" of Elements)",
+        "/limits/old");
     t.limits = {{"old", 50}};
-    expect_merge_rejected(t, R"({"limits":{"a":101}})",
-                          R"(an element of the value of the key "limits" of Elements is greater than the maximum 100)",
-                          "/limits/a");
+    expect_merge_rejected(
+        t, R"({"limits":{"a":101}})",
+        R"(the number is greater than the maximum 100 at /limits/a; reading an element of the value at the key "limits" of Elements)",
+        "/limits/a");
     t.limits = {{"a", 1}, {"b", 2}, {"c", 3}};
     auto direct = false;
     EXPECT_TRUE(
@@ -3910,7 +4146,10 @@ TEST(Constraints, ElementsMerge)
         std::string::npos);
     EXPECT_TRUE(direct);
     for (const auto* json : {R"({"limits":{"d":4}})", R"({"limits":{"a":null,"d":4,"e":5}})"})
-        expect_merge_rejected(t, json, limits("has more properties than the maximum 3"), "/limits");
+        expect_merge_rejected(
+            t, json,
+            R"(the object has more properties than the maximum 3 at /limits; reading the key "limits" of Elements)",
+            "/limits");
     // the elements of an array replace those of the range, which are checked as they are read
     auto merged = Elements();
     merged.scores = {-1};
@@ -3929,21 +4168,32 @@ TEST(Constraints, InputCounts)
         return std::format(R"(the value of the key "{}" of InputCounted {})", k, text);
     };
     expect_accepted<InputCounted>(R"({"s":[1,1]})", {.s = {1}});
-    expect_rejected<InputCounted>(R"({"s":[1]})", key("s", "has fewer items than the minimum 2"), "/s");
-    expect_rejected<InputCounted>(R"({"s":[1,2,2]})", key("s", "has more items than the maximum 2"), "/s");
+    expect_rejected<InputCounted>(
+        R"({"s":[1]})", R"(the array has fewer items than the minimum 2 at /s; reading the key "s" of InputCounted)",
+        "/s");
+    expect_rejected<InputCounted>(
+        R"({"s":[1,2,2]})", R"(the array has more items than the maximum 2 at /s; reading the key "s" of InputCounted)",
+        "/s");
     // a merge keeps the last value of a repeated key, and a read the first
     const auto* const repeated = R"({"m":{"a":1,"a":2}})";
     EXPECT_EQ(yyjson::read<InputCounted>(repeated).m.size(), 1U);
     EXPECT_EQ(yyjson::read(repeated).cast<InputCounted>().m.size(), 1U);
     EXPECT_TRUE(expect_direct_read<InputCounted>(repeated));
     EXPECT_TRUE(expect_read_into(InputCounted(), repeated));
-    expect_rejected<InputCounted>(R"({"m":{"a":1}})", key("m", "has fewer properties than the minimum 2"), "/m");
-    expect_rejected<InputCounted>(R"({"m":{"a":1,"b":2,"a":3}})", key("m", "has more properties than the maximum 2"),
-                                  "/m");
+    expect_rejected<InputCounted>(
+        R"({"m":{"a":1}})",
+        R"(the object has fewer properties than the minimum 2 at /m; reading the key "m" of InputCounted)", "/m");
+    expect_rejected<InputCounted>(
+        R"({"m":{"a":1,"b":2,"a":3}})",
+        R"(the object has more properties than the maximum 2 at /m; reading the key "m" of InputCounted)", "/m");
     expect_accepted<InputCounted>(R"({"v":[1,1]})", {.v = {1, 1}});
-    expect_rejected<InputCounted>(R"({"v":[1]})", key("v", "has fewer items than the minimum 2"), "/v");
+    expect_rejected<InputCounted>(
+        R"({"v":[1]})", R"(the array has fewer items than the minimum 2 at /v; reading the key "v" of InputCounted)",
+        "/v");
     expect_accepted<InputCounted>(R"({"c":[5,5]})", {.c = {5}});
-    expect_rejected<InputCounted>(R"({"c":[5,1]})", key("c", "has fewer than 2 items that satisfy"), "/c");
+    expect_rejected<InputCounted>(
+        R"({"c":[5,1]})",
+        R"(the array has fewer than 2 items that satisfy contains at /c; reading the key "c" of InputCounted)", "/c");
 
     // `merge_into` counts the members of the patch, and replaces a set with the elements that it counts
     const auto seed = InputCounted{.s = {1, 2}, .m = {{"x", 0}, {"y", 0}}, .v = {1, 1}, .c = {5, 6}};
@@ -3957,7 +4207,9 @@ TEST(Constraints, InputCounts)
         EXPECT_TRUE(direct || !reads_directly) << json;
     }
     // the fields that the patch leaves out are counted too
-    EXPECT_TRUE(expect_merge_into(t, R"({"s":[1,1]})").ends_with(" at /m"));
+    EXPECT_EQ(
+        expect_merge_into(t, R"({"s":[1,1]})"),
+        R"(bad cast: the object has fewer properties than the minimum 2 at /m; reading the key "m" of InputCounted)");
     yyjson::merge_into(R"({"m":{"a":1,"a":2}})", t);
     EXPECT_EQ(t.m, (std::map<std::string, int>{{"a", 2}, {"x", 0}}));
     EXPECT_THROW(yyjson::merge_into(R"({"m":{"b":1}})", t), yyjson::bad_cast);
@@ -3965,7 +4217,9 @@ TEST(Constraints, InputCounts)
     // a condition of the struct counts the elements of the JSON array too
     expect_accepted<CountGate>(R"({"s":[1,1],"k":1})", {{1}, 1});
     expect_accepted<CountGate>(R"({"s":[1]})", {{1}, 0});
-    expect_rejected<CountGate>(R"({"s":[1,1]})", R"(CountGate is not constructible from JSON without the key "k")", "");
+    expect_rejected<CountGate>(
+        R"({"s":[1,1]})",
+        R"(a required key is missing; reading the key "k" of CountGate, which yyjson::if_then_else requires)", "");
     auto direct = false;
     static_cast<void>(expect_merge_into(CountGate{}, R"({"s":[2,2],"k":3})", &direct));
     EXPECT_TRUE(direct || !reads_directly);
@@ -3981,33 +4235,45 @@ TEST(Constraints, MergeHeldMaps)
     // a pointer takes the map of the patch, and the other holders keep the members that the patch does not give,
     // which are checked too
     EXPECT_EQ(expect_merge_into(t, R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{}}})"),
-              R"(bad cast: an element of the value of the key "nested" of HeldLimits is greater than the maximum 100)"
-              " at /nested/k/old");
+              "bad cast: the number is greater than the maximum 100 at /nested/k/old; reading an element of the value "
+              "at the key "
+              "\"nested\" of HeldLimits");
     EXPECT_EQ(
         expect_merge_into(t, R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{"old":2}}})"),
         R"({"pointer":{"a":1},"held":{"old":1},"boxed":{"old":1},"nested":{"k":{"old":2}}})");
-    const auto expect_merge_rejected = [](std::string_view json, std::string_view message, std::string_view path,
+    const auto expect_merge_rejected = [](std::string_view json, const expected_text& message, std::string_view path,
                                           HeldLimits value = HeldLimits()) {
         const auto e = bad_cast_of([&] { yyjson::merge_into(json, value); });
-        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        expect_text(message_of(e), message, json);
         EXPECT_EQ(e.path(), path) << json;
     };
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of HeldLimits )", key);
+    const auto more_properties = [](std::string_view key) {
+        return std::format(
+            R"(the object has more properties than the maximum 1 at /{0}; reading the key "{0}" of HeldLimits)", key);
     };
     for (const auto* key : {"pointer", "held", "boxed"})
     {
-        expect_merge_rejected(std::format(R"({{"{}":{{"a":101}}}})", key),
-                              element(key) + "is greater than the maximum 100", std::format("/{}/a", key));
-        expect_merge_rejected(std::format(R"({{"{}":{{"a":1,"b":2}}}})", key),
-                              std::format(R"(the value of the key "{}" of HeldLimits has more properties)", key),
+        expect_merge_rejected(
+            std::format(R"({{"{}":{{"a":101}}}})", key),
+            std::format(
+                R"(the number is greater than the maximum 100 at /{0}/a; reading an element of the value at the key "{0}" of HeldLimits)",
+                key),
+            std::format("/{}/a", key));
+        expect_merge_rejected(std::format(R"({{"{}":{{"a":1,"b":2}}}})", key), more_properties(key),
                               std::format("/{}", key));
     }
-    expect_merge_rejected(R"({"nested":{"k":{"a":101}}})", element("nested") + "is greater than the maximum 100",
-                          "/nested/k/a");
-    expect_merge_rejected(R"({"nested":{"k":{"a":1,"b":2}}})", element("nested") + "has more properties", "/nested/k");
-    expect_merge_rejected(R"({"nested":{"k":{"a":1},"i":{}}})",
-                          R"(the value of the key "nested" of HeldLimits has more properties)", "/nested");
+    expect_merge_rejected(
+        R"({"nested":{"k":{"a":101}}})",
+        R"(the number is greater than the maximum 100 at /nested/k/a; reading an element of the value at the key "nested" of HeldLimits)",
+        "/nested/k/a");
+    expect_merge_rejected(
+        R"({"nested":{"k":{"a":1,"b":2}}})",
+        R"(the object has more properties than the maximum 1 at /nested/k; reading an element of the value at the key "nested" of HeldLimits)",
+        "/nested/k");
+    expect_merge_rejected(
+        R"({"nested":{"k":{"a":1},"i":{}}})",
+        R"(the object has more properties than the maximum 1 at /nested; reading the key "nested" of HeldLimits)",
+        "/nested");
     // the counts count the members that the holders keep; the kept values satisfy the other keywords, which read
     // checks first in the merged object
     t.pointer = std::make_shared<Limits>(Limits{{"old", 1}});
@@ -4015,12 +4281,16 @@ TEST(Constraints, MergeHeldMaps)
     t.boxed = yyjson::indirect<Limits>(Limits{{"old", 1}});
     t.nested = {{"k", {{"old", 1}}}};
     for (const auto* key : {"held", "boxed"})
-        expect_merge_rejected(std::format(R"({{"{}":{{"a":1}}}})", key),
-                              std::format(R"(the value of the key "{}" of HeldLimits has more properties)", key),
-                              std::format("/{}", key), t);
-    expect_merge_rejected(R"({"nested":{"k":{"a":1}}})", element("nested") + "has more properties", "/nested/k", t);
-    expect_merge_rejected(R"({"nested":{"i":{}}})",
-                          R"(the value of the key "nested" of HeldLimits has more properties)", "/nested", t);
+        expect_merge_rejected(std::format(R"({{"{}":{{"a":1}}}})", key), more_properties(key), std::format("/{}", key),
+                              t);
+    expect_merge_rejected(
+        R"({"nested":{"k":{"a":1}}})",
+        R"(the object has more properties than the maximum 1 at /nested/k; reading an element of the value at the key "nested" of HeldLimits)",
+        "/nested/k", t);
+    expect_merge_rejected(
+        R"({"nested":{"i":{}}})",
+        R"(the object has more properties than the maximum 1 at /nested; reading the key "nested" of HeldLimits)",
+        "/nested", t);
 }
 
 TEST(Constraints, MergeRepeatedKeys)
@@ -4037,19 +4307,23 @@ TEST(Constraints, MergeRepeatedKeys)
     t.held = Limits{};
     EXPECT_EQ(merged(t, R"({"held":{"a":1,"a":null,"b":1}})"),
               R"({"pointer":null,"held":{"b":1},"boxed":{},"nested":{}})");
-    EXPECT_TRUE(expect_merge_into(t, R"({"held":{"a":1,"b":null,"b":1}})")
-                    .starts_with(R"(bad cast: the value of the key "held" of HeldLimits has more properties)"));
+    EXPECT_EQ(
+        expect_merge_into(t, R"({"held":{"a":1,"b":null,"b":1}})"),
+        R"(bad cast: the object has more properties than the maximum 1 at /held; reading the key "held" of HeldLimits)");
     const auto sets = RepeatedSets();
     EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1],"a":null}})"), R"({"m":{},"n":{}})");
     EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1,2],"a":null}})"), R"({"m":{},"n":{}})");
-    EXPECT_TRUE(expect_merge_into(sets, R"({"m":{"a":null,"a":[1,2]}})")
-                    .starts_with(R"(bad cast: an element of the value of the key "m" of RepeatedSets has more items)"));
+    EXPECT_EQ(
+        expect_merge_into(sets, R"({"m":{"a":null,"a":[1,2]}})"),
+        R"(bad cast: the array has more items than the maximum 1 at /m/a; reading an element of the value at the key "m" of RepeatedSets)");
     EXPECT_EQ(expect_merge_into(sets, R"({"n":{"a":11,"a":null,"b":9}})"), R"({"m":{},"n":{"b":9}})");
-    EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":11}})")
-                    .starts_with(R"(bad cast: an element of the value of the key "n" of RepeatedSets is greater)"));
+    EXPECT_EQ(
+        expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":11}})"),
+        R"(bad cast: the number is greater than the maximum 10 at /n/b; reading an element of the value at the key "n" of RepeatedSets)");
     EXPECT_EQ(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":1,"c":1}})"), R"({"m":{},"n":{"b":1,"c":1}})");
-    EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"b":1,"c":null,"c":1}})")
-                    .starts_with(R"(bad cast: the value of the key "n" of RepeatedSets has more properties)"));
+    EXPECT_EQ(
+        expect_merge_into(sets, R"({"n":{"a":1,"b":1,"c":null,"c":1}})"),
+        R"(bad cast: the object has more properties than the maximum 2 at /n; reading the key "n" of RepeatedSets)");
     // a patch without a repeated key, through the document too
     EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1]},"n":{"a":1}})"), R"({"m":{"a":[1]},"n":{"a":1}})");
 }
@@ -4065,18 +4339,22 @@ TEST(Constraints, MergeKept)
                 std::string::npos);
     EXPECT_TRUE(direct);
     keyed.m = {{"ABC", 1}};
-    EXPECT_TRUE(expect_merge_into(keyed, R"({"m":{"ab":1}})").ends_with(" at /m/ABC"));
+    EXPECT_EQ(
+        expect_merge_into(keyed, R"({"m":{"ab":1}})"),
+        R"(bad cast: the key does not match the pattern "^[a-z]+$" at /m/ABC; reading a key of the value at the key "m" of Keyed)");
     keyed.m = {{"abc", 1}};
     const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"m":{"ab":null,"Ab":1}})", keyed); });
-    EXPECT_TRUE(message_of(e).starts_with(R"(a key of the value of the key "m" of Keyed does not match the pattern)"))
+    EXPECT_EQ(
+        message_of(e),
+        R"(the key does not match the pattern "^[a-z]+$" at /m/Ab; reading a key of the value at the key "m" of Keyed)")
         << e.what();
     EXPECT_EQ(e.path(), "/m/Ab");
     keyed = Keyed();
     keyed.sized = {{"a", 1}};
     EXPECT_TRUE(expect_merge_into(keyed, R"({"sized":{"b":2}})").find(R"("sized":{"a":1,"b":2})") != std::string::npos);
     const auto empty = bad_cast_of([&] { yyjson::merge_into(R"({"sized":{"a":null}})", keyed); });
-    EXPECT_TRUE(message_of(empty).starts_with(
-        R"(the value of the key "sized" of Keyed has fewer properties than the minimum 1)"))
+    EXPECT_EQ(message_of(empty),
+              R"(the object has fewer properties than the minimum 1 at /sized; reading the key "sized" of Keyed)")
         << empty.what();
     EXPECT_EQ(empty.path(), "/sized");
 }
@@ -4091,11 +4369,26 @@ TEST(Constraints, UniqueItems)
         return std::format(R"(an element of the value of the key "{}" of Unique is equal to an earlier element)", key);
     };
     // the error is at the second of the equal elements
-    expect_rejected<Unique>(R"({"ints":[1,2,1]})", equal("ints"), "/ints/2");
-    expect_rejected<Unique>(R"({"reals":[0.0,-0.0]})", equal("reals"), "/reals/1");
-    expect_rejected<Unique>(R"({"plain":[{"v":1},{"v":2},{"v":2}]})", equal("plain"), "/plain/2");
-    expect_rejected<Unique>(R"({"opts":[null,1,null]})", equal("opts"), "/opts/2");
-    expect_rejected<Unique>(R"({"nested":[[1],[1,2,1]]})", equal("nested"), "/nested/1/2");
+    expect_rejected<Unique>(
+        R"({"ints":[1,2,1]})",
+        R"(the item is equal to an earlier item at /ints/2; reading an element of the value at the key "ints" of Unique)",
+        "/ints/2");
+    expect_rejected<Unique>(
+        R"({"reals":[0.0,-0.0]})",
+        R"(the item is equal to an earlier item at /reals/1; reading an element of the value at the key "reals" of Unique)",
+        "/reals/1");
+    expect_rejected<Unique>(
+        R"({"plain":[{"v":1},{"v":2},{"v":2}]})",
+        R"(the item is equal to an earlier item at /plain/2; reading an element of the value at the key "plain" of Unique)",
+        "/plain/2");
+    expect_rejected<Unique>(
+        R"({"opts":[null,1,null]})",
+        R"(the item is equal to an earlier item at /opts/2; reading an element of the value at the key "opts" of Unique)",
+        "/opts/2");
+    expect_rejected<Unique>(
+        R"({"nested":[[1],[1,2,1]]})",
+        R"(the item is equal to an earlier item at /nested/1/2; reading an element of the value at the key "nested" of Unique)",
+        "/nested/1/2");
 
     // more than 16 elements are sorted, and the error is still at the first element that has an earlier equal one
     auto strs = std::string(R"({"strs":[)");
@@ -4108,49 +4401,76 @@ TEST(Constraints, UniqueItems)
     expect_accepted<Unique>(strs.substr(0, strs.size() - 1) + "]}",
                             {.strs = {"s19", "s18", "s17", "s16", "s15", "s14", "s13", "s12", "s11", "s10",
                                       "s9",  "s8",  "s7",  "s6",  "s5",  "s4",  "s3",  "s2",  "s1",  "s0"}});
-    expect_rejected<Unique>(strs + R"("s3","s19"]})", equal("strs"), "/strs/20");
-    expect_rejected<Unique>(reals + "-0.0]}", equal("reals"), "/reals/20");
+    expect_rejected<Unique>(
+        strs + R"("s3","s19"]})",
+        R"(the item is equal to an earlier item at /strs/20; reading an element of the value at the key "strs" of Unique)",
+        "/strs/20");
+    expect_rejected<Unique>(
+        reals + "-0.0]}",
+        R"(the item is equal to an earlier item at /reals/20; reading an element of the value at the key "reals" of Unique)",
+        "/reals/20");
 
     // values of the DOM compare as JSON: numbers by value, objects regardless of the order of the members
     EXPECT_EQ(yyjson::read<UniqueJson>(R"({"any":[1,"1",[1],{"a":1},null,true]})").any.size(), 6);
     expect_rejected<UniqueJson>(
         R"({"any":[{"a":1,"b":[2]},{"b":[2.0],"a":1}]})",
-        R"(an element of the value of the key "any" of UniqueJson is equal to an earlier element)", "/any/1");
+        R"(the item is equal to an earlier item at /any/1; reading an element of the value at the key "any" of UniqueJson)",
+        "/any/1");
 
     // C++ values compare as the JSON that they are written as
-    const auto parts = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of UniqueParts is equal to an earlier element)",
-                           key);
-    };
     EXPECT_EQ(yyjson::read<UniqueParts>(R"({"boxes":[{"p":1},{"p":2},{"p":null}],"loose":[{"v":1},{"v":2}],)"
                                         R"("trees":[{"v":1,"kids":[{"v":2,"kids":[]}]},{"v":1,"kids":[]}],)"
                                         R"("maps":[{"a":1,"b":2},{"a":1}],"twins":[1,2]})")
                   .boxes.size(),
               3);
-    expect_rejected<UniqueParts>(R"({"boxes":[{"p":1},{"p":1}]})", parts("boxes"), "/boxes/1");
-    expect_rejected<UniqueParts>(R"({"boxes":[{"p":null},{"p":2},{"p":null}]})", parts("boxes"), "/boxes/2");
-    expect_rejected<UniqueParts>(R"({"loose":[{"v":1},{"v":1}]})", parts("loose"), "/loose/1");
-    expect_rejected<UniqueParts>(R"({"trees":[{"v":1,"kids":[{"v":2,"kids":[]}]},{"v":1,"kids":[{"v":2,"kids":[]}]}]})",
-                                 parts("trees"), "/trees/1");
-    expect_rejected<UniqueParts>(R"({"maps":[{"a":1,"b":2,"c":3},{"c":3,"b":2,"a":1}]})", parts("maps"), "/maps/1");
+    expect_rejected<UniqueParts>(
+        R"({"boxes":[{"p":1},{"p":1}]})",
+        R"(the item is equal to an earlier item at /boxes/1; reading an element of the value at the key "boxes" of UniqueParts)",
+        "/boxes/1");
+    expect_rejected<UniqueParts>(
+        R"({"boxes":[{"p":null},{"p":2},{"p":null}]})",
+        R"(the item is equal to an earlier item at /boxes/2; reading an element of the value at the key "boxes" of UniqueParts)",
+        "/boxes/2");
+    expect_rejected<UniqueParts>(
+        R"({"loose":[{"v":1},{"v":1}]})",
+        R"(the item is equal to an earlier item at /loose/1; reading an element of the value at the key "loose" of UniqueParts)",
+        "/loose/1");
+    expect_rejected<UniqueParts>(
+        R"({"trees":[{"v":1,"kids":[{"v":2,"kids":[]}]},{"v":1,"kids":[{"v":2,"kids":[]}]}]})",
+        R"(the item is equal to an earlier item at /trees/1; reading an element of the value at the key "trees" of UniqueParts)",
+        "/trees/1");
+    expect_rejected<UniqueParts>(
+        R"({"maps":[{"a":1,"b":2,"c":3},{"c":3,"b":2,"a":1}]})",
+        R"(the item is equal to an earlier item at /maps/1; reading an element of the value at the key "maps" of UniqueParts)",
+        "/maps/1");
     // a range of key-value pairs is written as an object, whose members have no order
     EXPECT_EQ(yyjson::read<UniqueParts>(R"({"pairs":[{"a":1,"b":2},{"a":1,"b":3}]})").pairs.size(), 2);
-    expect_rejected<UniqueParts>(R"({"pairs":[{"a":1,"b":2},{"b":2,"a":1}]})", parts("pairs"), "/pairs/1");
+    expect_rejected<UniqueParts>(
+        R"({"pairs":[{"a":1,"b":2},{"b":2,"a":1}]})",
+        R"(the item is equal to an earlier item at /pairs/1; reading an element of the value at the key "pairs" of UniqueParts)",
+        "/pairs/1");
     // a range of tuples is sorted from 17 elements on
     auto tuples = std::string(R"({"tuples":[)");
     for (auto i = 0; i < 20; ++i) tuples += std::format(R"([{},"{}"],)", i % 2, i);
     EXPECT_EQ(yyjson::read<UniqueParts>(tuples.substr(0, tuples.size() - 1) + "]}").tuples.size(), 20);
-    expect_rejected<UniqueParts>(tuples + R"([1,"7"]]})", parts("tuples"), "/tuples/20");
+    expect_rejected<UniqueParts>(
+        tuples + R"([1,"7"]]})",
+        R"(the item is equal to an earlier item at /tuples/20; reading an element of the value at the key "tuples" of UniqueParts)",
+        "/tuples/20");
     // the elements of a tuple of one type
-    expect_rejected<UniqueParts>(R"({"twins":[3,3]})", parts("twins"), "/twins/1");
+    expect_rejected<UniqueParts>(
+        R"({"twins":[3,3]})",
+        R"(the item is equal to an earlier item at /twins/1; reading an element of the value at the key "twins" of UniqueParts)",
+        "/twins/1");
 }
 
 TEST(Constraints, UniqueReals)
 {
     // the reals that JSON writes differently but a double holds as the same value are equal
-    expect_rejected<Unusual>(R"({"reals":[9007199254740993,9007199254740992]})",
-                             R"(an element of the value of the key "reals" of Unusual is equal to an earlier element)",
-                             "/reals/1");
+    expect_rejected<Unusual>(
+        R"({"reals":[9007199254740993,9007199254740992]})",
+        R"(the item is equal to an earlier item at /reals/1; reading an element of the value at the key "reals" of Unusual)",
+        "/reals/1");
     // NaN is equal to nothing, also among more than 16 elements, which are sorted
     auto nans = std::string(R"({"reals":[)");
     for (auto i = 0; i < 20; ++i) nans += i % 4 == 0 ? "NaN," : std::format("{},", i);
@@ -4158,8 +4478,9 @@ TEST(Constraints, UniqueReals)
     const auto read = yyjson::read<Unusual>(nans.substr(0, nans.size() - 1) + "]}", flag);
     EXPECT_EQ(read.reals.size(), 20);
     const auto e = bad_cast_of([&] { (void)yyjson::read<Unusual>(nans + "Infinity,-Infinity,Infinity]}", flag); });
-    EXPECT_TRUE(message_of(e).starts_with(
-        R"(an element of the value of the key "reals" of Unusual is equal to an earlier element)"))
+    EXPECT_EQ(
+        message_of(e),
+        R"(the item is equal to an earlier item at /reals/22; reading an element of the value at the key "reals" of Unusual)")
         << e.what();
     EXPECT_EQ(e.path(), "/reals/22");
 }
@@ -4175,38 +4496,77 @@ TEST(Constraints, PrefixItems)
     const auto prefix = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of Prefixed )", key);
     };
-    expect_rejected<Prefixed>(R"({"row":[-1,"ab",0]})", prefix("row") + "is less than the minimum 0", "/row/0");
-    expect_rejected<Prefixed>(R"({"row":[0,"abc",0]})", prefix("row") + "is longer than the maximum length 2",
-                              "/row/1");
-    expect_rejected<Prefixed>(R"({"row":[0,"AB",0]})", prefix("row") + "is rejected by yyjson::satisfies", "/row/1");
-    expect_rejected<Prefixed>(R"({"range":[6,5]})", prefix("range") + "is greater than the maximum 5", "/range/0");
-    expect_rejected<Prefixed>(R"({"range":[5,4]})", prefix("range") + "is less than the minimum 5", "/range/1");
+    expect_rejected<Prefixed>(
+        R"({"row":[-1,"ab",0]})",
+        R"(the number is less than the minimum 0 at /row/0; reading an element of the value at the key "row" of Prefixed)",
+        "/row/0");
+    expect_rejected<Prefixed>(
+        R"({"row":[0,"abc",0]})",
+        R"(the string is longer than the maximum length 2 at /row/1; reading an element of the value at the key "row" of Prefixed)",
+        "/row/1");
+    expect_rejected<Prefixed>(
+        R"({"row":[0,"AB",0]})",
+        R"(the value does not satisfy the predicate at /row/1; reading an element of the value at the key "row" of Prefixed)",
+        "/row/1");
+    expect_rejected<Prefixed>(
+        R"({"range":[6,5]})",
+        R"(the number is greater than the maximum 5 at /range/0; reading an element of the value at the key "range" of Prefixed)",
+        "/range/0");
+    expect_rejected<Prefixed>(
+        R"({"range":[5,4]})",
+        R"(the number is less than the minimum 5 at /range/1; reading an element of the value at the key "range" of Prefixed)",
+        "/range/1");
     // yyjson::items applies to the elements after the prefix
-    expect_rejected<Prefixed>(R"({"head":[-1]})", prefix("head") + "is less than the minimum 0", "/head/0");
-    expect_rejected<Prefixed>(R"({"head":[0,10,10]})", prefix("head") + "is greater than the maximum 9", "/head/2");
-    expect_rejected<Prefixed>(R"({"arr":[0,0,0]})", prefix("arr") + "is less than the minimum 1", "/arr/1");
-    expect_rejected<Prefixed>(R"({"grid":[[0]]})", prefix("grid") + "is less than the minimum 1", "/grid/0/0");
-    expect_rejected<Prefixed>(R"({"grid":[[1],[0]]})", prefix("grid") + "has fewer items than the minimum 2",
-                              "/grid/1");
-    expect_rejected<Prefixed>(R"({"rest":[0,1,1]})", prefix("rest") + "is less than the minimum 1", "/rest/0");
-    expect_rejected<Prefixed>(R"({"rest":[1,1,2]})", prefix("rest") + "is greater than the maximum 1", "/rest/2");
+    expect_rejected<Prefixed>(
+        R"({"head":[-1]})",
+        R"(the number is less than the minimum 0 at /head/0; reading an element of the value at the key "head" of Prefixed)",
+        "/head/0");
+    expect_rejected<Prefixed>(
+        R"({"head":[0,10,10]})",
+        R"(the number is greater than the maximum 9 at /head/2; reading an element of the value at the key "head" of Prefixed)",
+        "/head/2");
+    expect_rejected<Prefixed>(
+        R"({"arr":[0,0,0]})",
+        R"(the number is less than the minimum 1 at /arr/1; reading an element of the value at the key "arr" of Prefixed)",
+        "/arr/1");
+    expect_rejected<Prefixed>(
+        R"({"grid":[[0]]})",
+        R"(the number is less than the minimum 1 at /grid/0/0; reading an element of the value at the key "grid" of Prefixed)",
+        "/grid/0/0");
+    expect_rejected<Prefixed>(
+        R"({"grid":[[1],[0]]})",
+        R"(the array has fewer items than the minimum 2 at /grid/1; reading an element of the value at the key "grid" of Prefixed)",
+        "/grid/1");
+    expect_rejected<Prefixed>(
+        R"({"rest":[0,1,1]})",
+        R"(the number is less than the minimum 1 at /rest/0; reading an element of the value at the key "rest" of Prefixed)",
+        "/rest/0");
+    expect_rejected<Prefixed>(
+        R"({"rest":[1,1,2]})",
+        R"(the number is greater than the maximum 1 at /rest/2; reading an element of the value at the key "rest" of Prefixed)",
+        "/rest/2");
 }
 
 TEST(Constraints, ElementLiterals)
 {
     expect_accepted<ElementLiterals>(R"({"pair":["ab",["yz"]],"days":["2024-01-31"]})",
                                      {{"ab", {"yz"}}, {"2024-01-31"}});
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of ElementLiterals )", key);
-    };
-    expect_rejected<ElementLiterals>(R"({"pair":["Ab",[]]})",
-                                     element("pair") + R"(does not match the pattern "^[a-z]+$")", "/pair/0");
-    expect_rejected<ElementLiterals>(R"({"pair":["abd",[]]})", element("pair") + R"(is not one of "ab", "Ab", "abc")",
-                                     "/pair/0");
-    expect_rejected<ElementLiterals>(R"({"pair":["ab",["y"]]})",
-                                     element("pair") + R"(is not equal to the constant "yz")", "/pair/1/0");
-    expect_rejected<ElementLiterals>(R"({"days":["2024-02-30"]})",
-                                     element("days") + R"(does not have the format "date")", "/days/0");
+    expect_rejected<ElementLiterals>(
+        R"({"pair":["Ab",[]]})",
+        R"(the string does not match the pattern "^[a-z]+$" at /pair/0; reading an element of the value at the key "pair" of ElementLiterals)",
+        "/pair/0");
+    expect_rejected<ElementLiterals>(
+        R"({"pair":["abd",[]]})",
+        R"(the value is not one of "ab", "Ab", "abc" at /pair/0; reading an element of the value at the key "pair" of ElementLiterals)",
+        "/pair/0");
+    expect_rejected<ElementLiterals>(
+        R"({"pair":["ab",["y"]]})",
+        R"(the value is not equal to the constant "yz" at /pair/1/0; reading an element of the value at the key "pair" of ElementLiterals)",
+        "/pair/1/0");
+    expect_rejected<ElementLiterals>(
+        R"({"days":["2024-02-30"]})",
+        R"(the string does not have the format "date" at /days/0; reading an element of the value at the key "days" of ElementLiterals)",
+        "/days/0");
 }
 
 TEST(Constraints, PropertyNames)
@@ -4214,43 +4574,62 @@ TEST(Constraints, PropertyNames)
     expect_accepted<Keyed>(R"({"m":{"ab":1},"u":{"x":1},"deep":{"x":{"ab":1}},"sized":{"a":1,"b":2}})",
                            {{{"ab", 1}}, {{"x", 1}}, {{"x", {{"ab", 1}}}}, {{"a", 1}, {"b", 2}}});
 
-    const auto prefix = [](std::string_view key) {
-        return std::format(R"(a key of the value of the key "{}" of Keyed )", key);
-    };
     // the error is at the value of the member whose key it is
-    expect_rejected<Keyed>(R"({"m":{"ab":1,"abcd":2}})", prefix("m") + "is longer than the maximum length 3",
-                           "/m/abcd");
-    expect_rejected<Keyed>(R"({"m":{"A":1}})", prefix("m") + R"(does not match the pattern "^[a-z]+$")", "/m/A");
-    expect_rejected<Keyed>(R"({"u":{"abc":1}})", prefix("u") + "is rejected by yyjson::satisfies", "/u/abc");
-    expect_rejected<Keyed>(R"({"deep":{"x":{"ab":1,"a":2}}})", prefix("deep") + "is shorter than the minimum length 2",
-                           "/deep/x/a");
-    expect_rejected<Keyed>(R"({"sized":{"c":1}})", prefix("sized") + R"(is not one of "a", "b")", "/sized/c");
-    expect_rejected<Keyed>(R"({"sized":{}})",
-                           R"(the value of the key "sized" of Keyed has fewer properties than the minimum 1)",
-                           "/sized");
+    expect_rejected<Keyed>(
+        R"({"m":{"ab":1,"abcd":2}})",
+        R"(the key is longer than the maximum length 3 at /m/abcd; reading a key of the value at the key "m" of Keyed)",
+        "/m/abcd");
+    expect_rejected<Keyed>(
+        R"({"m":{"A":1}})",
+        R"(the key does not match the pattern "^[a-z]+$" at /m/A; reading a key of the value at the key "m" of Keyed)",
+        "/m/A");
+    expect_rejected<Keyed>(
+        R"({"u":{"abc":1}})",
+        R"(the key does not satisfy the predicate at /u/abc; reading a key of the value at the key "u" of Keyed)",
+        "/u/abc");
+    expect_rejected<Keyed>(
+        R"({"deep":{"x":{"ab":1,"a":2}}})",
+        R"(the key is shorter than the minimum length 2 at /deep/x/a; reading a key of the value at the key "deep" of Keyed)",
+        "/deep/x/a");
+    expect_rejected<Keyed>(
+        R"({"sized":{"c":1}})",
+        R"(the key is not one of "a", "b" at /sized/c; reading a key of the value at the key "sized" of Keyed)",
+        "/sized/c");
+    expect_rejected<Keyed>(
+        R"({"sized":{}})",
+        R"(the object has fewer properties than the minimum 1 at /sized; reading the key "sized" of Keyed)", "/sized");
 }
 
 TEST(Constraints, StructPropertyNames)
 {
     expect_accepted<KeyedStruct>(R"({"ab":1,"x":2,"\u00e9\u00e9\u00e9":3})", {.ab = 1, .AB = {}});
-    expect_rejected<KeyedStruct>(R"({"ab":1,"AB":2})",
-                                 R"(a key of KeyedStruct does not match the pattern "^[^A-Z/]+$")", "/AB");
-    expect_rejected<KeyedStruct>(R"({"abcd":1})", "a key of KeyedStruct is longer than the maximum length 3", "/abcd");
-    expect_rejected<KeyedStruct>(R"({"a/b":1})", "a key of KeyedStruct does not match", "/a~1b");
+    expect_rejected<KeyedStruct>(
+        R"({"ab":1,"AB":2})", R"(the key does not match the pattern "^[^A-Z/]+$" at /AB; reading a key of KeyedStruct)",
+        "/AB");
+    expect_rejected<KeyedStruct>(
+        R"({"abcd":1})", "the key is longer than the maximum length 3 at /abcd; reading a key of KeyedStruct", "/abcd");
+    expect_rejected<KeyedStruct>(
+        R"({"a/b":1})", R"(the key does not match the pattern "^[^A-Z/]+$" at /a~1b; reading a key of KeyedStruct)",
+        "/a~1b");
 }
 
 TEST(Constraints, EscapedKeys)
 {
     // a key is escaped in the path, and its length is counted in code points
-    expect_rejected<Keyed>(R"({"m":{"a/b":1}})", R"(a key of the value of the key "m" of Keyed does not match)",
-                           "/m/a~1b");
-    expect_rejected<Keyed>(R"({"m":{"~x":1}})", R"(a key of the value of the key "m" of Keyed does not match)",
-                           "/m/~0x");
+    expect_rejected<Keyed>(
+        R"({"m":{"a/b":1}})",
+        R"(the key does not match the pattern "^[a-z]+$" at /m/a~1b; reading a key of the value at the key "m" of Keyed)",
+        "/m/a~1b");
+    expect_rejected<Keyed>(
+        R"({"m":{"~x":1}})",
+        R"(the key does not match the pattern "^[a-z]+$" at /m/~0x; reading a key of the value at the key "m" of Keyed)",
+        "/m/~0x");
     expect_accepted<Keyed>(R"({"deep":{"x":{"\u00e9\u00e9":1,"\ud83d\ude00\ud83d\ude00":2}}})",
                            {.deep = {{"x", {{"\xc3\xa9\xc3\xa9", 1}, {"\xf0\x9f\x98\x80\xf0\x9f\x98\x80", 2}}}}});
-    expect_rejected<Keyed>(R"({"deep":{"x":{"\ud83d\ude00":1}}})",
-                           R"(a key of the value of the key "deep" of Keyed is shorter than the minimum length 2)",
-                           "/deep/x/\xf0\x9f\x98\x80");
+    expect_rejected<Keyed>(
+        R"({"deep":{"x":{"\ud83d\ude00":1}}})",
+        R"(the key is shorter than the minimum length 2 at /deep/x/😀; reading a key of the value at the key "deep" of Keyed)",
+        "/deep/x/\xf0\x9f\x98\x80");
 }
 
 TEST(Constraints, Contains)
@@ -4259,30 +4638,28 @@ TEST(Constraints, Contains)
                                 {{"user", "admin"}, {10, 1, 11}, {1}, {{1}, {5}}, {1, 2}});
     expect_accepted<Containing>(R"({"none":[],"pair":[2,0]})", {.pair = {2, 0}});
 
-    const auto prefix = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Containing )", key);
-    };
-    expect_rejected<Containing>(R"({"roles":["user"]})",
-                                prefix("roles") + "has no item that satisfies the constraints of yyjson::contains",
-                                "/roles");
-    expect_rejected<Containing>(R"({"roles":[]})",
-                                prefix("roles") + "has no item that satisfies the constraints of yyjson::contains",
-                                "/roles");
-    expect_rejected<Containing>(R"({"v":[1,10]})",
-                                prefix("v") + "has fewer than 2 items that satisfy the constraints of yyjson::contains",
-                                "/v");
-    expect_rejected<Containing>(R"({"v":[10,11,12,13]})",
-                                prefix("v") + "has more than 3 items that satisfy the constraints of yyjson::contains",
-                                "/v");
+    expect_rejected<Containing>(
+        R"({"roles":["user"]})",
+        R"(the array has no item that satisfies contains at /roles; reading the key "roles" of Containing)", "/roles");
+    expect_rejected<Containing>(
+        R"({"roles":[]})",
+        R"(the array has no item that satisfies contains at /roles; reading the key "roles" of Containing)", "/roles");
+    expect_rejected<Containing>(
+        R"({"v":[1,10]})",
+        R"(the array has fewer than 2 items that satisfy contains at /v; reading the key "v" of Containing)", "/v");
+    expect_rejected<Containing>(
+        R"({"v":[10,11,12,13]})",
+        R"(the array has more than 3 items that satisfy contains at /v; reading the key "v" of Containing)", "/v");
     expect_rejected<Containing>(
         R"({"none":[10,11]})",
-        prefix("none") + "has more than 1 item that satisfies the constraints of yyjson::contains", "/none");
-    expect_rejected<Containing>(R"({"rows":[[1],[2]]})",
-                                prefix("rows") + "has no item that satisfies the constraints of yyjson::contains",
-                                "/rows");
-    expect_rejected<Containing>(R"({"pair":[1,3]})",
-                                prefix("pair") + "has no item that satisfies the constraints of yyjson::contains",
-                                "/pair");
+        R"(the array has more than 1 item that satisfies contains at /none; reading the key "none" of Containing)",
+        "/none");
+    expect_rejected<Containing>(
+        R"({"rows":[[1],[2]]})",
+        R"(the array has no item that satisfies contains at /rows; reading the key "rows" of Containing)", "/rows");
+    expect_rejected<Containing>(
+        R"({"pair":[1,3]})",
+        R"(the array has no item that satisfies contains at /pair; reading the key "pair" of Containing)", "/pair");
 }
 
 TEST(Constraints, ContainsCounts)
@@ -4293,17 +4670,16 @@ TEST(Constraints, ContainsCounts)
     expect_accepted<Counted>(R"({"max0":[1,10]})", {.max0 = {1, 10}});
     expect_accepted<Counted>(R"({"max0":[]})", {});
     expect_accepted<Counted>(R"({"min0":[1],"both0":[]})", {.min0 = {1}});
-    const auto prefix = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Counted )", key);
-    };
-    expect_rejected<Counted>(R"({"both0":[1,10]})",
-                             prefix("both0") + "has more than 0 items that satisfy the constraints of yyjson::contains",
-                             "/both0");
+    expect_rejected<Counted>(
+        R"({"both0":[1,10]})",
+        R"(the array has more than 0 items that satisfy contains at /both0; reading the key "both0" of Counted)",
+        "/both0");
     // a null element satisfies the keywords of its value, as a null field does
     expect_accepted<Counted>(R"({"opts":[null,1]})", {.opts = {std::nullopt, 1}});
-    expect_rejected<Counted>(R"({"opts":[null,null]})",
-                             prefix("opts") + "has more than 1 item that satisfies the constraints of yyjson::contains",
-                             "/opts");
+    expect_rejected<Counted>(
+        R"({"opts":[null,null]})",
+        R"(the array has more than 1 item that satisfies contains at /opts; reading the key "opts" of Counted)",
+        "/opts");
 }
 
 TEST(Constraints, OptionalRange)
@@ -4311,79 +4687,92 @@ TEST(Constraints, OptionalRange)
     expect_accepted<Counted>(R"({"unique":null,"head":null,"some":null})", {});
     expect_accepted<Counted>(R"({"unique":[1,2],"head":[0,-1],"some":[10]})",
                              {.unique = std::vector{1, 2}, .head = std::vector{0, -1}, .some = std::vector{10}});
-    expect_rejected<Counted>(R"({"unique":[1,1]})",
-                             R"(an element of the value of the key "unique" of Counted is equal to an earlier element)",
-                             "/unique/1");
-    expect_rejected<Counted>(R"({"head":[-1]})",
-                             R"(an element of the value of the key "head" of Counted is less than the minimum 0)",
-                             "/head/0");
+    expect_rejected<Counted>(
+        R"({"unique":[1,1]})",
+        R"(the item is equal to an earlier item at /unique/1; reading an element of the value at the key "unique" of Counted)",
+        "/unique/1");
+    expect_rejected<Counted>(
+        R"({"head":[-1]})",
+        R"(the number is less than the minimum 0 at /head/0; reading an element of the value at the key "head" of Counted)",
+        "/head/0");
     expect_rejected<Counted>(
         R"({"some":[1]})",
-        R"(the value of the key "some" of Counted has no item that satisfies the constraints of yyjson::contains)",
-        "/some");
+        R"(the array has no item that satisfies contains at /some; reading the key "some" of Counted)", "/some");
 }
 
 TEST(Constraints, ElementsStrict)
 {
     // yyjson::strict checks the keywords of the elements as a read without it does
-    const auto rejected = [](auto read, std::string_view message, std::string_view path) {
+    const auto rejected = [](auto read, const expected_text& message, std::string_view path) {
         const auto e = bad_cast_of(read);
-        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        expect_text(message_of(e), message);
         EXPECT_EQ(e.path(), path);
     };
-    rejected([] { (void)yyjson::read<Visited>(R"({"u":[1,1],"p":[0,0],"c":[5],"k":{}})", yyjson::strict); },
-             R"(an element of the value of the key "u" of Visited is equal to an earlier element)", "/u/1");
-    rejected([] { (void)yyjson::read<Visited>(R"({"u":[],"p":[-1,0],"c":[5],"k":{}})", yyjson::strict); },
-             R"(an element of the value of the key "p" of Visited is less than the minimum 0)", "/p/0");
+    rejected(
+        [] { (void)yyjson::read<Visited>(R"({"u":[1,1],"p":[0,0],"c":[5],"k":{}})", yyjson::strict); },
+        R"(the item is equal to an earlier item at /u/1; reading an element of the value at the key "u" of Visited)",
+        "/u/1");
+    rejected(
+        [] { (void)yyjson::read<Visited>(R"({"u":[],"p":[-1,0],"c":[5],"k":{}})", yyjson::strict); },
+        R"(the number is less than the minimum 0 at /p/0; reading an element of the value at the key "p" of Visited)",
+        "/p/0");
     rejected(
         [] {
             auto t = Deep();
             yyjson::read_into(R"({"v":[],"m":{},"k":[{"ab":1}]})", t, yyjson::strict);
         },
-        R"(a key of the value of the key "k" of Deep is longer than the maximum length 1)", "/k/0/ab");
+        R"(the key is longer than the maximum length 1 at /k/0/ab; reading a key of the value at the key "k" of Deep)",
+        "/k/0/ab");
     rejected(
         [] {
             auto t = ElementsVisitable();
             yyjson::merge_into(R"({"v":[1,0]})", t, yyjson::strict);
         },
-        R"(an element of the value of the key "v" of ElementsVisitable is not greater than)", "/v/1");
+        R"(the number is not greater than the exclusive minimum 0 at /v/1; reading an element of the value at the key "v" of ElementsVisitable)",
+        "/v/1");
     rejected([] { (void)yyjson::read(R"({"u":[],"p":[0,0],"c":[4],"k":{}})").cast<Visited>(yyjson::strict); },
-             R"(the value of the key "c" of Visited has no item that satisfies)", "/c");
+             R"(the array has no item that satisfies contains at /c; reading the key "c" of Visited)", "/c");
 }
 
 TEST(Constraints, VisitableElements)
 {
     expect_accepted<Visited>(R"({"u":[1,2],"p":[0,-1],"c":[5],"k":{"a":1}})", {{1, 2}, {0, -1}, {5}, {{"a", 1}}});
-    const auto prefix = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Visited )", key);
-    };
-    expect_rejected<Visited>(R"({"u":[1,1],"c":[5]})",
-                             R"(an element of the value of the key "u" of Visited is equal to an earlier element)",
-                             "/u/1");
-    expect_rejected<Visited>(R"({"p":[-1,0],"c":[5]})",
-                             R"(an element of the value of the key "p" of Visited is less than the minimum 0)", "/p/0");
-    expect_rejected<Visited>(R"({"c":[4]})",
-                             prefix("c") + "has no item that satisfies the constraints of yyjson::contains", "/c");
-    expect_rejected<Visited>(R"({"c":[5],"k":{"ab":1}})",
-                             R"(a key of the value of the key "k" of Visited is longer than the maximum length 1)",
-                             "/k/ab");
+    expect_rejected<Visited>(
+        R"({"u":[1,1],"c":[5]})",
+        R"(the item is equal to an earlier item at /u/1; reading an element of the value at the key "u" of Visited)",
+        "/u/1");
+    expect_rejected<Visited>(
+        R"({"p":[-1,0],"c":[5]})",
+        R"(the number is less than the minimum 0 at /p/0; reading an element of the value at the key "p" of Visited)",
+        "/p/0");
+    expect_rejected<Visited>(
+        R"({"c":[4]})", R"(the array has no item that satisfies contains at /c; reading the key "c" of Visited)", "/c");
+    expect_rejected<Visited>(
+        R"({"c":[5],"k":{"ab":1}})",
+        R"(the key is longer than the maximum length 1 at /k/ab; reading a key of the value at the key "k" of Visited)",
+        "/k/ab");
 }
 
 TEST(Constraints, DeepElements)
 {
     expect_accepted<Deep>(R"({"v":[[[0],[1]]],"m":{"y":[1]},"k":[{"a":1}]})",
                           {{{{0}, {1}}}, {{"y", {1}}}, {{{"a", 1}}}});
-    const auto prefix = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of Deep )", key);
-    };
-    expect_rejected<Deep>(R"({"v":[[[0,-1]]]})", prefix("v") + "is less than the minimum 0", "/v/0/0/1");
-    expect_rejected<Deep>(R"({"v":[[[0],[0]]]})",
-                          prefix("v") + "has no item that satisfies the constraints of yyjson::contains", "/v/0/1");
-    expect_rejected<Deep>(R"({"m":{"x":[1],"y":[0]}})",
-                          prefix("m") + "has no item that satisfies the constraints of yyjson::contains", "/m/y");
-    expect_rejected<Deep>(R"({"k":[{"a":1},{"bb":1}]})",
-                          R"(a key of the value of the key "k" of Deep is longer than the maximum length 1)",
-                          "/k/1/bb");
+    expect_rejected<Deep>(
+        R"({"v":[[[0,-1]]]})",
+        R"(the number is less than the minimum 0 at /v/0/0/1; reading an element of the value at the key "v" of Deep)",
+        "/v/0/0/1");
+    expect_rejected<Deep>(
+        R"({"v":[[[0],[0]]]})",
+        R"(the array has no item that satisfies contains at /v/0/1; reading an element of the value at the key "v" of Deep)",
+        "/v/0/1");
+    expect_rejected<Deep>(
+        R"({"m":{"x":[1],"y":[0]}})",
+        R"(the array has no item that satisfies contains at /m/y; reading an element of the value at the key "m" of Deep)",
+        "/m/y");
+    expect_rejected<Deep>(
+        R"({"k":[{"a":1},{"bb":1}]})",
+        R"(the key is longer than the maximum length 1 at /k/1/bb; reading a key of the value at the key "k" of Deep)",
+        "/k/1/bb");
 }
 
 TEST(Constraints, UnusualElements)
@@ -4396,33 +4785,49 @@ TEST(Constraints, UnusualElements)
                               .dq = {0, -1, 9},
                               .ls = {0, 1, 9},
                               .pm = {{1, 2}, {1, 3}}});
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of Unusual )", key);
-    };
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Unusual )", key);
-    };
     // the elements that a user caster reads are converted again to find the equal one
-    expect_rejected<Unusual>(R"({"pts":[[0,1],[0,1]]})", element("pts") + "is equal to an earlier element", "/pts/1");
+    expect_rejected<Unusual>(
+        R"({"pts":[[0,1],[0,1]]})",
+        R"(the item is equal to an earlier item at /pts/1; reading an element of the value at the key "pts" of Unusual)",
+        "/pts/1");
     // a key that is an enumeration is checked by the name that it is written as
-    expect_rejected<Unusual>(R"({"sides":{"left":1,"right":2}})",
-                             R"(a key of the value of the key "sides" of Unusual is not equal to the constant "left")",
-                             "/sides/right");
+    expect_rejected<Unusual>(
+        R"({"sides":{"left":1,"right":2}})",
+        R"(the key is not equal to the constant "left" at /sides/right; reading a key of the value at the key "sides" of Unusual)",
+        "/sides/right");
     // a range of pairs is read from an object, whose members have the keys, or from an array of pairs
-    expect_rejected<Unusual>(R"({"kv":{"a":1,"bb":2}})",
-                             R"(a key of the value of the key "kv" of Unusual is longer than the maximum length 1)",
-                             "/kv/bb");
-    expect_rejected<Unusual>(R"({"kv":[["a",1],["bb",2]]})",
-                             value("kv") + "has a key that does not satisfy the constraints of yyjson::property_names",
-                             "/kv");
+    expect_rejected<Unusual>(
+        R"({"kv":{"a":1,"bb":2}})",
+        R"(the key is longer than the maximum length 1 at /kv/bb; reading a key of the value at the key "kv" of Unusual)",
+        "/kv/bb");
+    expect_rejected<Unusual>(
+        R"({"kv":[["a",1],["bb",2]]})",
+        R"(the object has a key that does not satisfy propertyNames at /kv; reading the key "kv" of Unusual)", "/kv");
     // the prefix and the elements after it, in sequences that are not vectors
-    expect_rejected<Unusual>(R"({"dq":[-1]})", element("dq") + "is less than the minimum 0", "/dq/0");
-    expect_rejected<Unusual>(R"({"dq":[0,10]})", element("dq") + "is greater than the maximum 9", "/dq/1");
-    expect_rejected<Unusual>(R"({"ls":[0,0]})", element("ls") + "is less than the minimum 1", "/ls/1");
-    expect_rejected<Unusual>(R"({"ls":[0,1,9,10]})", element("ls") + "is greater than the maximum 9", "/ls/3");
+    expect_rejected<Unusual>(
+        R"({"dq":[-1]})",
+        R"(the number is less than the minimum 0 at /dq/0; reading an element of the value at the key "dq" of Unusual)",
+        "/dq/0");
+    expect_rejected<Unusual>(
+        R"({"dq":[0,10]})",
+        R"(the number is greater than the maximum 9 at /dq/1; reading an element of the value at the key "dq" of Unusual)",
+        "/dq/1");
+    expect_rejected<Unusual>(
+        R"({"ls":[0,0]})",
+        R"(the number is less than the minimum 1 at /ls/1; reading an element of the value at the key "ls" of Unusual)",
+        "/ls/1");
+    expect_rejected<Unusual>(
+        R"({"ls":[0,1,9,10]})",
+        R"(the number is greater than the maximum 9 at /ls/3; reading an element of the value at the key "ls" of Unusual)",
+        "/ls/3");
     // a multimap whose keys are not strings is an array of pairs, which may repeat one
-    expect_rejected<Unusual>(R"({"pm":[[1,2],[1,2]]})", element("pm") + "is equal to an earlier element", "/pm/1");
-    expect_rejected<Unusual>(R"({"pm":[[1,2],[1,3],[1,4]]})", value("pm") + "has more items than the maximum 2", "/pm");
+    expect_rejected<Unusual>(
+        R"({"pm":[[1,2],[1,2]]})",
+        R"(the item is equal to an earlier item at /pm/1; reading an element of the value at the key "pm" of Unusual)",
+        "/pm/1");
+    expect_rejected<Unusual>(R"({"pm":[[1,2],[1,3],[1,4]]})",
+                             R"(the array has more items than the maximum 2 at /pm; reading the key "pm" of Unusual)",
+                             "/pm");
 }
 
 // the reader without a document gives the value or leaves the error to the document as the cast of a document does
@@ -4466,34 +4871,60 @@ TEST(Constraints, Not)
         {9, "y", {0, 1}, 3, {{"a", 1}}, {1, "y"}, {1, -1}, {1}, 3, {{}}});
     expect_accepted<Negated>(R"({"n":20,"o":null})", {.n = 20});
 
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Negated )", key);
-    };
     const auto element = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of Negated )", key);
     };
-    constexpr auto negated = "satisfies the settings of yyjson::not_";
-    expect_rejected<Negated>(R"({"n":10})", value("n") + negated, "/n");
-    expect_rejected<Negated>(R"({"n":19})", value("n") + negated, "/n");
-    expect_rejected<Negated>(R"({"s":"xy"})", value("s") + negated, "/s");
+    expect_rejected<Negated>(R"({"n":10})",
+                             R"(the value satisfies the subschema of not at /n; reading the key "n" of Negated)", "/n");
+    expect_rejected<Negated>(R"({"n":19})",
+                             R"(the value satisfies the subschema of not at /n; reading the key "n" of Negated)", "/n");
+    expect_rejected<Negated>(R"({"s":"xy"})",
+                             R"(the value satisfies the subschema of not at /s; reading the key "s" of Negated)", "/s");
     // not_(not_(minimum(0))) is minimum(0)
-    expect_rejected<Negated>(R"({"v":[0,-1]})", element("v") + negated, "/v/1");
+    expect_rejected<Negated>(
+        R"({"v":[0,-1]})",
+        R"(the value satisfies the subschema of not at /v/1; reading an element of the value at the key "v" of Negated)",
+        "/v/1");
     // each yyjson::not_ of a field is checked
-    expect_rejected<Negated>(R"({"twice":1})", value("twice") + negated, "/twice");
-    expect_rejected<Negated>(R"({"twice":2})", value("twice") + negated, "/twice");
-    expect_rejected<Negated>(R"({"m":{"a":0}})", element("m") + negated, "/m/a");
-    expect_rejected<Negated>(R"({"m":{"_a":1}})",
-                             R"(a key of the value of the key "m" of Negated )" + std::string(negated), "/m/_a");
-    expect_rejected<Negated>(R"({"row":[0,"y"]})", element("row") + negated, "/row/0");
-    expect_rejected<Negated>(R"({"row":[1,"x"]})", element("row") + negated, "/row/1");
+    expect_rejected<Negated>(
+        R"({"twice":1})", R"(the value satisfies the subschema of not at /twice; reading the key "twice" of Negated)",
+        "/twice");
+    expect_rejected<Negated>(
+        R"({"twice":2})", R"(the value satisfies the subschema of not at /twice; reading the key "twice" of Negated)",
+        "/twice");
+    expect_rejected<Negated>(
+        R"({"m":{"a":0}})",
+        R"(the value satisfies the subschema of not at /m/a; reading an element of the value at the key "m" of Negated)",
+        "/m/a");
+    expect_rejected<Negated>(
+        R"({"m":{"_a":1}})",
+        R"(the key satisfies the subschema of not at /m/_a; reading a key of the value at the key "m" of Negated)",
+        "/m/_a");
+    expect_rejected<Negated>(
+        R"({"row":[0,"y"]})",
+        R"(the value satisfies the subschema of not at /row/0; reading an element of the value at the key "row" of Negated)",
+        "/row/0");
+    expect_rejected<Negated>(
+        R"({"row":[1,"x"]})",
+        R"(the value satisfies the subschema of not at /row/1; reading an element of the value at the key "row" of Negated)",
+        "/row/1");
     expect_rejected<Negated>(R"({"c":[1,2]})",
-                             value("c") + "has no item that satisfies the constraints of yyjson::contains", "/c");
+                             R"(the array has no item that satisfies contains at /c; reading the key "c" of Negated)",
+                             "/c");
     // null satisfies minimum(5), so not_ rejects a null element, but a null field is missing
-    expect_rejected<Negated>(R"({"holes":[1,null]})", element("holes") + negated, "/holes/1");
-    expect_rejected<Negated>(R"({"o":5})", value("o") + negated, "/o");
+    expect_rejected<Negated>(
+        R"({"holes":[1,null]})",
+        R"(the value satisfies the subschema of not at /holes/1; reading an element of the value at the key "holes" of Negated)",
+        "/holes/1");
+    expect_rejected<Negated>(R"({"o":5})",
+                             R"(the value satisfies the subschema of not at /o; reading the key "o" of Negated)", "/o");
     // not_ of a keyword of the elements
-    expect_rejected<Negated>(R"({"nested":[[1]]})", value("nested") + negated, "/nested");
-    expect_rejected<Negated>(R"({"nested":[]})", value("nested") + negated, "/nested");
+    expect_rejected<Negated>(
+        R"({"nested":[[1]]})",
+        R"(the value satisfies the subschema of not at /nested; reading the key "nested" of Negated)", "/nested");
+    expect_rejected<Negated>(
+        R"({"nested":[]})",
+        R"(the value satisfies the subschema of not at /nested; reading the key "nested" of Negated)", "/nested");
 }
 
 TEST(Constraints, IfThenElse)
@@ -4502,20 +4933,22 @@ TEST(Constraints, IfThenElse)
                                  {12, {10}, {0, 5}, "#abc", {{"a", "x"}, {"b", "y"}}});
     expect_accepted<Conditional>(R"({"n":5,"v":[1,9],"s":"ab"})", {5, {1, 9}, {}, "ab", {}});
 
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Conditional )", key);
-    };
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of Conditional )", key);
-    };
-    constexpr auto then = "satisfies the settings of yyjson::if_ and not those of yyjson::then";
-    constexpr auto else_ = "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_";
-    expect_rejected<Conditional>(R"({"n":11})", value("n") + then, "/n");
-    expect_rejected<Conditional>(R"({"n":6})", value("n") + else_, "/n");
-    expect_rejected<Conditional>(R"({"v":[1,10]})", value("v") + then, "/v");
-    expect_rejected<Conditional>(R"({"e":[0,4]})", element("e") + else_, "/e/1");
-    expect_rejected<Conditional>(R"({"s":"#ab"})", value("s") + then, "/s");
-    expect_rejected<Conditional>(R"({"m":{"a":"w"}})", element("m") + else_, "/m/a");
+    expect_rejected<Conditional>(
+        R"({"n":11})", R"(the value satisfies if and not then at /n; reading the key "n" of Conditional)", "/n");
+    expect_rejected<Conditional>(
+        R"({"n":6})", R"(the value satisfies neither if nor else at /n; reading the key "n" of Conditional)", "/n");
+    expect_rejected<Conditional>(
+        R"({"v":[1,10]})", R"(the value satisfies if and not then at /v; reading the key "v" of Conditional)", "/v");
+    expect_rejected<Conditional>(
+        R"({"e":[0,4]})",
+        R"(the value satisfies neither if nor else at /e/1; reading an element of the value at the key "e" of Conditional)",
+        "/e/1");
+    expect_rejected<Conditional>(
+        R"({"s":"#ab"})", R"(the value satisfies if and not then at /s; reading the key "s" of Conditional)", "/s");
+    expect_rejected<Conditional>(
+        R"({"m":{"a":"w"}})",
+        R"(the value satisfies neither if nor else at /m/a; reading an element of the value at the key "m" of Conditional)",
+        "/m/a");
 }
 
 TEST(Constraints, AllAnyOneOf)
@@ -4526,30 +4959,48 @@ TEST(Constraints, AllAnyOneOf)
                               {.b = 15, .c = 3, .s = "a", .m = {{"k", 10}}, .deep = 100, .rows = {{}}});
     expect_accepted<Composed>(R"({"c":9,"s":"dz","deep":300})", {.c = 9, .s = "dz", .deep = 300});
 
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of Composed )", key);
-    };
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of Composed )", key);
-    };
-    constexpr auto all = "does not satisfy all the subschemas of yyjson::all_of";
-    constexpr auto any = "satisfies none of the subschemas of yyjson::any_of";
-    constexpr auto none = "satisfies none of the subschemas of yyjson::one_of";
-    constexpr auto many = "satisfies more than one subschema of yyjson::one_of";
-    expect_rejected<Composed>(R"({"a":-2})", value("a") + all, "/a");
-    expect_rejected<Composed>(R"({"a":3})", value("a") + all, "/a");
-    expect_rejected<Composed>(R"({"a":12})", value("a") + all, "/a");
-    expect_rejected<Composed>(R"({"b":5})", value("b") + any, "/b");
-    expect_rejected<Composed>(R"({"b":21})", value("b") + any, "/b");
-    expect_rejected<Composed>(R"({"c":1})", value("c") + none, "/c");
-    expect_rejected<Composed>(R"({"c":6})", value("c") + many, "/c");
-    expect_rejected<Composed>(R"({"v":[0,5]})", element("v") + any, "/v/1");
-    expect_rejected<Composed>(R"({"s":"e"})", value("s") + any, "/s");
+    expect_rejected<Composed>(
+        R"({"a":-2})",
+        R"(the value does not satisfy all the subschemas of allOf at /a; reading the key "a" of Composed)", "/a");
+    expect_rejected<Composed>(
+        R"({"a":3})",
+        R"(the value does not satisfy all the subschemas of allOf at /a; reading the key "a" of Composed)", "/a");
+    expect_rejected<Composed>(
+        R"({"a":12})",
+        R"(the value does not satisfy all the subschemas of allOf at /a; reading the key "a" of Composed)", "/a");
+    expect_rejected<Composed>(
+        R"({"b":5})", R"(the value satisfies none of the subschemas of anyOf at /b; reading the key "b" of Composed)",
+        "/b");
+    expect_rejected<Composed>(
+        R"({"b":21})", R"(the value satisfies none of the subschemas of anyOf at /b; reading the key "b" of Composed)",
+        "/b");
+    expect_rejected<Composed>(
+        R"({"c":1})", R"(the value satisfies none of the subschemas of oneOf at /c; reading the key "c" of Composed)",
+        "/c");
+    expect_rejected<Composed>(
+        R"({"c":6})", R"(the value satisfies more than one subschema of oneOf at /c; reading the key "c" of Composed)",
+        "/c");
+    expect_rejected<Composed>(
+        R"({"v":[0,5]})",
+        R"(the value satisfies none of the subschemas of anyOf at /v/1; reading an element of the value at the key "v" of Composed)",
+        "/v/1");
+    expect_rejected<Composed>(
+        R"({"s":"e"})", R"(the value satisfies none of the subschemas of anyOf at /s; reading the key "s" of Composed)",
+        "/s");
     // minimum(0) and maximum(9) both hold for 5
-    expect_rejected<Composed>(R"({"m":{"k":5}})", element("m") + many, "/m/k");
-    expect_rejected<Composed>(R"({"deep":0})", value("deep") + none, "/deep");
-    expect_rejected<Composed>(R"({"deep":150})", value("deep") + none, "/deep");
-    expect_rejected<Composed>(R"({"rows":[[1],[2]]})", value("rows") + any, "/rows");
+    expect_rejected<Composed>(
+        R"({"m":{"k":5}})",
+        R"(the value satisfies more than one subschema of oneOf at /m/k; reading an element of the value at the key "m" of Composed)",
+        "/m/k");
+    expect_rejected<Composed>(
+        R"({"deep":0})",
+        R"(the value satisfies none of the subschemas of oneOf at /deep; reading the key "deep" of Composed)", "/deep");
+    expect_rejected<Composed>(
+        R"({"deep":150})",
+        R"(the value satisfies none of the subschemas of oneOf at /deep; reading the key "deep" of Composed)", "/deep");
+    expect_rejected<Composed>(
+        R"({"rows":[[1],[2]]})",
+        R"(the value satisfies none of the subschemas of anyOf at /rows; reading the key "rows" of Composed)", "/rows");
 }
 
 TEST(Constraints, DeadBranches)
@@ -4558,20 +5009,23 @@ TEST(Constraints, DeadBranches)
     expect_accepted<DeadBranches>(R"({"byte":255,"any":3,"text":"ab","one":[1,2],"low":10})",
                                   {255, 3, "ab", {1, 2}, 10});
     expect_accepted<DeadBranches>(R"({"byte":0,"any":-7,"text":"","one":[1,2,3]})", {0, -7, "", {1, 2, 3}});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of DeadBranches )", key);
-    };
-    expect_rejected<DeadBranches>(R"({"any":4})", value("any") + "satisfies none of the subschemas of yyjson::any_of",
-                                  "/any");
     expect_rejected<DeadBranches>(
-        R"({"text":"abc"})", value("text") + "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_",
-        "/text");
-    expect_rejected<DeadBranches>(R"({"one":[1]})", value("one") + "satisfies none of the subschemas of yyjson::one_of",
-                                  "/one");
-    expect_rejected<DeadBranches>(R"({"low":9})", value("low") + "satisfies none of the subschemas of yyjson::any_of",
-                                  "/low");
+        R"({"any":4})",
+        R"(the value satisfies none of the subschemas of anyOf at /any; reading the key "any" of DeadBranches)",
+        "/any");
     expect_rejected<DeadBranches>(
-        R"({"byte":256})", "overflow detected: unsigned char is not constructible from JSON integer 256", "/byte");
+        R"({"text":"abc"})",
+        R"(the value satisfies neither if nor else at /text; reading the key "text" of DeadBranches)", "/text");
+    expect_rejected<DeadBranches>(
+        R"({"one":[1]})",
+        R"(the value satisfies none of the subschemas of oneOf at /one; reading the key "one" of DeadBranches)",
+        "/one");
+    expect_rejected<DeadBranches>(
+        R"({"low":9})",
+        R"(the value satisfies none of the subschemas of anyOf at /low; reading the key "low" of DeadBranches)",
+        "/low");
+    expect_rejected<DeadBranches>(R"({"byte":256})",
+                                  "the number is out of range, got 256 at /byte; reading unsigned char", "/byte");
 }
 
 TEST(Constraints, Matches)
@@ -4582,38 +5036,46 @@ TEST(Constraints, Matches)
         yyjson::read<Typed>(R"({"events":[{"x":1,"y":2},1,{"x":0,"y":0,"z":0}],"ids":[1,"a"],"point":{"x":1,"y":2},)"
                             R"("text":1,"small":{"a":255}})"));
 
-    const auto value = [](std::string_view key) { return std::format(R"(the value of the key "{}" of Typed )", key); };
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of Typed )", key);
-    };
-    const auto few = "has fewer than 2 items that satisfy the constraints of yyjson::contains";
     // a point without "y" is not read under yyjson::strict
-    expect_rejected<Typed>(R"({"events":[{"x":1,"y":2},{"x":1}],"point":{"x":1,"y":2}})", value("events") + few,
-                           "/events");
-    expect_rejected<Typed>(R"({"events":[{"x":1,"y":2},{"x":1,"y":null}],"point":{"x":1,"y":2}})",
-                           value("events") + few, "/events");
-    expect_rejected<Typed>(R"({"events":[{"x":1,"y":2},{"x":1,"y":2,"y":3}],"point":{"x":1,"y":2}})",
-                           value("events") + few, "/events");
-    expect_rejected<Typed>(R"({"ids":[1,1.5],"point":{"x":1,"y":2}})",
-                           element("ids") + "satisfies none of the subschemas of yyjson::any_of", "/ids/1");
-    expect_rejected<Typed>(R"({"point":[1,2]})", value("point") + "is not read as Point by yyjson::matches", "/point");
+    expect_rejected<Typed>(
+        R"({"events":[{"x":1,"y":2},{"x":1}],"point":{"x":1,"y":2}})",
+        R"(the array has fewer than 2 items that satisfy contains at /events; reading the key "events" of Typed)",
+        "/events");
+    expect_rejected<Typed>(
+        R"({"events":[{"x":1,"y":2},{"x":1,"y":null}],"point":{"x":1,"y":2}})",
+        R"(the array has fewer than 2 items that satisfy contains at /events; reading the key "events" of Typed)",
+        "/events");
+    expect_rejected<Typed>(
+        R"({"events":[{"x":1,"y":2},{"x":1,"y":2,"y":3}],"point":{"x":1,"y":2}})",
+        R"(the array has fewer than 2 items that satisfy contains at /events; reading the key "events" of Typed)",
+        "/events");
+    expect_rejected<Typed>(
+        R"({"ids":[1,1.5],"point":{"x":1,"y":2}})",
+        R"(the value satisfies none of the subschemas of anyOf at /ids/1; reading an element of the value at the key "ids" of Typed)",
+        "/ids/1");
+    expect_rejected<Typed>(R"({"point":[1,2]})",
+                           R"(the value does not satisfy matches at /point; reading the key "point" of Typed)",
+                           "/point");
     expect_rejected<Typed>(R"({"point":{"x":1,"y":2},"text":"a"})",
-                           value("text") + "satisfies the settings of yyjson::not_", "/text");
-    expect_rejected<Typed>(R"({"point":{"x":1,"y":2},"small":{"a":256}})",
-                           element("small") + "is not read as unsigned char by yyjson::matches", "/small/a");
+                           R"(the value satisfies the subschema of not at /text; reading the key "text" of Typed)",
+                           "/text");
+    expect_rejected<Typed>(
+        R"({"point":{"x":1,"y":2},"small":{"a":256}})",
+        R"(the value does not satisfy matches at /small/a; reading an element of the value at the key "small" of Typed)",
+        "/small/a");
 
     // yyjson::reject_unknown_keys of the read around yyjson::matches closes T; other policies do not change it
     constexpr auto unknown = R"({"events":[{"x":1,"y":2},{"x":1,"y":2,"z":3}],"ids":[],"point":{"x":1,"y":2,"z":3},)"
                              R"("text":null,"small":{}})";
-    EXPECT_TRUE(message_of(bad_cast_of([&] {
-                    (void)yyjson::read<Typed>(unknown, yyjson::reject_unknown_keys);
-                })).starts_with(value("events") + few));
+    EXPECT_EQ(
+        what_without_position(bad_cast_of([&] { (void)yyjson::read<Typed>(unknown, yyjson::reject_unknown_keys); })),
+        R"(the array has fewer than 2 items that satisfy contains at /events; reading the key "events" of Typed)");
     EXPECT_NO_THROW((void)yyjson::read<Typed>(unknown, yyjson::strict));
     constexpr auto point = R"({"point":{"x":1,"y":2,"z":3}})";
     EXPECT_NO_THROW((void)yyjson::read<Typed>(point));
-    EXPECT_TRUE(message_of(bad_cast_of([&] {
-                    (void)yyjson::read<Typed>(point, yyjson::reject_unknown_keys);
-                })).starts_with(value("point") + "is not read as Point by yyjson::matches"));
+    EXPECT_EQ(
+        what_without_position(bad_cast_of([&] { (void)yyjson::read<Typed>(point, yyjson::reject_unknown_keys); })),
+        R"(the value does not satisfy matches at /point; reading the key "point" of Typed)");
 }
 
 TEST(Constraints, MatchesFunction)
@@ -4672,10 +5134,11 @@ TEST(Constraints, CombinatorsMerge)
 
     expect_accepted<VisitedCombined>(R"({"n":1,"v":[4,8]})", {1, {4, 8}});
     expect_rejected<VisitedCombined>(
-        R"({"n":0})", R"(the value of the key "n" of VisitedCombined satisfies the settings of yyjson::not_)", "/n");
+        R"({"n":0})", R"(the value satisfies the subschema of not at /n; reading the key "n" of VisitedCombined)",
+        "/n");
     expect_rejected<VisitedCombined>(
         R"({"n":1,"v":[6]})",
-        R"(an element of the value of the key "v" of VisitedCombined satisfies more than one subschema of yyjson::one_of)",
+        R"(the value satisfies more than one subschema of oneOf at /v/0; reading an element of the value at the key "v" of VisitedCombined)",
         "/v/0");
 }
 
@@ -4703,7 +5166,7 @@ namespace
     // members: accepted, or rejected with `message` at `path`; the reader without a document reads the accepted
     // ones as the document does, and `merge_into` follows the merge of `json` into what T() writes
     template <typename T>
-    void expect_conditions(std::string_view json, std::string_view message, std::string_view path = "",
+    void expect_conditions(std::string_view json, const expected_text& message, std::string_view path = "",
                            bool merged = true)
     {
         merged = merged && writes_no_member<T>();
@@ -4722,24 +5185,27 @@ namespace
             }};
         for (std::size_t i = 0; i < reads.size() - (merged ? 0 : 1); ++i)
         {
-            if (message.empty())
+            if (message.text.empty())
                 EXPECT_NO_THROW(reads[i]()) << json << " " << i;
             else
             {
                 const auto e = bad_cast_of(reads[i]);
-                EXPECT_TRUE(message_of(e).starts_with(message)) << json << " " << i << "\n" << e.what();
+                if (i == 3)
+                    EXPECT_EQ(message_of(e), at_element(message.text, path)) << json;
+                else
+                    expect_text(message_of(e), message, json);
                 EXPECT_EQ(e.path(), i == 3 ? "/0" + std::string(path) : std::string(path)) << json << " " << i;
             }
         }
 #if YYJSON_VERSION_HEX >= 0x000C00
-        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
-        EXPECT_TRUE(expect_direct_read<T>(json) || !message.empty()) << json;
-        EXPECT_TRUE(expect_read_into(T(), json) || !message.empty()) << json;
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.text.empty()) << json;
+        EXPECT_TRUE(expect_direct_read<T>(json) || !message.text.empty()) << json;
+        EXPECT_TRUE(expect_read_into(T(), json) || !message.text.empty()) << json;
         auto merged_directly = false;
         static_cast<void>(expect_merge_into(T(), json, &merged_directly));
         if (merged)
         {
-            EXPECT_EQ(merged_directly, message.empty()) << json;
+            EXPECT_EQ(merged_directly, message.text.empty()) << json;
         }
 #endif
     }
@@ -4748,95 +5214,107 @@ namespace
 TEST(Constraints, StructConditions)
 {
     using S = ConditionShape;
-    const auto rejected = "ConditionShape has the keys and the values that yyjson::not_ rejects";
-    const auto point = R"(the value of the key "p" of ConditionShape is not read as ConditionPoint by yyjson::matches)";
     expect_conditions<S>(R"({"kind":"circle","radius":1})", "");
     expect_conditions<S>(R"({"kind":"square","p":{"x":1},"sides":[1,2,3]})", "");
     // another kind takes else_, whose keys are absent, and leaves the radius unchecked
     expect_conditions<S>(R"({"kind":"square","radius":-1})", "");
-    expect_conditions<S>(R"({"kind":"circle"})",
-                         R"(ConditionShape is not constructible from JSON without the key "radius", which )"
-                         R"(yyjson::if_then_else requires)");
-    expect_conditions<S>(R"({"kind":"circle","radius":-1})",
-                         R"(the value of the key "radius" of ConditionShape is less than the minimum 0)", "/radius");
-    expect_conditions<S>(R"({"kind":"square","p":{"x":"a"}})", point, "/p");
+    expect_conditions<S>(
+        R"({"kind":"circle"})",
+        R"(a required key is missing; reading the key "radius" of ConditionShape, which yyjson::if_then_else requires)");
+    expect_conditions<S>(
+        R"({"kind":"circle","radius":-1})",
+        R"(the value satisfies if and not then at /radius; reading the key "radius" of ConditionShape)", "/radius");
+    expect_conditions<S>(R"({"kind":"square","p":{"x":"a"}})",
+                         R"(the value satisfies neither if nor else at /p; reading the key "p" of ConditionShape)",
+                         "/p");
     expect_conditions<S>(R"({"kind":"square","p":{"x":1,"y":2}})", "");
-    expect_conditions<S>(R"({"kind":"square","sides":[1,0,2]})",
-                         R"(an element of the value of the key "sides" of ConditionShape is less than the minimum 1)",
-                         "/sides/1");
-    expect_conditions<S>(R"({"kind":"square","sides":[1,2]})",
-                         R"(the value of the key "sides" of ConditionShape has fewer items than the minimum 3)",
-                         "/sides");
+    expect_conditions<S>(
+        R"({"kind":"square","sides":[1,0,2]})",
+        R"(the value satisfies neither if nor else at /sides/1; reading an element of the value at the key "sides" of ConditionShape)",
+        "/sides/1");
+    expect_conditions<S>(
+        R"({"kind":"square","sides":[1,2]})",
+        R"(the value satisfies neither if nor else at /sides; reading the key "sides" of ConditionShape)", "/sides");
     // not_ of a key holds for an object without the key, as JSON Schema's `not` of `properties`
-    expect_conditions<S>(R"({"kind":"xy"})", rejected);
-    expect_conditions<S>(R"({})", rejected);
+    expect_conditions<S>(R"({"kind":"xy"})",
+                         "the value satisfies the subschema of not; reading ConditionShape in yyjson::not_");
+    expect_conditions<S>(R"({})", "the value satisfies the subschema of not; reading ConditionShape in yyjson::not_");
     // a null that the read takes as a missing key is no key
-    expect_conditions<S>(R"({"kind":"circle","radius":null})",
-                         R"(ConditionShape is not constructible from JSON without the key "radius", which )"
-                         R"(yyjson::if_then_else requires)");
+    expect_conditions<S>(
+        R"({"kind":"circle","radius":null})",
+        R"(a required key is missing; reading the key "radius" of ConditionShape, which yyjson::if_then_else requires)");
 
     expect_conditions<Leveled>(R"({"level":4})", "");
     expect_conditions<Leveled>(R"({"level":5,"note":"n"})", "");
     expect_conditions<Leveled>(
         R"({"level":5})",
-        R"(Leveled is not constructible from JSON without the key "note", which yyjson::if_then_else requires)");
+        R"(a required key is missing; reading the key "note" of Leveled, which yyjson::if_then_else requires)");
     expect_conditions<Leveled>(R"({"level":5,"note":""})",
-                               R"(the value of the key "note" of Leveled is shorter than the minimum length 1)",
+                               R"(the value satisfies neither if nor else at /note; reading the key "note" of Leveled)",
                                "/note");
 
     expect_conditions<ConditionVisitable>(R"({"a":1,"b":2})", "");
     expect_conditions<ConditionVisitable>(R"({"b":2})", "");
-    expect_conditions<ConditionVisitable>(R"({"a":1})",
-                                          R"(ConditionVisitable is not constructible from JSON without the key "b", )"
-                                          R"(which yyjson::if_then_else requires)");
+    expect_conditions<ConditionVisitable>(
+        R"({"a":1})",
+        R"(a required key is missing; reading the key "b" of ConditionVisitable, which yyjson::if_then_else requires)");
     expect_conditions<ConditionReordered>(R"({"a":1,"b":1,"c":5})", "");
-    expect_conditions<ConditionReordered>(R"({"a":9,"b":9,"c":1})",
-                                          "ConditionReordered satisfies none of the subschemas of yyjson::any_of");
+    expect_conditions<ConditionReordered>(
+        R"({"a":9,"b":9,"c":1})", "the value satisfies none of the subschemas of anyOf; reading ConditionReordered");
     expect_conditions<ConditionConstructed>(R"({"a_":0})", "");
     expect_conditions<ConditionConstructed>(R"({"a_":1,"b_":0})", "");
-    expect_conditions<ConditionConstructed>(R"({"a_":1})",
-                                            R"(ConditionConstructed is not constructible from JSON )"
-                                            R"(without the key "b_", which yyjson::if_then_else requires)");
+    expect_conditions<ConditionConstructed>(
+        R"({"a_":1})",
+        R"(a required key is missing; reading the key "b_" of ConditionConstructed, which yyjson::if_then_else requires)");
 
     // the keys of the object tell which fields it has, whatever values the fields have in T()
-    const auto missing_d =
-        R"(ConditionPresence is not constructible from JSON without the key "d", which yyjson::if_then_else requires)";
-    const auto both = "ConditionPresence has the keys and the values that yyjson::not_ rejects";
     expect_conditions<ConditionPresence>(R"({})", "");
     expect_conditions<ConditionPresence>(R"({"c":7})", "");
     expect_conditions<ConditionPresence>(R"({"a":5,"b":0,"c":7,"d":1})", "");
     expect_conditions<ConditionPresence>(R"({"d":1,"a":5})", "");
-    expect_conditions<ConditionPresence>(R"({"a":5})", missing_d);
-    expect_conditions<ConditionPresence>(R"({"b":0})", missing_d);
-    expect_conditions<ConditionPresence>(R"({"c":7,"b":0})", missing_d);
-    expect_conditions<ConditionPresence>(R"({"a":5,"b":0,"c":7,"e":0,"d":1})", both);
-    expect_conditions<ConditionPresence>(R"({"e":0,"c":7})", both);
+    expect_conditions<ConditionPresence>(
+        R"({"a":5})",
+        R"(a required key is missing; reading the key "d" of ConditionPresence, which yyjson::if_then_else requires)");
+    expect_conditions<ConditionPresence>(
+        R"({"b":0})",
+        R"(a required key is missing; reading the key "d" of ConditionPresence, which yyjson::if_then_else requires)");
+    expect_conditions<ConditionPresence>(
+        R"({"c":7,"b":0})",
+        R"(a required key is missing; reading the key "d" of ConditionPresence, which yyjson::if_then_else requires)");
+    expect_conditions<ConditionPresence>(
+        R"({"a":5,"b":0,"c":7,"e":0,"d":1})",
+        "the value satisfies the subschema of not; reading ConditionPresence in yyjson::not_");
+    expect_conditions<ConditionPresence>(
+        R"({"e":0,"c":7})", "the value satisfies the subschema of not; reading ConditionPresence in yyjson::not_");
 
     expect_conditions<Contact>(R"({"name":"a","email":"e"})", "");
     expect_conditions<Contact>(R"({"id":1,"phone":"p","age":0})", "");
     // a yyjson::one_of or any_of of yyjson::required("key", ...) names the keys in its message
-    expect_conditions<Contact>(R"({"email":"e"})",
-                               R"(Contact is not constructible from JSON without all the keys of one of ["name"], )"
-                               R"(["id"])");
-    expect_conditions<Contact>(R"({"name":"a"})",
-                               R"(Contact is not constructible from JSON without all the keys of one of ["email"], )"
-                               R"(["phone"])");
-    expect_conditions<Contact>(R"({"name":"a","email":"e","phone":"p"})",
-                               R"(Contact is not constructible from JSON with all the keys of more than one of )"
-                               R"(["email"], ["phone"])");
-    expect_conditions<Contact>(R"({"name":"a","email":"e","age":-1})",
-                               R"(the value of the key "age" of Contact is less than the minimum 0)", "/age");
-    expect_conditions<Contact>(R"({"id":0,"email":"e"})",
-                               "Contact has the keys and the values that yyjson::not_ rejects");
+    expect_conditions<Contact>(
+        R"({"email":"e"})",
+        R"(the value satisfies none of the subschemas of anyOf; reading Contact without all the keys of one of ["name"], ["id"])");
+    expect_conditions<Contact>(
+        R"({"name":"a"})",
+        R"(the value satisfies none of the subschemas of oneOf; reading Contact without all the keys of one of ["email"], ["phone"])");
+    expect_conditions<Contact>(
+        R"({"name":"a","email":"e","phone":"p"})",
+        R"(the value satisfies more than one subschema of oneOf; reading Contact with all the keys of more than one of ["email"], ["phone"])");
+    expect_conditions<Contact>(
+        R"({"name":"a","email":"e","age":-1})",
+        R"(the value does not satisfy all the subschemas of allOf at /age; reading the key "age" of Contact)", "/age");
+    expect_conditions<Contact>(
+        R"({"id":0,"email":"e"})",
+        "the value does not satisfy all the subschemas of allOf; reading Contact in yyjson::not_");
 }
 
 TEST(Constraints, PropertyAndField)
 {
     expect_accepted<PropertyMerged>(R"({"v":9})", {9});
-    expect_rejected<PropertyMerged>(R"({"v":-1})",
-                                    R"(the value of the key "v" of PropertyMerged is less than the minimum 0)", "/v");
     expect_rejected<PropertyMerged>(
-        R"({"v":10})", R"(the value of the key "v" of PropertyMerged is greater than the maximum 9)", "/v");
+        R"({"v":-1})", R"(the number is less than the minimum 0 at /v; reading the key "v" of PropertyMerged)", "/v");
+    expect_rejected<PropertyMerged>(
+        R"({"v":10})", R"(the number is greater than the maximum 9 at /v; reading the key "v" of PropertyMerged)",
+        "/v");
 
     expect_conditions<ManyKeys>(
         R"({"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1,"q":1})",
@@ -4844,36 +5322,39 @@ TEST(Constraints, PropertyAndField)
     expect_conditions<ManyKeys>(R"({"z":1})", "");
     expect_conditions<ManyKeys>(
         R"({"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1})",
-        R"(ManyKeys is not constructible from JSON without all the keys of one of )"
-        R"(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"], ["z"])");
+        R"(the value satisfies none of the subschemas of oneOf; reading ManyKeys without all the keys of one of ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"], ["z"])");
     expect_conditions<ManyKeys>(
         R"({"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1,"q":1,"z":1})",
-        R"(ManyKeys is not constructible from JSON with all the keys of more than one of )"
-        R"(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"], ["z"])");
+        R"(the value satisfies more than one subschema of oneOf; reading ManyKeys with all the keys of more than one of ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q"], ["z"])");
 
-    const auto below = [](std::string_view type) {
-        return std::format(R"(the value of the key "b" of {} is less than the minimum 1)", type);
-    };
     expect_conditions<NestedAllOfProperty>(R"({"a":1,"b":2})", "");
-    expect_conditions<NestedAllOfProperty>(R"({"a":1,"b":0})", below("NestedAllOfProperty"), "/b");
+    expect_conditions<NestedAllOfProperty>(
+        R"({"a":1,"b":0})",
+        R"(the value does not satisfy all the subschemas of allOf at /b; reading the key "b" of NestedAllOfProperty)",
+        "/b");
     expect_conditions<NestedAllOfMixed>(R"({"a":1,"b":2})", "");
-    expect_conditions<NestedAllOfMixed>(R"({"a":1,"b":0})", below("NestedAllOfMixed"), "/b");
+    expect_conditions<NestedAllOfMixed>(
+        R"({"a":1,"b":0})",
+        R"(the value does not satisfy all the subschemas of allOf at /b; reading the key "b" of NestedAllOfMixed)",
+        "/b");
     expect_conditions<NestedAllOfDeep>(R"({"a":1,"b":2})", "");
-    expect_conditions<NestedAllOfDeep>(R"({"a":1,"b":0})", below("NestedAllOfDeep"), "/b");
+    expect_conditions<NestedAllOfDeep>(
+        R"({"a":1,"b":0})",
+        R"(the value does not satisfy all the subschemas of allOf at /b; reading the key "b" of NestedAllOfDeep)",
+        "/b");
     expect_conditions<NestedAllOfObject>(R"({"a":1,"b":{"c":1}})", "");
-    expect_conditions<NestedAllOfObject>(R"({"a":1,"b":{}})",
-                                         R"(the value of the key "b" of NestedAllOfObject does not have the keys )"
-                                         R"(and the values that yyjson::property and required give)",
-                                         "/b");
+    expect_conditions<NestedAllOfObject>(
+        R"({"a":1,"b":{}})",
+        R"(the value does not satisfy all the subschemas of allOf at /b; reading the key "b" of NestedAllOfObject)",
+        "/b");
 
     expect_conditions<PresenceNestedKnown>(R"({"v":{"bb":1,"a":0}})", "");
-    expect_conditions<PresenceNestedKnown>(R"({"v":{"a":0}})",
-                                           R"(the value of the key "v" of PresenceNestedKnown does not have the keys )"
-                                           R"(and the values that yyjson::property and required give)",
-                                           "/v");
+    expect_conditions<PresenceNestedKnown>(
+        R"({"v":{"a":0}})",
+        R"(the object does not satisfy properties at /v; reading the key "v" of PresenceNestedKnown)", "/v");
     expect_conditions<PresenceNestedKnown>(
         R"({"v":{"bb":1,"a":-1}})",
-        R"(the value of the key "v" of PresenceNestedKnown does not have the keys and the values that )", "/v");
+        R"(the object does not satisfy properties at /v; reading the key "v" of PresenceNestedKnown)", "/v");
 }
 
 TEST(Constraints, StructConditionsOfNull)
@@ -4882,15 +5363,17 @@ TEST(Constraints, StructConditionsOfNull)
     // field keeps
     expect_conditions<NullKeys>(R"({"a":null,"b":1})", "");
     expect_conditions<NullKeys>(
-        R"({"a":null})", R"(NullKeys is not constructible from JSON without all the keys of one of ["a"], ["b"])");
-    expect_conditions<NullKeys>(R"({"a":4})", R"(the value of the key "a" of NullKeys is greater than the maximum 3)",
-                                "/a");
+        R"({"a":null})",
+        R"(the value satisfies none of the subschemas of oneOf; reading NullKeys without all the keys of one of ["a"], ["b"])");
+    expect_conditions<NullKeys>(
+        R"({"a":4})",
+        R"(the value does not satisfy all the subschemas of allOf at /a; reading the key "a" of NullKeys)", "/a");
     // a null in a field that holds null is a present key, which a merge takes as a removal
     expect_conditions<NullKeys>(R"({"b":1,"c":null,"d":1})", "");
-    expect_conditions<NullKeys>(R"({"b":1,"c":null})",
-                                R"(NullKeys is not constructible from JSON without the key "d", which )"
-                                R"(yyjson::if_then_else requires)",
-                                "", false);
+    expect_conditions<NullKeys>(
+        R"({"b":1,"c":null})",
+        R"(a required key is missing; reading the key "d" of NullKeys, which yyjson::if_then_else requires)", "",
+        false);
 }
 
 TEST(Constraints, StructConditionsMerged)
@@ -4901,19 +5384,22 @@ TEST(Constraints, StructConditionsMerged)
     yyjson::merge_into(R"({"name":"a","email":"e","age":3})", c);
     EXPECT_EQ(c.age, 3);
     auto e = bad_cast_of([&] { yyjson::merge_into(R"({"name":"a","email":"e","age":-1})", c); });
-    EXPECT_TRUE(message_of(e).starts_with(R"(the value of the key "age" of Contact is less than the minimum 0)"))
+    EXPECT_EQ(message_of(e),
+              R"(the value does not satisfy all the subschemas of allOf at /age; reading the key "age" of Contact)")
         << e.what();
     EXPECT_EQ(e.path(), "/age");
     yyjson::merge_into(R"({"age":4})", c);
     EXPECT_EQ(c, (Contact{.name = "a", .email = "e", .age = 4}));
     e = bad_cast_of([&] { yyjson::merge_into(R"({"name":null})", c); });
-    EXPECT_TRUE(message_of(e).starts_with(
-        R"(Contact is not constructible from JSON without all the keys of one of ["name"], ["id"])"))
+    EXPECT_EQ(
+        message_of(e),
+        R"(the value satisfies none of the subschemas of anyOf; reading Contact without all the keys of one of ["name"], ["id"])")
         << e.what();
     c = Contact{.name = "a", .email = "e"};
     e = bad_cast_of([&] { yyjson::merge_into(R"({"phone":"p"})", c); });
-    EXPECT_TRUE(message_of(e).starts_with(
-        R"(Contact is not constructible from JSON with all the keys of more than one of ["email"], ["phone"])"))
+    EXPECT_EQ(
+        message_of(e),
+        R"(the value satisfies more than one subschema of oneOf; reading Contact with all the keys of more than one of ["email"], ["phone"])")
         << e.what();
     c = Contact{.name = "a", .email = "e"};
     yyjson::merge_into(R"({"name":"b","email":null,"phone":"p"})", c);
@@ -4935,38 +5421,43 @@ TEST(Constraints, StructConditionsMerged)
 
 TEST(Constraints, MergedObject)
 {
-    const auto rejected = [](std::string_view result, std::string_view message) {
-        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    const auto rejected = [](std::string_view result, const expected_text& message) {
+        expect_text(result.starts_with("bad cast: ") ? result.substr(10) : result, message);
     };
-    const auto cert = R"(MergedServer is not constructible from JSON without the key "cert", which )"
-                      R"(yyjson::dependent_required requires)";
     // a field equal to its default is not in the object that the write gives, and a field with
     // yyjson::emit_defaults is
     const auto server = yyjson::read<MergedServer>(R"({"host":"a"})");
     EXPECT_EQ(expect_merge_rule(server, R"({"host":"b"})"), R"({"host":"b","port":8080})");
     EXPECT_EQ(expect_merge_rule(server, R"({"host":"b","cert":"x"})"), R"({"host":"b","port":8080,"cert":"x"})");
-    rejected(expect_merge_rule(server, R"({"port":8080})"), cert);
+    rejected(
+        expect_merge_rule(server, R"({"port":8080})"),
+        R"(the object does not have all the keys that dependentRequired requires; reading the key "cert" of MergedServer, which yyjson::dependent_required requires)");
     const auto secure = yyjson::read<MergedServer>(R"({"host":"a","port":9000,"cert":"x"})");
     EXPECT_EQ(expect_merge_rule(secure, R"({"host":"b"})"), R"({"host":"b","port":9000,"cert":"x"})");
-    rejected(expect_merge_rule(secure, R"({"cert":null})"), cert);
+    rejected(
+        expect_merge_rule(secure, R"({"cert":null})"),
+        R"(the object does not have all the keys that dependentRequired requires; reading the key "cert" of MergedServer, which yyjson::dependent_required requires)");
     EXPECT_EQ(expect_merge_rule(secure, R"({"cert":null,"port":null})"), R"({"host":"a","port":8080})");
     EXPECT_EQ(expect_merge_rule(MergedServer{"a", 8080, "x"}, R"({"cert":null})"), R"({"host":"a","port":8080})");
-    rejected(expect_merge_rule(MergedEmitted{"a", 8080, "x"}, R"({"cert":null})"),
-             R"(MergedEmitted is not constructible from JSON without the key "cert")");
+    rejected(
+        expect_merge_rule(MergedEmitted{"a", 8080, "x"}, R"({"cert":null})"),
+        R"(the object does not have all the keys that dependentRequired requires; reading the key "cert" of MergedEmitted, which yyjson::dependent_required requires)");
 
     // the keys that the patch does not name stay in the object
     const auto choice = yyjson::read<MergedChoice>(R"({"a":1})");
-    const auto many = R"(MergedChoice is not constructible from JSON with all the keys of more than one of )";
-    rejected(expect_merge_rule(choice, R"({"b":2})"), many);
+    rejected(
+        expect_merge_rule(choice, R"({"b":2})"),
+        R"(the value satisfies more than one subschema of oneOf; reading MergedChoice with all the keys of more than one of ["a"], ["b"])");
     EXPECT_EQ(expect_merge_rule(choice, R"({"x":1})"), R"({"a":1})");
     EXPECT_EQ(expect_merge_rule(choice, R"({"a":null,"b":2})"), R"({"b":2})");
-    rejected(expect_merge_rule(choice, R"({"a":null})"),
-             R"(MergedChoice is not constructible from JSON without all the keys of one of )");
+    rejected(
+        expect_merge_rule(choice, R"({"a":null})"),
+        R"(the value satisfies none of the subschemas of oneOf; reading MergedChoice without all the keys of one of ["a"], ["b"])");
 
     // a null removes the key that the object needs
     EXPECT_EQ(expect_merge_rule(MergedRequired{1, {}}, R"({"n":2})"), R"({"id":1,"n":2})");
     rejected(expect_merge_rule(MergedRequired{1, {}}, R"({"id":null})"),
-             R"(MergedRequired is not constructible from JSON without the key "id")");
+             R"(a required key is missing; reading the key "id" of MergedRequired)");
     EXPECT_THROW(yyjson::merge_into(R"({"id":null})", *std::make_unique<MergedRequired>()), yyjson::bad_cast);
 
     // the counts take the members of the object after the merge
@@ -4975,73 +5466,83 @@ TEST(Constraints, MergedObject)
         t.z = z;
         return t;
     };
-    const auto more = "MergedCounted has more properties than the maximum 2";
     EXPECT_EQ(expect_merge_rule(counted(1, {}, 0), R"({"b":2})"), R"({"a":1,"b":2})");
     EXPECT_EQ(expect_merge_rule(counted(1, {}, 0), R"({"z":3})"), R"({"a":1,"z":3})");
-    rejected(expect_merge_rule(counted(1, {}, 3), R"({"b":2})"), more);
-    rejected(expect_merge_rule(counted(1, {}, 0), R"({"b":2,"y":1})"), more);
+    rejected(expect_merge_rule(counted(1, {}, 3), R"({"b":2})"),
+             "the object has more properties than the maximum 2; reading MergedCounted");
+    rejected(expect_merge_rule(counted(1, {}, 0), R"({"b":2,"y":1})"),
+             "the object has more properties than the maximum 2; reading MergedCounted");
     EXPECT_EQ(expect_merge_rule(counted(1, {}, 3), R"({"b":2,"z":null})"), R"({"a":1,"b":2})");
-    const auto fewer = "MergedMinimum has fewer properties than the minimum 2";
     EXPECT_EQ(expect_merge_rule(MergedMinimum{0, 1}, R"({"c":1})"), R"({"a":0,"b":1})");
     EXPECT_EQ(expect_merge_rule(MergedMinimum{0, 1}, R"({"b":2})"), R"({"a":0,"b":2})");
-    rejected(expect_merge_rule(MergedMinimum{0, 1}, R"({"b":null})"), fewer);
-    rejected(expect_merge_rule(MergedMinimum{0, 1}, R"({"a":null,"b":null,"c":1})"), fewer);
+    rejected(expect_merge_rule(MergedMinimum{0, 1}, R"({"b":null})"),
+             "the object has fewer properties than the minimum 2; reading MergedMinimum");
+    rejected(expect_merge_rule(MergedMinimum{0, 1}, R"({"a":null,"b":null,"c":1})"),
+             "the object has fewer properties than the minimum 2; reading MergedMinimum");
 
     // a closed subschema sees the keys of the object after the merge
-    const auto none = "MergedClosed satisfies none of the subschemas of yyjson::one_of";
     EXPECT_EQ(expect_merge_rule(MergedClosed{1, {}}, R"({"x":2})"), R"({"x":2})");
     EXPECT_EQ(expect_merge_rule(MergedClosed{1, {}}, R"({"z":1})"), R"({"x":1,"z":1})");
-    rejected(expect_merge_rule(MergedClosed{1, {}}, R"({"y":1})"), none);
+    rejected(expect_merge_rule(MergedClosed{1, {}}, R"({"y":1})"),
+             "the value satisfies none of the subschemas of oneOf; reading MergedClosed");
     EXPECT_EQ(expect_merge_rule(MergedClosed{1, 1}, R"({"z":null})"), R"({"x":1})");
-    rejected(expect_merge_rule(MergedClosed{1, 1}, R"({"x":null})"), none);
+    rejected(expect_merge_rule(MergedClosed{1, 1}, R"({"x":null})"),
+             "the value satisfies none of the subschemas of oneOf; reading MergedClosed");
 }
 
 TEST(Constraints, MergedObjectAtField)
 {
-    const auto rejected = [](std::string_view result, std::string_view message) {
-        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    const auto rejected = [](std::string_view result, const expected_text& message) {
+        expect_text(result.starts_with("bad cast: ") ? result.substr(10) : result, message);
     };
-    const auto keys = R"(the value of the key "start" of MergedPath does not have the keys and the values that )"
-                      R"(yyjson::property and required give at /start)";
-    const auto fewer = R"(the value of the key "end" of MergedPath has fewer properties than the minimum 2 at /end)";
     const auto merge = [](const MergedPath& t, std::string_view patch) {
         return expect_merge_rule<MergedPath, true>(t, patch);
     };
     const auto path = MergedPath{{1, 3}, {}};
     EXPECT_EQ(merge(path, R"({"start":{"x":2}})"), R"({"start":{"x":2,"y":3}})");
-    rejected(merge(path, R"({"start":{"y":null}})"), keys);
-    rejected(merge(MergedPath{{1, {}}, {}}, R"({"start":{"x":2}})"), keys);
-    rejected(merge(path, R"({"end":{"x":2}})"), fewer);
-    rejected(merge(path, R"({"end":{"y":4}})"), fewer);
-    rejected(merge(path, R"({"end":{"x":2,"y":null}})"), fewer);
+    rejected(merge(path, R"({"start":{"y":null}})"),
+             R"(the object does not satisfy properties at /start; reading the key "start" of MergedPath)");
+    rejected(merge(MergedPath{{1, {}}, {}}, R"({"start":{"x":2}})"),
+             R"(the object does not satisfy properties at /start; reading the key "start" of MergedPath)");
+    rejected(merge(path, R"({"end":{"x":2}})"),
+             R"(the object has fewer properties than the minimum 2 at /end; reading the key "end" of MergedPath)");
+    rejected(merge(path, R"({"end":{"y":4}})"),
+             R"(the object has fewer properties than the minimum 2 at /end; reading the key "end" of MergedPath)");
+    rejected(merge(path, R"({"end":{"x":2,"y":null}})"),
+             R"(the object has fewer properties than the minimum 2 at /end; reading the key "end" of MergedPath)");
     EXPECT_EQ(merge(path, R"({"end":{"x":2,"y":4}})"), R"({"start":{"x":1,"y":3},"end":{"x":2,"y":4}})");
     const auto ended = MergedPath{{1, 3}, MergedPoint{2, 4}};
     EXPECT_EQ(merge(ended, R"({"end":{"x":5}})"), R"({"start":{"x":1,"y":3},"end":{"x":5,"y":4}})");
-    rejected(merge(ended, R"({"end":{"y":null}})"), fewer);
+    rejected(merge(ended, R"({"end":{"y":null}})"),
+             R"(the object has fewer properties than the minimum 2 at /end; reading the key "end" of MergedPath)");
 }
 
 TEST(Constraints, MergedAbsent)
 {
     // a value that is absent, as an empty optional or a new key of a map, reads the patch without the null members
     // of its objects
-    const auto rejected = [](std::string_view result, std::string_view message) {
-        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    const auto rejected = [](std::string_view result, const expected_text& message) {
+        expect_text(result.starts_with("bad cast: ") ? result.substr(10) : result, message);
     };
     const auto merge = [](std::string_view patch) {
         return expect_merge_rule<MergedAbsent, true>(MergedAbsent(), patch);
     };
-    const auto id = R"(MergedRequired is not constructible from JSON without the key "id")";
-    rejected(merge(R"({"req":{"n":1}})"), id);
-    rejected(merge(R"({"req":{"id":null,"n":1}})"), id);
+    rejected(merge(R"({"req":{"n":1}})"),
+             R"(a required key is missing at /req; reading the key "id" of MergedRequired)");
+    rejected(merge(R"({"req":{"id":null,"n":1}})"),
+             R"(a required key is missing at /req; reading the key "id" of MergedRequired)");
     EXPECT_EQ(merge(R"({"req":{"id":1,"n":null}})"), R"({"req":{"id":1},"reqs":{},"mins":{}})");
     EXPECT_EQ(merge(R"({"init":{"x":null,"y":4}})"), R"({"init":{"x":5,"y":4},"reqs":{},"mins":{}})");
     EXPECT_EQ(merge(R"({"point":{"x":null,"y":4}})"), R"({"point":{"x":0,"y":4},"reqs":{},"mins":{}})");
-    rejected(merge(R"({"reqs":{"k":{"n":1}}})"), id);
-    rejected(merge(R"({"reqs":{"k":{"id":null}}})"), id);
+    rejected(merge(R"({"reqs":{"k":{"n":1}}})"),
+             R"(a required key is missing at /reqs/k; reading the key "id" of MergedRequired)");
+    rejected(merge(R"({"reqs":{"k":{"id":null}}})"),
+             R"(a required key is missing at /reqs/k; reading the key "id" of MergedRequired)");
     EXPECT_EQ(merge(R"({"reqs":{"k":{"id":1,"n":null}}})"), R"({"reqs":{"k":{"id":1}},"mins":{}})");
-    const auto fewer = "MergedMinimum has fewer properties than the minimum 2";
-    rejected(merge(R"({"mins":{"k":{"b":1}}})"), fewer);
-    rejected(merge(R"({"mins":{"k":{"b":1,"c":null}}})"), fewer);
+    rejected(merge(R"({"mins":{"k":{"b":1}}})"),
+             "the object has fewer properties than the minimum 2 at /mins/k; reading MergedMinimum");
+    rejected(merge(R"({"mins":{"k":{"b":1,"c":null}}})"),
+             "the object has fewer properties than the minimum 2 at /mins/k; reading MergedMinimum");
     EXPECT_EQ(merge(R"({"mins":{"k":{"a":1,"b":null,"c":2}}})"), R"({"reqs":{},"mins":{"k":{"a":1}}})");
     // a null in an array stays, and so does a null member of an object in an array
     EXPECT_EQ(merge(R"({"arrays":{"v":[1,null],"w":null}})"),
@@ -5056,17 +5557,20 @@ TEST(Constraints, MergedAbsent)
 
 TEST(Constraints, MergedAbsentField)
 {
-    const auto rejected = [](std::string_view result, std::string_view message) {
-        EXPECT_TRUE(result.starts_with("bad cast: " + std::string(message))) << result;
+    const auto rejected = [](std::string_view result, const expected_text& message) {
+        expect_text(result.starts_with("bad cast: ") ? result.substr(10) : result, message);
     };
     // a field that the write omits is absent
     const auto outer = OmittedOuter{.name = "a", .in = {}, .min = {}};
     const auto merge = [](const OmittedOuter& t, std::string_view patch) {
         return expect_merge_rule<OmittedOuter, true>(t, patch);
     };
-    rejected(merge(outer, R"({"in":{"y":1}})"), R"(OmittedInner is not constructible from JSON without the key "z")");
+    rejected(
+        merge(outer, R"({"in":{"y":1}})"),
+        R"(the object does not have all the keys that dependentRequired requires at /in; reading the key "z" of OmittedInner, which yyjson::dependent_required requires)");
     EXPECT_EQ(merge(outer, R"({"in":{"y":1,"z":2}})"), R"({"name":"a","in":{"y":1,"z":2}})");
-    rejected(merge(outer, R"({"min":{"b":1}})"), "MergedMinimum has fewer properties than the minimum 2");
+    rejected(merge(outer, R"({"min":{"b":1}})"),
+             "the object has fewer properties than the minimum 2 at /min; reading MergedMinimum");
     EXPECT_EQ(merge(outer, R"({"min":{"a":1,"b":null,"c":2}})"), R"({"name":"a","in":{"z":0},"min":{"a":1}})");
     auto written = outer;
     written.in.z = 1;
@@ -5074,25 +5578,25 @@ TEST(Constraints, MergedAbsentField)
 
     // the counts in a condition count a field that the patch does not name
     rejected(expect_merge_rule(KeptGate{{}, {1}, {{"k", 1}, {"l", 2}}}, R"({"a":1})"),
-             R"(the value of the key "s" of KeptGate has fewer items than the minimum 2)");
+             R"(the value satisfies if and not then at /s; reading the key "s" of KeptGate)");
     rejected(expect_merge_rule(KeptGate{{}, {1, 2}, {{"k", 1}}}, R"({"a":1})"),
-             R"(the value of the key "m" of KeptGate has fewer properties than the minimum 2)");
+             R"(the value satisfies if and not then at /m; reading the key "m" of KeptGate)");
     EXPECT_EQ(expect_merge_rule(KeptGate{{}, {1, 2}, {{"k", 1}}}, R"({"a":1,"m":{"l":2}})"),
               R"({"a":1,"s":[1,2],"m":{"k":1,"l":2}})");
     EXPECT_EQ(expect_merge_rule(KeptGate{{}, {1, 2}, {{"k", 1}, {"l", 2}}}, R"({"a":1})"),
               R"({"a":1,"s":[1,2],"m":{"k":1,"l":2}})");
 
     // a new key of a map of the keys that no field names is absent
-    const auto id = R"(MergedRequired is not constructible from JSON without the key "id")";
     const auto rest = [](std::string_view patch) {
         return expect_merge_rule<MergedRest, true>(MergedRest{.a = 1, .ks = {}, .rest = {{"r", {1, {}}}}}, patch);
     };
-    rejected(rest(R"({"x":{"n":1}})"), id);
-    rejected(rest(R"({"k":{"n":1}})"), id);
+    rejected(rest(R"({"x":{"n":1}})"), R"(a required key is missing at /x; reading the key "id" of MergedRequired)");
+    rejected(rest(R"({"k":{"n":1}})"), R"(a required key is missing at /k; reading the key "id" of MergedRequired)");
     EXPECT_EQ(rest(R"({"x":{"id":2,"n":null},"k":{"id":3,"n":null}})"),
               R"({"a":1,"k":{"id":3},"r":{"id":1},"x":{"id":2}})");
     EXPECT_EQ(rest(R"({"r":{"n":2}})"), R"({"a":1,"r":{"id":1,"n":2}})");
-    rejected(rest(R"({"r":{"id":null}})"), id);
+    rejected(rest(R"({"r":{"id":null}})"),
+             R"(a required key is missing at /r; reading the key "id" of MergedRequired)");
 
     // a field that the write wrote before a merge without a document changed it to its default is not absent in
     // the merge through a document that follows, which the null of the adjacent tag starts
@@ -5107,7 +5611,7 @@ TEST(Constraints, MergedAbsentField)
     EXPECT_EQ(fallback(WrittenOuter{{}, {{"a", 1}}, {}}, R"({"m":{"a":null},"body":null,"t":null})"),
               R"({"in":{"z":0},"m":{},"body":null})");
     rejected(fallback(WrittenOuter(), R"({"in":{"y":1},"body":null,"t":null})"),
-             R"(WrittenInner is not constructible from JSON without the key "z")");
+             R"(a required key is missing at /in; reading the key "z" of WrittenInner)");
 }
 
 TEST(Constraints, MergedMapMembers)
@@ -5269,47 +5773,55 @@ TEST(Constraints, MergedObjectRule)
 TEST(Constraints, StructConditionsOfValues)
 {
     expect_conditions<TypeTested>(R"({})", "");
-    expect_conditions<TypeTested>(R"({"auto":{}})", R"(TypeTested is not constructible from JSON without the key )"
-                                                    R"("name", which yyjson::if_then_else requires)");
+    expect_conditions<TypeTested>(
+        R"({"auto":{}})",
+        R"(a required key is missing; reading the key "name" of TypeTested, which yyjson::if_then_else requires)");
     expect_conditions<TypeTested>(R"({"auto":{},"name":"a"})", "");
     expect_conditions<TypeTested>(R"({"auto":[]})", "");
-    expect_conditions<TypeTested>(R"({"kind":null})",
-                                  "TypeTested has the keys and the values that yyjson::not_ rejects", "", false);
+    expect_conditions<TypeTested>(
+        R"({"kind":null})", "the value satisfies the subschema of not; reading TypeTested in yyjson::not_", "", false);
     expect_conditions<TypeTested>(R"({"kind":1})", "");
-    expect_conditions<TypeTested>(R"({"point":{"x":1}})", R"(TypeTested is not constructible from JSON without )"
-                                                          R"(the key "label", which yyjson::if_then_else requires)");
+    expect_conditions<TypeTested>(
+        R"({"point":{"x":1}})",
+        R"(a required key is missing; reading the key "label" of TypeTested, which yyjson::if_then_else requires)");
     expect_conditions<TypeTested>(R"({"point":{"x":1,"y":2},"label":"l"})", "");
     expect_conditions<TypeTested>(R"({"point":"a"})", "");
 
-    const auto missing = R"(AlignedConditions is not constructible from JSON without the key "kind", which )"
-                         R"(yyjson::if_then_else requires)";
-    const auto rejected = "AlignedConditions has the keys and the values that yyjson::not_ rejects";
     expect_conditions<AlignedConditions>(R"({"xs":[1],"ys":[],"rows":[]})", "");
-    expect_conditions<AlignedConditions>(R"({"xs":[1,2],"ys":[],"rows":[]})", missing);
+    expect_conditions<AlignedConditions>(
+        R"({"xs":[1,2],"ys":[],"rows":[]})",
+        R"(a required key is missing; reading the key "kind" of AlignedConditions, which yyjson::if_then_else requires)");
     expect_conditions<AlignedConditions>(R"({"xs":[1,2,3],"kind":"few","ys":[],"rows":[]})", "");
     expect_conditions<AlignedConditions>(R"({"xs":[1,2,3,4],"ys":[],"rows":[]})", "");
-    expect_conditions<AlignedConditions>(R"({"xs":[1,2,3,4],"kind":"few","ys":[],"rows":[]})", rejected);
-    expect_conditions<AlignedConditions>(R"({"xs":[1,2],"kind":"many","ys":[],"rows":[]})",
-                                         R"(the value of the key "kind" of AlignedConditions is not )", "/kind");
+    expect_conditions<AlignedConditions>(
+        R"({"xs":[1,2,3,4],"kind":"few","ys":[],"rows":[]})",
+        "the value satisfies the subschema of not; reading AlignedConditions in yyjson::not_");
+    expect_conditions<AlignedConditions>(
+        R"({"xs":[1,2],"kind":"many","ys":[],"rows":[]})",
+        R"(the value satisfies if and not then at /kind; reading the key "kind" of AlignedConditions)", "/kind");
 
-    const auto n = R"(PrefixConditions is not constructible from JSON without the key "n", which )"
-                   R"(yyjson::if_then_else requires)";
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""]})", "");
-    expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["a"]})", n);
-    expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":[]})", n);
+    expect_conditions<PrefixConditions>(
+        R"({"v":[],"w":[],"t":[0,""],"d":["a"]})",
+        R"(a required key is missing; reading the key "n" of PrefixConditions, which yyjson::if_then_else requires)");
+    expect_conditions<PrefixConditions>(
+        R"({"v":[],"w":[],"t":[0,""],"d":[]})",
+        R"(a required key is missing; reading the key "n" of PrefixConditions, which yyjson::if_then_else requires)");
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["b"]})", "");
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["a"],"n":1})", "");
 }
 
 TEST(Constraints, ClosedConditions)
 {
-    const auto closed = [](std::string_view type, std::string_view key) {
-        return std::string(type) + R"( has the key ")" + std::string(key) +
-               R"(", which yyjson::additional_properties(false) of yyjson::if_then_else rejects)";
-    };
-    const auto shape = [&](std::string_view json, std::string_view key = "") {
-        expect_conditions<ConditionClosed>(json, key.empty() ? "" : closed("ConditionClosed", key),
-                                           key.empty() ? "" : "/" + std::string(key));
+    // `then` is true when the key "kind" satisfies yyjson::if_
+    const auto shape = [&](std::string_view json, std::string_view key = "", bool then = true) {
+        const auto failure = then ? "if and not then" : "neither if nor else";
+        expect_conditions<ConditionClosed>(
+            json,
+            key.empty() ? ""
+                        : std::format("the value satisfies {} at /{}; reading ConditionClosed in yyjson::if_then_else",
+                                      failure, key),
+            key.empty() ? "" : "/" + std::string(key));
     };
     shape(R"({"kind":"circle","r":1})");
     shape(R"({"r":1,"kind":"circle"})");
@@ -5318,19 +5830,23 @@ TEST(Constraints, ClosedConditions)
     shape(R"({"kind":"circle","r":1,"w":2})", "w");
     shape(R"({"w":2,"kind":"circle","r":1})", "w");
     shape(R"({"kind":"circle","r":1,"x":1})", "x");
-    shape(R"({"kind":"square","r":1})", "r");
-    shape(R"({"x":1})", "x");
+    shape(R"({"kind":"square","r":1})", "r", false);
+    shape(R"({"x":1})", "x", false);
     // in a subschema, the keys come before the values
     shape(R"({"kind":"circle","r":-1,"w":2})", "w");
 
     expect_conditions<ClosedTagged>(R"({"kind":"i","data":1,"n":1})", "");
     expect_conditions<ClosedTagged>(R"({"n":1,"data":"a","kind":"s"})", "");
-    expect_conditions<ClosedTagged>(R"({"kind":"i","data":1,"n":1,"z":0})", closed("ClosedTagged", "z"), "/z");
+    expect_conditions<ClosedTagged>(
+        R"({"kind":"i","data":1,"n":1,"z":0})",
+        "the value satisfies if and not then at /z; reading ClosedTagged in yyjson::if_then_else", "/z");
     expect_conditions<ClosedTagged>(R"({"kind":"i","data":1,"z":0})", "");
 
     expect_conditions<ClosedAlternatives>(R"({"type":"c","a":1})", "");
     expect_conditions<ClosedAlternatives>(R"({"a":1,"type":"c"})", "");
-    expect_conditions<ClosedAlternatives>(R"({"type":"c","a":1,"b":2})", closed("ClosedAlternative", "b"), "/b");
+    expect_conditions<ClosedAlternatives>(
+        R"({"type":"c","a":1,"b":2})",
+        "the value satisfies if and not then at /b; reading ClosedAlternative in yyjson::if_then_else", "/b");
 
     // merge_into checks the keys of the object after the merge
     auto merged = ConditionClosed{"circle", 1.0, {}};
@@ -5342,7 +5858,8 @@ TEST(Constraints, ClosedConditions)
     EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"w":1})", merged); }).path(), "/w");
     // without the key "kind", yyjson::else_ applies, and rejects the key "r" that the merged object keeps
     auto e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":null})", merged); });
-    EXPECT_TRUE(message_of(e).starts_with(closed("ConditionClosed", "r"))) << e.what();
+    expect_text(message_of(e),
+                "the value satisfies neither if nor else at /r; reading ConditionClosed in yyjson::if_then_else");
     EXPECT_EQ(e.path(), "/r");
     merged = ConditionClosed{"circle", 1.0, {}};
     e = bad_cast_of([&] { yyjson::merge_into(R"({"kind":"circle","r":1,"w":1})", merged); });
@@ -5351,70 +5868,83 @@ TEST(Constraints, ClosedConditions)
 
 TEST(Constraints, CountedConditions)
 {
-    const auto fewer = "ConditionCounted has fewer properties than the minimum 3 of yyjson::if_then_else";
-    const auto more = "ConditionCounted has more properties than the maximum 2 of yyjson::if_then_else";
     expect_conditions<ConditionCounted>(R"({})", "");
     expect_conditions<ConditionCounted>(R"({"kind":"pair","a":1,"x":2})", "");
     expect_conditions<ConditionCounted>(R"({"x":2,"kind":"pair","a":1,"y":3})", "");
     expect_conditions<ConditionCounted>(R"({"kind":"one"})", "");
-    expect_conditions<ConditionCounted>(R"({"kind":"pair","a":1})", fewer);
-    expect_conditions<ConditionCounted>(R"({"kind":"one","a":1,"x":2})", more);
+    expect_conditions<ConditionCounted>(
+        R"({"kind":"pair","a":1})",
+        "the value satisfies if and not then; reading ConditionCounted in yyjson::if_then_else");
+    expect_conditions<ConditionCounted>(
+        R"({"kind":"one","a":1,"x":2})",
+        "the value satisfies neither if nor else; reading ConditionCounted in yyjson::if_then_else");
     // the keys of no field count too
-    expect_conditions<ConditionCounted>(R"({"x":1,"y":2,"z":3})", more);
+    expect_conditions<ConditionCounted>(
+        R"({"x":1,"y":2,"z":3})",
+        "the value satisfies neither if nor else; reading ConditionCounted in yyjson::if_then_else");
     expect_conditions<ConditionCounted>(R"({"a":1,"x":2})", "");
-    expect_conditions<ConditionCounted>(R"({"kind":"one","x":2})",
-                                        R"(ConditionCounted is not constructible from JSON without the key "a", )"
-                                        R"(which yyjson::if_then_else requires)");
-    expect_conditions<ConditionCounted>(R"({"kind":"pair","a":1,"x":2,"y":3,"z":4})",
-                                        "ConditionCounted has the keys and the values that yyjson::not_ rejects");
+    expect_conditions<ConditionCounted>(
+        R"({"kind":"one","x":2})",
+        R"(a required key is missing; reading the key "a" of ConditionCounted, which yyjson::if_then_else requires)");
+    expect_conditions<ConditionCounted>(
+        R"({"kind":"pair","a":1,"x":2,"y":3,"z":4})",
+        "the value satisfies the subschema of not; reading ConditionCounted in yyjson::not_");
     // a null is a key of the object that a read counts, and no key of a patch
-    expect_conditions<ConditionCounted>(R"({"kind":"one","a":null,"x":2})", more, "", false);
+    expect_conditions<ConditionCounted>(
+        R"({"kind":"one","a":null,"x":2})",
+        "the value satisfies neither if nor else; reading ConditionCounted in yyjson::if_then_else", "", false);
     auto merged = ConditionCounted{};
     yyjson::merge_into(R"({"kind":"one","a":null})", merged);
     EXPECT_EQ(merged.kind, "one");
 
     expect_conditions<CountedAlternatives>(R"({"type":"c","b":1})", "");
     expect_conditions<CountedAlternatives>(R"({"type":"c"})", "");
-    expect_conditions<CountedAlternatives>(R"({"type":"c","a":1})",
-                                           R"(CountedAlternative is not constructible from JSON without the key )"
-                                           R"("b", which yyjson::if_then_else requires)");
+    expect_conditions<CountedAlternatives>(
+        R"({"type":"c","a":1})",
+        R"(a required key is missing; reading the key "b" of CountedAlternative, which yyjson::if_then_else requires)");
     EXPECT_NO_THROW((void)yyjson::read<CountedAlternative>(R"({"a":1})"));
 
     expect_conditions<ConditionNamed>(R"({"kind":"short","a":1})", "");
     expect_conditions<ConditionNamed>(R"({"kind":"long","alpha":1})", "");
     expect_conditions<ConditionNamed>(R"({"kind":"short","alpha":1})",
-                                      R"(a key of ConditionNamed is longer than the maximum length 4 in )"
-                                      R"(yyjson::property_names of yyjson::if_then_else)",
+                                      "the value satisfies if and not then at /alpha; reading a key of ConditionNamed "
+                                      "in yyjson::property_names of yyjson::if_then_else",
                                       "/alpha");
 }
 
 TEST(Constraints, GroupedConditions)
 {
-    const auto without = [](std::string_view groups) {
-        return "ConditionGrouped is not constructible from JSON without all the keys of one of " + std::string(groups);
-    };
     // in the order of the fields, and out of it
     expect_conditions<ConditionGrouped>(R"({"kind":"pair","a":1})", "");
     expect_conditions<ConditionGrouped>(R"({"b":1,"kind":"pair"})", "");
     expect_conditions<ConditionGrouped>(
         R"({"kind":"pair","a":1,"b":2})",
-        R"(ConditionGrouped is not constructible from JSON with all the keys of more than one of ["a"], ["b"])");
-    expect_conditions<ConditionGrouped>(R"({"kind":"pair","c":1})", without(R"(["a"], ["b"])"));
+        R"(the value satisfies if and not then; reading ConditionGrouped with all the keys of more than one of ["a"], ["b"])");
+    expect_conditions<ConditionGrouped>(
+        R"({"kind":"pair","c":1})",
+        R"(the value satisfies if and not then; reading ConditionGrouped without all the keys of one of ["a"], ["b"])");
     // the values of the fields come first
-    expect_conditions<ConditionGrouped>(R"({"kind":"pair","c":10})",
-                                        R"(the value of the key "c" of ConditionGrouped is greater than)", "/c");
+    expect_conditions<ConditionGrouped>(
+        R"({"kind":"pair","c":10})",
+        R"(the value satisfies if and not then at /c; reading the key "c" of ConditionGrouped)", "/c");
     expect_conditions<ConditionGrouped>(R"({"a":1,"c":2})", "");
     expect_conditions<ConditionGrouped>(R"({"c":2,"b":1})", "");
-    expect_conditions<ConditionGrouped>(R"({"a":1})", without(R"(["a", "c"], ["b"])"));
-    expect_conditions<ConditionGrouped>(R"({})", without(R"(["a", "c"], ["b"])"));
+    expect_conditions<ConditionGrouped>(
+        R"({"a":1})",
+        R"(the value satisfies neither if nor else; reading ConditionGrouped without all the keys of one of ["a", "c"], ["b"])");
+    expect_conditions<ConditionGrouped>(
+        R"({})",
+        R"(the value satisfies neither if nor else; reading ConditionGrouped without all the keys of one of ["a", "c"], ["b"])");
     // the number of the keys comes before the groups
-    expect_conditions<ConditionGrouped>(R"({"kind":"one","x":1,"y":2})",
-                                        "ConditionGrouped has more properties than the maximum 2 of "
-                                        "yyjson::if_then_else");
-    expect_conditions<ConditionGrouped>(R"({"kind":"one","x":1})", without(R"(["a", "c"], ["b"])"));
-    expect_conditions<ConditionGrouped>(R"({"kind":"one","b":1,"y":2})",
-                                        "ConditionGrouped has more properties than the maximum 2 of "
-                                        "yyjson::if_then_else");
+    expect_conditions<ConditionGrouped>(
+        R"({"kind":"one","x":1,"y":2})",
+        "the value satisfies neither if nor else; reading ConditionGrouped in yyjson::if_then_else");
+    expect_conditions<ConditionGrouped>(
+        R"({"kind":"one","x":1})",
+        R"(the value satisfies neither if nor else; reading ConditionGrouped without all the keys of one of ["a", "c"], ["b"])");
+    expect_conditions<ConditionGrouped>(
+        R"({"kind":"one","b":1,"y":2})",
+        "the value satisfies neither if nor else; reading ConditionGrouped in yyjson::if_then_else");
 
     expect_conditions<GroupedAlternatives>(R"({"type":"g"})", "");
     expect_conditions<GroupedAlternatives>(R"({"type":"g","b":1})", "");
@@ -5426,55 +5956,76 @@ TEST(Constraints, ObjectKeywordsAtPositions)
     const auto value = [](std::string_view key) {
         return R"(the value of the key ")" + std::string(key) + R"(" of Positions )";
     };
-    const auto element = [](std::string_view key) {
-        return R"(an element of the value of the key ")" + std::string(key) + R"(" of Positions )";
-    };
-    const auto closed = "has a key that yyjson::additional_properties(false) rejects";
-    const auto fields = "does not have the keys and the values that yyjson::property and required give";
     expect_conditions<Positions>(
         R"({"field":{"a":1},"list":[{"a":1},{}],"map":{"k":{"a":1}},"alternative":{"type":"p","a":1},)"
         R"("groups":{"a":1},"conditional":{"a":1}})",
         "");
-    expect_conditions<Positions>(R"({"field":{}})", value("field") + "has fewer properties than the minimum 1",
-                                 "/field");
-    expect_conditions<Positions>(R"({"field":{"b":1}})", value("field") + closed, "/field");
-    expect_conditions<Positions>(R"({"field":{"a":1,"z":1}})", value("field") + closed, "/field");
+    expect_conditions<Positions>(
+        R"({"field":{}})",
+        R"(the object has fewer properties than the minimum 1 at /field; reading the key "field" of Positions)",
+        "/field");
+    expect_conditions<Positions>(
+        R"({"field":{"b":1}})",
+        R"(the object has a key that additionalProperties does not allow at /field; reading the key "field" of Positions)",
+        "/field");
+    expect_conditions<Positions>(
+        R"({"field":{"a":1,"z":1}})",
+        R"(the object has a key that additionalProperties does not allow at /field; reading the key "field" of Positions)",
+        "/field");
     // the empty key is not a tag
-    expect_conditions<Positions>(R"({"field":{"a":1,"":1}})", value("field") + closed, "/field");
-    expect_conditions<Positions>(R"({"field":{"a":9}})", value("field") + fields, "/field");
+    expect_conditions<Positions>(
+        R"({"field":{"a":1,"":1}})",
+        R"(the object has a key that additionalProperties does not allow at /field; reading the key "field" of Positions)",
+        "/field");
+    expect_conditions<Positions>(
+        R"({"field":{"a":9}})",
+        R"(the object does not satisfy properties at /field; reading the key "field" of Positions)", "/field");
     // a null in a field that cannot hold null is no key
-    expect_conditions<Positions>(R"({"field":{"a":null,"b":null}})", value("field") + closed, "/field");
+    expect_conditions<Positions>(
+        R"({"field":{"a":null,"b":null}})",
+        R"(the object has a key that additionalProperties does not allow at /field; reading the key "field" of Positions)",
+        "/field");
 
-    expect_conditions<Positions>(R"({"list":[{"a":1},{"a":1,"b":2}]})",
-                                 element("list") + "has more properties than the maximum 1", "/list/1");
+    expect_conditions<Positions>(
+        R"({"list":[{"a":1},{"a":1,"b":2}]})",
+        R"(the object has more properties than the maximum 1 at /list/1; reading an element of the value at the key "list" of Positions)",
+        "/list/1");
     expect_conditions<Positions>(
         R"({"list":[{"zz":1}]})",
-        element("list") + "has a key that does not satisfy the constraints of yyjson::property_names", "/list/0");
-    expect_conditions<Positions>(R"({"map":{"k":{"a":1,"b":2}}})",
-                                 element("map") + "satisfies the settings of yyjson::not_", "/map/k");
+        R"(the object has a key that does not satisfy propertyNames at /list/0; reading an element of the value at the key "list" of Positions)",
+        "/list/0");
+    expect_conditions<Positions>(
+        R"({"map":{"k":{"a":1,"b":2}}})",
+        R"(the value satisfies the subschema of not at /map/k; reading an element of the value at the key "map" of Positions)",
+        "/map/k");
 
     // the internal tag is a key that the alternative has
-    expect_conditions<Positions>(R"({"alternative":{"type":"o","x":1}})", value("alternative") + closed,
-                                 "/alternative");
-    expect_conditions<Positions>(R"({"alternative":{"a":-1,"type":"p"}})", value("alternative") + fields,
-                                 "/alternative");
+    expect_conditions<Positions>(
+        R"({"alternative":{"type":"o","x":1}})",
+        R"(the object has a key that additionalProperties does not allow at /alternative; reading the key "alternative" of Positions)",
+        "/alternative");
+    expect_conditions<Positions>(
+        R"({"alternative":{"a":-1,"type":"p"}})",
+        R"(the object does not satisfy properties at /alternative; reading the key "alternative" of Positions)",
+        "/alternative");
     expect_conditions<Positions>(R"({"alternative":{"type":"o","a":2}})", "");
 
     expect_conditions<Positions>(R"({"groups":{"b":1}})", "");
     expect_conditions<Positions>(
         R"({"groups":{"a":1,"b":1}})",
-        value("groups") + "has all the keys that more than one subschema of yyjson::one_of requires", "/groups");
-    expect_conditions<Positions>(R"({"groups":{}})",
-                                 value("groups") +
-                                     "does not have all the keys that one subschema of yyjson::one_of or any_of "
-                                     "requires",
-                                 "/groups");
+        R"(the object has all the keys that more than one subschema of oneOf requires at /groups; reading the key "groups" of Positions)",
+        "/groups");
+    expect_conditions<Positions>(
+        R"({"groups":{}})",
+        R"(the object does not have all the keys that one subschema of oneOf requires at /groups; reading the key "groups" of Positions)",
+        "/groups");
     expect_conditions<Positions>(
         R"({"conditional":{"a":1,"b":1}})",
-        value("conditional") + "satisfies the settings of yyjson::if_ and not those of yyjson::then", "/conditional");
+        R"(the value satisfies if and not then at /conditional; reading the key "conditional" of Positions)",
+        "/conditional");
     expect_conditions<Positions>(
         R"({"conditional":{"b":1}})",
-        value("conditional") + "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_",
+        R"(the value satisfies neither if nor else at /conditional; reading the key "conditional" of Positions)",
         "/conditional");
     expect_conditions<Positions>(R"({"conditional":{}})", "");
 
@@ -5484,7 +6035,10 @@ TEST(Constraints, ObjectKeywordsAtPositions)
     yyjson::merge_into(R"({"field":{"a":2}})", merged);
     EXPECT_EQ(merged.field->a, 2);
     const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"field":{"b":1}})", merged); });
-    EXPECT_TRUE(message_of(e).starts_with(value("field") + closed)) << e.what();
+    EXPECT_EQ(
+        message_of(e),
+        R"(the object has a key that additionalProperties does not allow at /field; reading the key "field" of Positions)")
+        << e.what();
     // a merge that throws leaves the value unspecified
     merged = Positions{};
     merged.groups = Positioned{1, {}};
@@ -5494,27 +6048,39 @@ TEST(Constraints, ObjectKeywordsAtPositions)
 
 TEST(Constraints, DomConditions)
 {
-    const auto v = R"(the value of the key "v" of DomConditions )";
     expect_conditions<DomConditions>(R"({"v":{},"e":[]})", "");
     expect_conditions<DomConditions>(R"({"v":{"good":1},"e":[]})", "");
-    expect_conditions<DomConditions>(R"({"v":{"bad":null},"e":[]})", v, "/v");
+    expect_conditions<DomConditions>(
+        R"({"v":{"bad":null},"e":[]})",
+        R"(the value satisfies the subschema of not at /v; reading the key "v" of DomConditions)", "/v");
     // a value that is not an object has every key that yyjson::required names, as in JSON Schema
-    expect_conditions<DomConditions>(R"({"v":1,"e":[]})", v, "/v");
-    const auto o = R"(the value of the key "o" of DomConditions )";
+    expect_conditions<DomConditions>(
+        R"({"v":1,"e":[]})", R"(the value satisfies the subschema of not at /v; reading the key "v" of DomConditions)",
+        "/v");
     expect_conditions<DomConditions>(R"({"v":{},"o":{},"e":[]})", "");
     expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"y"},"e":[]})", "");
     expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":1},"e":[]})", "");
-    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x"},"e":[]})", o, "/o");
-    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":0},"e":[]})", o, "/o");
+    expect_conditions<DomConditions>(
+        R"({"v":{},"o":{"kind":"x"},"e":[]})",
+        R"(the value satisfies if and not then at /o; reading the key "o" of DomConditions)", "/o");
+    expect_conditions<DomConditions>(
+        R"({"v":{},"o":{"kind":"x","x":0},"e":[]})",
+        R"(the value satisfies if and not then at /o; reading the key "o" of DomConditions)", "/o");
     expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":"1"},"e":[]})", "");
-    const auto e = R"(an element of the value of the key "e" of DomConditions does not have the keys and the values )"
-                   R"(that yyjson::property and required give)";
     expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":0},1,"a",null,[]]})", "");
-    expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":0},{}]})", e, "/e/1");
-    expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":-1}]})", e, "/e/0");
+    expect_conditions<DomConditions>(
+        R"({"v":{},"e":[{"id":0},{}]})",
+        R"(the object does not satisfy properties at /e/1; reading an element of the value at the key "e" of DomConditions)",
+        "/e/1");
+    expect_conditions<DomConditions>(
+        R"({"v":{},"e":[{"id":-1}]})",
+        R"(the object does not satisfy properties at /e/0; reading an element of the value at the key "e" of DomConditions)",
+        "/e/0");
     expect_conditions<DomConditions>(R"({"v":{},"e":[],"m":{"a":{"id":1},"b":2}})", "");
-    expect_conditions<DomConditions>(R"({"v":{},"e":[],"m":{"a":{"id":1},"b":{}}})",
-                                     R"(an element of the value of the key "m" of DomConditions )", "/m/b");
+    expect_conditions<DomConditions>(
+        R"({"v":{},"e":[],"m":{"a":{"id":1},"b":{}}})",
+        R"(the object does not satisfy properties at /m/b; reading an element of the value at the key "m" of DomConditions)",
+        "/m/b");
 }
 
 TEST(Constraints, MultiKindValues)
@@ -5538,28 +6104,52 @@ TEST(Constraints, MultiKindValues)
           R"("list":[1,2],"w":5)", R"("list":true)", R"("elements":[1,"a",null,{},[]])", R"("c":[1])", R"("c":{"k":1})",
           R"("c":false)", R"("u":2.5)"})
         expect_conditions<MultiKind>(json(members), "");
-    const auto key = [](std::string_view k, std::string_view text) {
-        return std::format(R"(the value of the key "{}" of MultiKind {})", k, text);
-    };
-    expect_conditions<MultiKind>(json(R"("v":2)"), key("v", "is not one of"), "/v");
-    expect_conditions<MultiKind>(json(R"("v":[])"), key("v", "is not one of"), "/v");
-    expect_conditions<MultiKind>(json(R"("w":-1)"), key("w", "is less than"), "/w");
-    expect_conditions<MultiKind>(json(R"("w":"abc")"), key("w", "is longer"), "/w");
-    expect_conditions<MultiKind>(json(R"("s":"light")"), key("s", "is not one of"), "/s");
-    expect_conditions<MultiKind>(json(R"("s":4)"), key("s", "is not one of"), "/s");
-    expect_conditions<MultiKind>(json(R"("list":[1])"), key("list", "has fewer"), "/list");
-    expect_conditions<MultiKind>(json(R"("list":"b")"), key("list", "does not match"), "/list");
-    expect_conditions<MultiKind>(json(R"("list":{"a":1,"b":2})"), key("list", "has more"), "/list");
-    expect_conditions<MultiKind>(json(R"("list":[0,-1])"), R"(an element of the value of the key "list")", "/list/1");
-    expect_conditions<MultiKind>(json(R"("elements":[1,2])"), R"(an element of the value of the key "elements")",
-                                 "/elements/1");
-    expect_conditions<MultiKind>(json(R"("elements":[""])"), R"(an element of the value of the key "elements")",
-                                 "/elements/0");
-    expect_conditions<MultiKind>(json(R"("c":[1,2])"), key("c", "has more"), "/c");
-    expect_conditions<MultiKind>(json(R"("c":{})"), key("c", "has fewer"), "/c");
-    expect_conditions<MultiKind>(json(R"("u":1)"), key("u", "satisfies"), "/u");
-    expect_conditions<MultiKind>(json(R"("u":2)"), key("u", "is not one of"), "/u");
-    expect_conditions<MultiKind>(json(R"("u":"b")"), key("u", "is not one of"), "/u");
+    expect_conditions<MultiKind>(
+        json(R"("v":2)"), R"(the value is not one of 1, "x", null at /v; reading the key "v" of MultiKind)", "/v");
+    expect_conditions<MultiKind>(
+        json(R"("v":[])"), R"(the value is not one of 1, "x", null at /v; reading the key "v" of MultiKind)", "/v");
+    expect_conditions<MultiKind>(
+        json(R"("w":-1)"), R"(the number is less than the minimum 0 at /w; reading the key "w" of MultiKind)", "/w");
+    expect_conditions<MultiKind>(
+        json(R"("w":"abc")"),
+        R"(the string is longer than the maximum length 2 at /w; reading the key "w" of MultiKind)", "/w");
+    expect_conditions<MultiKind>(json(R"("s":"light")"),
+                                 R"(the value is not one of "dark", 3 at /s; reading the key "s" of MultiKind)", "/s");
+    expect_conditions<MultiKind>(json(R"("s":4)"),
+                                 R"(the value is not one of "dark", 3 at /s; reading the key "s" of MultiKind)", "/s");
+    expect_conditions<MultiKind>(
+        json(R"("list":[1])"),
+        R"(the array has fewer items than the minimum 2 at /list; reading the key "list" of MultiKind)", "/list");
+    expect_conditions<MultiKind>(
+        json(R"("list":"b")"),
+        R"(the string does not match the pattern "^a" at /list; reading the key "list" of MultiKind)", "/list");
+    expect_conditions<MultiKind>(
+        json(R"("list":{"a":1,"b":2})"),
+        R"(the object has more properties than the maximum 1 at /list; reading the key "list" of MultiKind)", "/list");
+    expect_conditions<MultiKind>(
+        json(R"("list":[0,-1])"),
+        R"(the number is less than the minimum 0 at /list/1; reading an element of the value at the key "list" of MultiKind)",
+        "/list/1");
+    expect_conditions<MultiKind>(
+        json(R"("elements":[1,2])"),
+        R"(the number is not less than the exclusive maximum 2 at /elements/1; reading an element of the value at the key "elements" of MultiKind)",
+        "/elements/1");
+    expect_conditions<MultiKind>(
+        json(R"("elements":[""])"),
+        R"(the string is shorter than the minimum length 1 at /elements/0; reading an element of the value at the key "elements" of MultiKind)",
+        "/elements/0");
+    expect_conditions<MultiKind>(
+        json(R"("c":[1,2])"), R"(the array has more items than the maximum 1 at /c; reading the key "c" of MultiKind)",
+        "/c");
+    expect_conditions<MultiKind>(
+        json(R"("c":{})"),
+        R"(the object has fewer properties than the minimum 1 at /c; reading the key "c" of MultiKind)", "/c");
+    expect_conditions<MultiKind>(
+        json(R"("u":1)"), R"(the value satisfies the subschema of not at /u; reading the key "u" of MultiKind)", "/u");
+    expect_conditions<MultiKind>(
+        json(R"("u":2)"), R"(the value is not one of 1, 2.5, "a" at /u; reading the key "u" of MultiKind)", "/u");
+    expect_conditions<MultiKind>(
+        json(R"("u":"b")"), R"(the value is not one of 1, 2.5, "a" at /u; reading the key "u" of MultiKind)", "/u");
 }
 
 TEST(Constraints, MultiKindWrittenForms)
@@ -5570,25 +6160,37 @@ TEST(Constraints, MultiKindWrittenForms)
     expect_accepted<MultiKindWritten>(R"({"p":[1,4,3],"q":[5,6]})", {MultiKindPair{1, 4, {3}}, {5, 6, {}}});
     // null at the position of a std::optional is an error, also in an alternative of a variant
     expect_rejected<MultiKindWritten>(R"({"p":"x","q":[5,null]})",
-                                      "std::optional<int> is not constructible from JSON null", "/q/1");
-    expect_rejected<MultiKindWritten>(R"({"p":[1,null],"q":[5]})", "std::variant<MultiKindPair, ", "/p");
-    const auto message = [](std::string_view key, std::string_view text) {
-        return std::format(R"(the value of the key "{}" of MultiKindWritten {})", key, text);
-    };
-    expect_rejected<MultiKindWritten>(R"({"p":[1],"q":[5]})", message("p", "has fewer"), "/p");
-    expect_rejected<MultiKindWritten>(R"({"p":[1,2,3,4],"q":[5]})", message("p", "has more"), "/p");
-    expect_rejected<MultiKindWritten>(R"({"p":"x","q":[5,1,2]})", message("q", "has more"), "/q");
-    expect_rejected<MultiKindWritten>(R"({"p":"x","q":[1,2]})", message("q", "has no item"), "/q");
+                                      "the value must not be null at /q/1; reading std::optional<int>", "/q/1");
+    expect_rejected<MultiKindWritten>(
+        R"({"p":[1,null],"q":[5]})",
+        std::format(
+            "no alternative accepts the value at /p; reading {}: alternative 0 (MultiKindPair) at /1: the value must "
+            "not be null (reading std::optional<int>); alternative 1 ({}): expected a string, got an array",
+            yyjson::detail::variant_name<std::variant<MultiKindPair, std::string>>(),
+            yyjson::detail::type_name<std::string>()),
+        "/p");
+    expect_rejected<MultiKindWritten>(
+        R"({"p":[1],"q":[5]})",
+        R"(the array has fewer items than the minimum 2 at /p; reading the key "p" of MultiKindWritten)", "/p");
+    expect_rejected<MultiKindWritten>(
+        R"({"p":[1,2,3,4],"q":[5]})",
+        R"(the array has more items than the maximum 3 at /p; reading the key "p" of MultiKindWritten)", "/p");
+    expect_rejected<MultiKindWritten>(
+        R"({"p":"x","q":[5,1,2]})",
+        R"(the array has more items than the maximum 2 at /q; reading the key "q" of MultiKindWritten)", "/q");
+    expect_rejected<MultiKindWritten>(
+        R"({"p":"x","q":[1,2]})",
+        R"(the array has no item that satisfies contains at /q; reading the key "q" of MultiKindWritten)", "/q");
 }
 
 namespace
 {
     // every read of `json` under the policy, through a document and without one, throws `message` at `path`
     template <typename T, typename P>
-    void rejected_by(P policy, std::string_view json, std::string_view message, std::string_view path)
+    void rejected_by(P policy, std::string_view json, const expected_text& message, std::string_view path)
     {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            expect_text(message_of(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json, policy); }));
@@ -5623,37 +6225,41 @@ TEST(Constraints, PatternProperties)
     // a key goes to the first field whose pattern matches it, in the order of the members
     expect_accepted<PatternMaps>(R"({"ax":1,"xb":10,"sv":"t"})", {10, {{"ax", 1}}, {{"xb", 10}}, {{"sv", "t"}}});
     expect_accepted<PatternMaps>(R"({"sv":"t","ax":1,"ay":2})", {10, {{"ax", 1}, {"ay", 2}}, {}, {{"sv", "t"}}});
-    expect_rejected<PatternMaps>(R"({"ax":"x"})", "int is not constructible from JSON string", "/ax");
-    expect_rejected<PatternMaps>(R"({"xb":9})",
-                                 R"(the value of the key "xb" of PatternMaps is less than the minimum 10)", "/xb");
-    expect_rejected<PatternMaps>(R"({"aaaa":1})", "a key of PatternMaps is longer than the maximum length 3", "/aaaa");
+    expect_rejected<PatternMaps>(R"({"ax":"x"})", "expected an integer, got a string at /ax; reading int", "/ax");
+    expect_rejected<PatternMaps>(
+        R"({"xb":9})", "the number is less than the minimum 10 at /xb; reading a member value of PatternMaps", "/xb");
+    expect_rejected<PatternMaps>(
+        R"({"aaaa":1})", "the key is longer than the maximum length 3 at /aaaa; reading a key of PatternMaps", "/aaaa");
     // a key that no pattern matches is unknown
     expect_accepted<PatternMaps>(R"({"zz":1,"ax":1})", {10, {{"ax", 1}}, {}, {}});
     rejected_by<PatternMaps>(yyjson::reject_unknown_keys, R"({"ax":1,"zz":1})",
-                             R"(PatternMaps has no field of the key "zz")", "/zz");
+                             "the object has a key that is not allowed at /zz; reading PatternMaps", "/zz");
     EXPECT_EQ(yyjson::read<PatternMaps>(R"({"ab":11,"ax":1,"sv":"t"})", yyjson::reject_unknown_keys),
               (PatternMaps{11, {{"ax", 1}}, {}, {{"sv", "t"}}}));
     rejected_by<PatternMaps>(yyjson::reject_duplicates, R"({"ax":1,"ax":2})",
-                             R"(the object read into PatternMaps has the key "ax" twice)", "/ax");
+                             "the object has a duplicate key at /ax; reading PatternMaps", "/ax");
     EXPECT_EQ(yyjson::read<PatternMaps>(R"({"ax":1,"ax":2})"), (PatternMaps{10, {{"ax", 2}}, {}, {}}));
     EXPECT_EQ(yyjson::read<PatternOpen>(R"({"a":1,"p1":3,"zz":1})"), (PatternOpen{1, {{"p1", 3}}}));
 
     // every later pattern that matches a key checks its value, also when merge_into merges it
-    expect_rejected<PatternMaps>(R"({"axb":9})",
-                                 R"(the value of the key "axb" of PatternMaps is less than the minimum 10)", "/axb");
-    expect_rejected<PatternMaps>(R"({"sb":"x"})", "int is not constructible from JSON string", "/sb");
+    expect_rejected<PatternMaps>(
+        R"({"axb":9})", "the number is less than the minimum 10 at /axb; reading a member value of PatternMaps",
+        "/axb");
+    expect_rejected<PatternMaps>(R"({"sb":"x"})", "expected an integer, got a string at /sb; reading int", "/sb");
     expect_accepted<PatternMaps>(R"({"axb":10})", {10, {{"axb", 10}}, {}, {}});
     // and so does every pattern that matches the key of a field
-    expect_rejected<PatternMaps>(R"({"ab":9})",
-                                 R"(the value of the key "ab" of PatternMaps is less than the minimum 10)", "/ab");
+    expect_rejected<PatternMaps>(
+        R"({"ab":9})", "the number is less than the minimum 10 at /ab; reading a member value of PatternMaps", "/ab");
     expect_accepted<PatternMaps>(R"({"ab":12,"ax":1})", {12, {{"ax", 1}}, {}, {}}, false);
     // but not a null that reads as a missing field
     expect_accepted<PatternOptional>(R"({"ab":null,"ax":10})", {{}, {{"ax", 10}}, {}}, false);
     expect_accepted<PatternOptional>(R"({"ab":10})", {10, {}, {}}, false);
     expect_rejected<PatternOptional>(
-        R"({"ab":5})", R"(the value of the key "ab" of PatternOptional is less than the minimum 10)", "/ab");
+        R"({"ab":5})", "the number is less than the minimum 10 at /ab; reading a member value of PatternOptional",
+        "/ab");
     // a null is an error for a map whose values do not hold null, and merge_into erases the key
-    expect_rejected<PatternOptional>(R"({"ax":null})", "int is not constructible from JSON null", "/ax", false);
+    expect_rejected<PatternOptional>(R"({"ax":null})", "expected an integer, got null at /ax; reading int", "/ax",
+                                     false);
     EXPECT_EQ(yyjson::read<PatternOptional>(R"({"nx":null})"), (PatternOptional{{}, {}, {{"nx", std::nullopt}}}));
 #if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_TRUE(read_directly<PatternOptional>(R"({"nx":null})", yyjson::ReadFlag::NoFlag).has_value());
@@ -5663,13 +6269,14 @@ TEST(Constraints, PatternProperties)
     expect_accepted<PatternRest>(R"({"ax":1,"z":true})", {{{"ax", 1}}, {{"z", true}}});
     EXPECT_EQ(yyjson::read<PatternRest>(R"({"ax":1,"z":true})", yyjson::reject_unknown_keys),
               (PatternRest{{{"ax", 1}}, {{"z", true}}}));
-    expect_rejected<PatternRest>(R"({"ax":true})", "int is not constructible from JSON bool", "/ax");
-    expect_rejected<PatternRest>(R"({"z":1})", "bool is not constructible from JSON integer", "/z");
+    expect_rejected<PatternRest>(R"({"ax":true})", "expected an integer, got a boolean at /ax; reading int", "/ax");
+    expect_rejected<PatternRest>(R"({"z":1})", "expected a boolean, got a number at /z; reading bool", "/z");
     // a closed struct takes the keys that a pattern matches
     expect_accepted<PatternClosed>(R"({"x1":[1]})", {{{"x1", yyjson::read("[1]")}}});
-    expect_rejected<PatternClosed>(
-        R"({"x1":1,"y":1})", R"(PatternClosed has the key "y", which yyjson::additional_properties(false) rejects)",
-        "/y");
+    expect_rejected<PatternClosed>(R"({"x1":1,"y":1})",
+                                   "the object has a key that is not allowed at /y; reading PatternClosed, which "
+                                   "yyjson::additional_properties(false) closes",
+                                   "/y");
 
     // the map starts from its value in `T()`
     auto seeded = PatternSeeded{5, {{"old", 3}}};
@@ -5679,18 +6286,19 @@ TEST(Constraints, PatternProperties)
 
     // the keywords of the struct count and check the keys that the maps receive
     expect_accepted<PatternCounted>(R"({"x":1,"ab":2})", {1, {{"ab", 2}}});
-    expect_rejected<PatternCounted>(R"({"x":1})", "PatternCounted has fewer properties than the minimum 2", "");
+    expect_rejected<PatternCounted>(R"({"x":1})",
+                                    "the object has fewer properties than the minimum 2; reading PatternCounted", "");
     expect_rejected<PatternCounted>(R"({"a1":1,"a2":2,"a3":3,"x":1})",
-                                    "PatternCounted has more properties than the maximum 3", "");
-    expect_rejected<PatternCounted>(R"({"x":1,"abcd":1})",
-                                    "a key of PatternCounted is longer than the maximum length 3", "/abcd");
+                                    "the object has more properties than the maximum 3; reading PatternCounted", "");
+    expect_rejected<PatternCounted>(
+        R"({"x":1,"abcd":1})", "the key is longer than the maximum length 3 at /abcd; reading a key of PatternCounted",
+        "/abcd");
     // additional_properties(false) in a subschema rejects them
     expect_accepted<PatternConditional>(R"({"kind":"open","p1":2})", {"open", {{"p1", 2}}});
     expect_accepted<PatternConditional>(R"({"kind":"closed"})", {"closed", {}});
     expect_rejected<PatternConditional>(
         R"({"kind":"closed","p1":2})",
-        R"(PatternConditional has the key "p1", which yyjson::additional_properties(false) of yyjson::if_then_else rejects)",
-        "/p1");
+        "the value satisfies if and not then at /p1; reading PatternConditional in yyjson::if_then_else", "/p1");
 
     // the value of a tag whose key a pattern matches satisfies that pattern
     expect_accepted<PatternTagged>(R"({"kind":"s","x":1})", PatternTagShort{1, {}}, false);
@@ -5698,32 +6306,56 @@ TEST(Constraints, PatternProperties)
     expect_accepted<PatternTagged>(R"({"kind":"longer","y":1})", PatternTagOther{1});
     expect_rejected<PatternTaggedLong>(
         R"({"kind":"st","x":1})",
-        R"(the value of the key "kind" of PatternTagShort is longer than the maximum length 1)", "/kind");
-    expect_rejected<PatternTaggedShared>(R"({"kind":"i","x":1})", "int is not constructible from JSON string", "/kind");
+        "the string is longer than the maximum length 1 at /kind; reading a member value of PatternTagShort", "/kind");
+    expect_rejected<PatternTaggedShared>(R"({"kind":"i","x":1})",
+                                         "expected an integer, got a string at /kind; reading int", "/kind");
     for (const auto json : {R"({"kind":"i","data":1})", R"({"data":1,"kind":"i"})"})
-        expect_rejected<PatternAdjacent>(json, "int is not constructible from JSON string", "/kind");
+        expect_rejected<PatternAdjacent>(json, "expected an integer, got a string at /kind; reading int", "/kind");
 
     // a pattern that does not keep the value reads it under reject_missing_keys and reject_null_as_missing
     expect_accepted<PatternStrict>(R"({"ax":{}})", {{{"ax", {}}}, {}, {}});
     expect_accepted<PatternStrict>(R"({"ab":{"x":1}})", {{{"ab", {1}}}, {}, {}}, false);
-    expect_rejected<PatternStrict>(R"({"ab":{}})", R"(PatternPoint is not constructible from JSON without the key "x")",
-                                   "/ab", false);
-    expect_rejected<PatternStrict>(R"({"vb":{"x":null}})", "int is not constructible from JSON null", "/vb/x", false);
+    expect_rejected<PatternStrict>(
+        R"({"ab":{}})", R"(a required key is missing at /ab; reading the key "x" of PatternPoint)", "/ab", false);
+    expect_rejected<PatternStrict>(R"({"vb":{"x":null}})", "expected an integer, got null at /vb/x; reading int",
+                                   "/vb/x", false);
     EXPECT_EQ(
         yyjson::read<PatternStrict>(R"({"ab":{"x":1}})", yyjson::reject_missing_keys, yyjson::reject_null_as_missing),
         (PatternStrict{{{"ab", {1}}}, {}, {}}));
+    // a merge that reads the value again for a later pattern gives the path within the value, as read gives it
+    for (const auto& [json, message, path] :
+         {std::tuple{R"({"vn":{"in":{"x":"s"}}})", "expected an integer, got a string at /vn/in/x; reading int",
+                     "/vn/in/x"},
+          std::tuple{R"({"vn":{"in":{}}})",
+                     R"(a required key is missing at /vn/in; reading the key "x" of PatternInner)", "/vn/in"},
+          std::tuple{R"({"vn":1})", "expected an object, got a number at /vn; reading PatternOuter", "/vn"}})
+    {
+        const auto read = bad_cast_of([&] { (void)yyjson::read<PatternReread>(json); });
+        EXPECT_EQ(what_without_position(read), message) << json;
+        const auto merged = bad_cast_of([&] {
+            auto t = PatternReread();
+            yyjson::detail::merge_text(json, t, yyjson::ReadFlag::NoFlag);
+        });
+        EXPECT_EQ(what_without_position(merged), message) << json;
+        EXPECT_EQ(merged.path(), path) << json;
+        // the position is that of the member of the patch
+        ASSERT_TRUE(merged.position().has_value()) << json;
+        EXPECT_EQ(merged.position()->pos, 6U) << json;
+    }
 
     // the struct inside other types
     expect_accepted<PatternHolder>(
         R"({"v":[{"ax":1}],"m":{"k":{"xb":10}},"o":{"sv":"t"}})",
         {{{10, {{"ax", 1}}, {}, {}}}, {{"k", {10, {}, {{"xb", 10}}, {}}}}, PatternMaps{10, {}, {}, {{"sv", "t"}}}});
     expect_rejected<PatternHolder>(
-        R"({"v":[{},{"xb":9}]})", R"(the value of the key "xb" of PatternMaps is less than the minimum 10)", "/v/1/xb");
-    expect_rejected<PatternHolder>(R"({"m":{"k":{"axb":9}}})",
-                                   R"(the value of the key "axb" of PatternMaps is less than the minimum 10)",
-                                   "/m/k/axb");
-    expect_rejected<PatternHolder>(R"({"o":{"aaaa":1}})", "a key of PatternMaps is longer than the maximum length 3",
-                                   "/o/aaaa");
+        R"({"v":[{},{"xb":9}]})",
+        "the number is less than the minimum 10 at /v/1/xb; reading a member value of PatternMaps", "/v/1/xb");
+    expect_rejected<PatternHolder>(
+        R"({"m":{"k":{"axb":9}}})",
+        "the number is less than the minimum 10 at /m/k/axb; reading a member value of PatternMaps", "/m/k/axb");
+    expect_rejected<PatternHolder>(
+        R"({"o":{"aaaa":1}})", "the key is longer than the maximum length 3 at /o/aaaa; reading a key of PatternMaps",
+        "/o/aaaa");
 }
 
 // a closed struct whose patterns take keys that it does not name, as an alternative of an untagged variant
@@ -5762,12 +6394,12 @@ TEST(Constraints, PatternPropertiesMerged)
         yyjson::merge_into(json, t);
         return t;
     };
-    const auto rejected = [](std::string_view json, std::string_view message, std::string_view path) {
+    const auto rejected = [](std::string_view json, const expected_text& message, std::string_view path) {
         const auto e = bad_cast_of([&] {
             auto t = PatternMaps{12, {{"ax", 1}}, {{"xb", 10}}, {}};
             yyjson::merge_into(json, t);
         });
-        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        expect_text(message_of(e), message, json);
         EXPECT_EQ(e.path(), path) << json;
     };
     const auto t = PatternMaps{12, {{"ax", 1}, {"axb", 20}}, {{"xb", 10}}, {}};
@@ -5777,18 +6409,22 @@ TEST(Constraints, PatternPropertiesMerged)
     EXPECT_EQ(merged(t, R"({"axb":null,"zz":1})"), (PatternMaps{12, {{"ax", 1}}, {{"xb", 10}}, {}}));
     EXPECT_EQ(merged(t, R"({"axb":30,"ab":11})"), (PatternMaps{11, {{"ax", 1}, {"axb", 30}}, {{"xb", 10}}, {}}));
     // every pattern that matches a key of the patch checks the merged value
-    rejected(R"({"axb":5})", R"(the value of the key "axb" of PatternMaps is less than the minimum 10)", "/axb");
-    rejected(R"({"ab":5})", R"(the value of the key "ab" of PatternMaps is less than the minimum 10)", "/ab");
-    rejected(R"({"sb":"x"})", "int is not constructible from JSON string", "/sb");
-    rejected(R"({"ax":"x"})", "int is not constructible from JSON string", "/ax");
-    rejected(R"({"aaaa":1})", "a key of PatternMaps is longer than the maximum length 3", "/aaaa");
+    rejected(R"({"axb":5})", "the number is less than the minimum 10 at /axb; reading a member value of PatternMaps",
+             "/axb");
+    rejected(R"({"ab":5})", "the number is less than the minimum 10 at /ab; reading a member value of PatternMaps",
+             "/ab");
+    rejected(R"({"sb":"x"})", "expected an integer, got a string at /sb; reading int", "/sb");
+    rejected(R"({"ax":"x"})", "expected an integer, got a string at /ax; reading int", "/ax");
+    rejected(R"({"aaaa":1})", "the key is longer than the maximum length 3 at /aaaa; reading a key of PatternMaps",
+             "/aaaa");
     // a closed struct rejects a key that no pattern matches
     auto closed = PatternClosed{{{"x1", yyjson::read("1")}}};
     yyjson::merge_into(R"({"x1":null,"x2":2})", closed);
     EXPECT_EQ(closed, (PatternClosed{{{"x2", yyjson::read("2")}}}));
     const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"y":1})", closed); });
-    EXPECT_TRUE(message_of(e).starts_with(
-        R"(PatternClosed has the key "y", which yyjson::additional_properties(false) rejects)"))
+    EXPECT_EQ(message_of(e),
+              "the object has a key that is not allowed at /y; reading PatternClosed, which "
+              "yyjson::additional_properties(false) closes")
         << e.what();
     // the merged values of a field and of a map
     auto optional = PatternOptional{12, {{"ax", 10}}, {}};
@@ -5797,6 +6433,48 @@ TEST(Constraints, PatternPropertiesMerged)
     auto rest = PatternRest{{{"ax", 1}}, {{"z", true}}};
     yyjson::merge_into(R"({"ay":2,"z":null,"w":false})", rest);
     EXPECT_EQ(rest, (PatternRest{{{"ax", 1}, {"ay", 2}}, {{"w", false}}}));
+}
+
+TEST(Constraints, PatternPropertiesMergedInPlace)
+{
+    static_assert(yyjson::detail::checks_merged_json<PatternReread>);
+    static_assert(yyjson::detail::checks_merged_json<PatternDeclared>);
+    // a later pattern checks a value that the merge merges into an entry of the map of the first pattern
+    const auto reread = [] {
+        auto t = PatternReread();
+        t.v.emplace("vn", yyjson::read(R"({"in":{"x":1}})"));
+        return t;
+    };
+    for (const auto& [json, message, path] :
+         {std::tuple{R"({"vn":{"in":{"x":"s"}}})", "expected an integer, got a string at /vn/in/x; reading int",
+                     "/vn/in/x"},
+          std::tuple{R"({"vn":{"in":1}})", "expected an object, got a number at /vn/in; reading PatternInner",
+                     "/vn/in"},
+          std::tuple{R"({"vn":1})", "expected an object, got a number at /vn; reading PatternOuter", "/vn"}})
+    {
+        auto t = reread();
+        const auto e = bad_cast_of([&] { yyjson::merge_into(json, t); });
+        EXPECT_EQ(message_of(e), message) << json;
+        EXPECT_EQ(e.path(), path) << json;
+        EXPECT_EQ(yyjson::write(t.v.at("vn")), R"({"in":{"x":1}})") << json;
+    }
+    auto t = reread();
+    yyjson::merge_into(R"({"vn":{"in":{"x":3}}})", t);
+    EXPECT_EQ(yyjson::write(t.v.at("vn")), R"({"in":{"x":3}})");
+
+    // a pattern checks the value of a declared field that the merge merges in place, as read checks it
+    for (const auto& json : {std::string_view(R"({"vn":{"in":{"x":"s"}}})"), std::string_view(R"({"vn":{"in":1}})"),
+                             std::string_view(R"({"vn":{"in":{}}})")})
+    {
+        const auto read = bad_cast_of([&] { (void)yyjson::read<PatternDeclared>(json); });
+        auto declared = PatternDeclared();
+        const auto merged = bad_cast_of([&] { yyjson::merge_into(json, declared); });
+        EXPECT_EQ(message_of(merged), message_of(read)) << json;
+        EXPECT_EQ(merged.path(), read.path()) << json;
+    }
+    auto declared = PatternDeclared();
+    yyjson::merge_into(R"({"vn":{"in":{"x":3}}})", declared);
+    EXPECT_EQ(yyjson::write(declared.vn.in), R"({"x":3})");
 }
 
 TEST(Constraints, PatternPropertiesWrite)
@@ -5913,11 +6591,33 @@ struct UnionFields
 
 namespace
 {
-    // the message of a value that no alternative of V reads
-    template <typename V>
-    std::string read_by_none()
+    // the reason why an alternative does not read a value, about the value at `at` within it
+    struct alternative_reason
     {
-        return std::format("{} is not constructible from JSON", yyjson::detail::variant_name<V>());
+        alternative_reason(const char* r, std::string_view a = {}) : reason(r), at(a) {}         // NOLINT
+        alternative_reason(const std::string& r, std::string_view a = {}) : reason(r), at(a) {}  // NOLINT
+        alternative_reason(std::string_view r, std::string_view a = {}) : reason(r), at(a) {}    // NOLINT
+        std::string_view reason;
+        std::string_view at;
+    };
+
+    // the message of a value at `path` that no alternative of V reads, with the reason of each alternative
+    template <typename V>
+    std::string read_by_none(std::initializer_list<alternative_reason> reasons, std::string_view path = "")
+    {
+        const auto names = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            return std::array{yyjson::detail::variant_name<std::variant_alternative_t<Is, V>>()...};
+        }(std::make_index_sequence<std::variant_size_v<V>>());
+        auto message =
+            std::format("no alternative accepts the value{}; reading {}",
+                        path.empty() ? std::string() : " at " + std::string(path), yyjson::detail::variant_name<V>());
+        for (auto i = std::size_t(0); const auto& r : reasons)
+        {
+            message += std::format("{} alternative {} ({}){}: {}", i == 0 ? ":" : ";", i, names[i],
+                                   r.at.empty() ? std::string() : " at " + std::string(r.at), r.reason);
+            ++i;
+        }
+        return message;
     }
 
     // `json` is read into the alternative `index` of V, with and without a document
@@ -5954,9 +6654,36 @@ TEST(Constraints, UnionReading)
     expect_accepted<UnionValues>(R"("abc")", UnionValues(std::string("abc")));
     expect_accepted<UnionValues>("[3,1]", UnionValues(std::vector{3, 1}));
     expect_accepted<UnionValues>(R"([5,"a"])", UnionValues(std::tuple(5, std::string("a"))));
-    for (const auto json : {"5", "150", R"("ABC")", R"("abcdefghi")", "[5,6]", "1.5", "null"})
-        expect_rejected<UnionValues>(json, read_by_none<UnionValues>(), "");
-    expect_rejected<UnionFields>(R"({"v":5})", read_by_none<UnionValues>(), "/v");
+    // the reasons of the alternatives for a value of each kind but an array
+    const auto kind_reasons = [](std::string_view kind, std::string_view text) {
+        const auto got = [&](std::string_view expected) { return std::format("expected {}, got {}", expected, kind); };
+        return read_by_none<UnionValues>({got("an integer"), got("an integer"),
+                                          text.empty() ? got("a string") : std::string(text), got("an array"),
+                                          got("an array")});
+    };
+    const auto number_reasons = [](std::string_view first, std::string_view path = "") {
+        return read_by_none<UnionValues>({first, "the value is not one of 100, 200", "expected a string, got a number",
+                                          "expected an array, got a number", "expected an array, got a number"},
+                                         path);
+    };
+    expect_rejected<UnionValues>("5", number_reasons("the value does not satisfy the predicate"), "");
+    expect_rejected<UnionValues>("150", number_reasons("the number is greater than the maximum 9"), "");
+    expect_rejected<UnionValues>(R"("ABC")",
+                                 kind_reasons("a string", R"(the string does not match the pattern "^[a-z]+$")"), "");
+    expect_rejected<UnionValues>(R"("abcdefghi")",
+                                 kind_reasons("a string", "the string is longer than the maximum length 8"), "");
+    expect_rejected<UnionValues>("[5,6]",
+                                 read_by_none<UnionValues>({"expected an integer, got an array",
+                                                            "expected an integer, got an array",
+                                                            "expected a string, got an array",
+                                                            "the array has no item that satisfies contains",
+                                                            {std::format("expected a string, got a number (reading {})",
+                                                                         yyjson::detail::type_name<std::string>()),
+                                                             "/1"}}),
+                                 "");
+    expect_rejected<UnionValues>("1.5", kind_reasons("a number", ""), "");
+    expect_rejected<UnionValues>("null", kind_reasons("null", ""), "");
+    expect_rejected<UnionFields>(R"({"v":5})", number_reasons("the value does not satisfy the predicate", "/v"), "/v");
 
     // an earlier alternative of the same type may read the value that a later one held
     using Ints = yyjson::any_of_variant<int, yyjson::alt<int, yyjson::minimum(0)>>;
@@ -5988,7 +6715,11 @@ TEST(Constraints, UnionReading)
                                           yyjson::alt<UnionShape, yyjson::property("kind", yyjson::const_("square"))>>;
     expect_alternative<Shapes>(R"({"kind":"square","size":2})", 1);
     expect_alternative<Shapes>(R"({"kind":"circle"})", 0);
-    expect_rejected<Shapes>(R"({"kind":"hexagon"})", read_by_none<Shapes>(), "");
+    expect_rejected<Shapes>(R"({"kind":"hexagon"})",
+                            "no alternative accepts the value; reading yyjson::any_of_variant<UnionShape, UnionShape>: "
+                            "alternative 0 (UnionShape): the object does not satisfy properties; alternative 1 "
+                            "(UnionShape): the object does not satisfy properties",
+                            "");
     using RequiredX = yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::required("x")>, UnionPoint>;
     expect_alternative<RequiredX>(R"({"x":1})", 0);
     expect_alternative<RequiredX>(R"({"y":1})", 1);
@@ -6006,19 +6737,30 @@ TEST(Constraints, UnionReading)
     // additional_properties(false) also accepts the tag of the variant that holds the union
     expect_alternative<UnionTagged>(R"({"kind":"p","x":1})", 0);
     expect_alternative<UnionTagged>(R"({"x":1,"kind":"p"})", 0);
-    expect_rejected<UnionTagged>(R"({"kind":"p","x":1,"z":1})",
-                                 read_by_none<std::variant_alternative_t<0, UnionTagged>>(), "");
+    expect_rejected<UnionTagged>(
+        R"({"kind":"p","x":1,"z":1})",
+        "no alternative accepts the value; reading yyjson::any_of_variant<UnionPoint>: alternative 0 (UnionPoint): the "
+        "object has a key that additionalProperties does not allow",
+        "");
 
     // the settings of an alternative reach the value that a variant held in a variant holds, at any depth
     using IntOrText = std::variant<int, std::string>;
     using Nested = yyjson::any_of_variant<
         yyjson::alt<std::variant<std::variant<IntOrText, double>, bool>, yyjson::minimum(5), yyjson::min_length(2)>>;
-    for (const auto json : {"1", "1.5", R"("a")"}) expect_rejected<Nested>(json, read_by_none<Nested>(), "");
+    for (const auto json : {"1", "1.5"})
+        expect_rejected<Nested>(json, read_by_none<Nested>({"the number is less than the minimum 5"}), "");
+    expect_rejected<Nested>(R"("a")", read_by_none<Nested>({"the string is shorter than the minimum length 2"}), "");
     for (const auto json : {"7", "7.5", R"("ab")", "true"}) EXPECT_NO_THROW((void)yyjson::read<Nested>(json)) << json;
     using NestedListed = yyjson::any_of_variant<yyjson::alt<std::variant<IntOrText, bool>, yyjson::enum_(5, "ab")>>;
     expect_alternative<NestedListed>("5", 0);
     expect_alternative<NestedListed>(R"("ab")", 0);
-    expect_rejected<NestedListed>("1", read_by_none<NestedListed>(), "");
+    expect_rejected<NestedListed>(
+        "1",
+        std::format(
+            R"(no alternative accepts the value; reading {}: alternative 0 ({}): the value is not one of 5, "ab")",
+            yyjson::detail::variant_name<yyjson::any_of_variant<std::variant<std::variant<int, std::string>, bool>>>(),
+            yyjson::detail::variant_name<std::variant<std::variant<int, std::string>, bool>>()),
+        "");
     // read_into and merge_into replace the value
     auto fields = UnionFields{UnionValues(std::in_place_index<0>, 2), UnionPoint{1, 2}};
     yyjson::merge_into(R"({"p":{"x":5}})", fields);
@@ -6311,11 +7053,9 @@ namespace
 
     // reading `json` into V under `policies` throws `bad_cast` with `message`, with and without a document
     template <typename V, typename... Policies>
-    void expect_rejected_under(std::string_view json, std::string_view message, Policies... policies)
+    void expect_rejected_under(std::string_view json, const expected_text& message, Policies... policies)
     {
-        const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
-        };
+        const auto check = [&](const yyjson::bad_cast& e) { expect_text(message_of(e), message, json); };
         check(bad_cast_of([&] { (void)yyjson::read<V>(json, policies...); }));
         check(bad_cast_of([&] { (void)yyjson::read(json).cast<V>(policies...); }));
     }
@@ -6336,19 +7076,35 @@ TEST(Constraints, OneOfReading)
     expect_accepted<XOrZ>(R"({"x":1})", XOrZ(OneOfX{1}));
     // both match an object of both keys, since each one takes other keys, unless yyjson::reject_unknown_keys of
     // the call closes them
-    expect_rejected<XOrZ>(R"({"x":1,"z":2,"w":0})", read_by_two<XOrZ>(0, 1), "");
-    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_two<XOrZ>(0, 1));
-    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})", read_by_none<XOrZ>(), yyjson::reject_unknown_keys);
+    expect_rejected<XOrZ>(R"({"x":1,"z":2,"w":0})",
+                          "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfX, "
+                          "OneOfZ>: the alternatives 0 and 1 match",
+                          "");
+    expect_rejected_under<XOrZ>(R"({"x":1,"z":2})",
+                                "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfX, "
+                                "OneOfZ>: the alternatives 0 and 1 match");
+    expect_rejected_under<XOrZ>(
+        R"({"x":1,"z":2})",
+        "no alternative accepts the value; reading yyjson::one_of_variant<OneOfX, OneOfZ>: alternative 0 (OneOfX) at "
+        "/z: the object has a key that is not allowed (reading OneOfX); alternative 1 (OneOfZ) at /x: the object has a "
+        "key that is not allowed (reading OneOfZ)",
+        yyjson::reject_unknown_keys);
     // an alternative may match with none of its keys
     using MaybeXOrY = yyjson::one_of_variant<OneOfMaybeX, OneOfY>;
-    expect_rejected<MaybeXOrY>(R"({"y":1})", read_by_two<MaybeXOrY>(0, 1), "");
+    expect_rejected<MaybeXOrY>(R"({"y":1})",
+                               "the value matches more than one alternative; reading "
+                               "yyjson::one_of_variant<OneOfMaybeX, OneOfY>: the alternatives 0 and 1 match",
+                               "");
     expect_accepted<MaybeXOrY>(R"({"x":1})", MaybeXOrY(OneOfMaybeX{1}));
     expect_accepted<MaybeXOrY>("{}", MaybeXOrY(OneOfMaybeX{}));
     // a closed struct does not match an object of other keys
     using ClosedOrXZ = yyjson::one_of_variant<OneOfClosedX, OneOfXZ>;
     expect_accepted<ClosedOrXZ>(R"({"x":1,"z":2})", ClosedOrXZ(OneOfXZ{1, 2}));
     expect_accepted<ClosedOrXZ>(R"({"x":1})", ClosedOrXZ(OneOfClosedX{1}));
-    expect_rejected<ClosedOrXZ>(R"({"z":1})", read_by_none<ClosedOrXZ>(), "");
+    expect_rejected<ClosedOrXZ>(
+        R"({"z":1})",
+        R"(no alternative accepts the value; reading yyjson::one_of_variant<OneOfClosedX, OneOfXZ>: alternative 0 (OneOfClosedX) at /z: the object has a key that is not allowed (reading OneOfClosedX, which yyjson::additional_properties(false) closes); alternative 1 (OneOfXZ): a required key is missing (reading the key "x" of OneOfXZ))",
+        "");
 
     // yyjson::reject_unknown_keys of the call closes the struct alternatives
     using XOrText = yyjson::one_of_variant<OneOfX, std::string>;
@@ -6359,7 +7115,9 @@ TEST(Constraints, OneOfReading)
     expect_alternative<XOrText>(R"("a")", 1, yyjson::reject_unknown_keys);
     // so an object of a key that only one of them declares matches that one
     using XOrMaybeXY = yyjson::one_of_variant<OneOfX, OneOfMaybeXY>;
-    expect_rejected_under<XOrMaybeXY>(R"({"x":1,"y":2})", read_by_two<XOrMaybeXY>(0, 1));
+    expect_rejected_under<XOrMaybeXY>(R"({"x":1,"y":2})",
+                                      "the value matches more than one alternative; reading "
+                                      "yyjson::one_of_variant<OneOfX, OneOfMaybeXY>: the alternatives 0 and 1 match");
     expect_accepted<XOrMaybeXY>(R"({"x":1})", XOrMaybeXY(OneOfX{1}));
     expect_alternative<XOrMaybeXY>(R"({"x":1,"y":2})", 1, yyjson::reject_unknown_keys);
     EXPECT_EQ(std::get<1>(yyjson::read<XOrMaybeXY>(R"({"x":1,"y":2})", yyjson::reject_unknown_keys)),
@@ -6368,13 +7126,17 @@ TEST(Constraints, OneOfReading)
     using SetOrList = yyjson::one_of_variant<std::set<int>, std::vector<int>>;
     expect_alternative<SetOrList>("[1,1]", 1);
     expect_alternative<SetOrList>("[1,1]", 1, yyjson::reject_duplicates);
-    expect_rejected_under<SetOrList>("[1,2]", read_by_two<SetOrList>(0, 1));
+    expect_rejected_under<SetOrList>(
+        "[1,2]", std::format("the value matches more than one alternative; reading {}: the alternatives 0 and 1 match",
+                             yyjson::detail::variant_name<SetOrList>()));
     using CountedSet = yyjson::one_of_variant<yyjson::alt<std::set<int>, yyjson::min_items(1)>,
                                               yyjson::alt<std::vector<int>, yyjson::max_items(2)>>;
     expect_alternative<CountedSet>("[1,1]", 1, yyjson::strict);
     // a set of another order has no `uniqueItems`, and no schema rejects a repeated key
     using OrderedOrList = yyjson::one_of_variant<std::set<int, OneOfOrder>, std::vector<int>>;
-    expect_rejected_under<OrderedOrList>("[1,1]", read_by_two<OrderedOrList>(0, 1));
+    expect_rejected_under<OrderedOrList>(
+        "[1,1]", std::format("the value matches more than one alternative; reading {}: the alternatives 0 and 1 match",
+                             yyjson::detail::variant_name<OrderedOrList>()));
     EXPECT_THROW((void)yyjson::read<XOrText>(R"({"x":1,"x":2})", yyjson::reject_duplicates), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read(R"({"x":1,"x":2})").cast<XOrText>(yyjson::reject_duplicates), yyjson::bad_cast);
 
@@ -6386,9 +7148,19 @@ TEST(Constraints, OneOfReading)
     expect_accepted<OneOfInts>("-1", OneOfInts(std::in_place_index<1>, -1));
     // the reader without a document leaves a value to it when a later alternative may read it too
     expect_accepted<OneOfInts>("11", OneOfInts(std::in_place_index<0>, 11), false);
-    expect_rejected<OneOfInts>("5", read_by_two<OneOfInts>(0, 1), "");
-    expect_rejected<OneOfInts>("1.5", read_by_none<OneOfInts>(), "");
-    expect_rejected<OneOfFields>(R"({"n":5,"p":"a"})", read_by_two<OneOfInts>(0, 1), "/n");
+    expect_rejected<OneOfInts>("5",
+                               "the value matches more than one alternative; reading yyjson::one_of_variant<int, int>: "
+                               "the alternatives 0 and 1 match",
+                               "");
+    expect_rejected<OneOfInts>(
+        "1.5",
+        "no alternative accepts the value; reading yyjson::one_of_variant<int, int>: alternative 0 (int): expected an "
+        "integer, got a number; alternative 1 (int): expected an integer, got a number",
+        "");
+    expect_rejected<OneOfFields>(R"({"n":5,"p":"a"})",
+                                 "the value matches more than one alternative at /n; reading "
+                                 "yyjson::one_of_variant<int, int>: the alternatives 0 and 1 match",
+                                 "/n");
 
     // read_into and merge_into replace the value
     auto fields = OneOfFields{OneOfInts(std::in_place_index<0>, 20), OneOfX{1}};
@@ -6422,39 +7194,14 @@ struct UnionReasonNode
 
 namespace
 {
-    // the reason why an alternative does not read a value, about the value at `at` within it
-    struct alternative_reason
-    {
-        alternative_reason(const char* r, std::string_view a = {}) : reason(r), at(a) {}         // NOLINT
-        alternative_reason(const std::string& r, std::string_view a = {}) : reason(r), at(a) {}  // NOLINT
-        std::string_view reason;
-        std::string_view at;
-    };
-
-    // the message of a value that no alternative of V reads, with the reason of each alternative
-    template <typename V>
-    std::string read_by_none_because(std::initializer_list<alternative_reason> reasons)
-    {
-        const auto names = []<std::size_t... Is>(std::index_sequence<Is...>) {
-            return std::array{yyjson::detail::variant_name<std::variant_alternative_t<Is, V>>()...};
-        }(std::make_index_sequence<std::variant_size_v<V>>());
-        auto message = read_by_none<V>();
-        for (auto i = std::size_t(0); const auto& r : reasons)
-        {
-            message += std::format("{} alternative {} ({}){}: {}", i == 0 ? ":" : ";", i, names[i],
-                                   r.at.empty() ? std::string() : " at " + std::string(r.at), r.reason);
-            ++i;
-        }
-        return message;
-    }
-
     // reading `json` into T under `policies` throws `bad_cast` with exactly `message` about the value at `path`,
     // with and without a document, and from a mutable document
     template <typename T, typename... Policies>
-    void expect_reasons(std::string_view json, std::string_view message, std::string_view path, Policies... policies)
+    void expect_reasons(std::string_view json, const expected_text& message, std::string_view path,
+                        Policies... policies)
     {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_EQ(std::string(e.std::runtime_error::what()), message) << json;
+            expect_text(what_without_position(e), message, json);
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json, policies...); }));
@@ -6473,35 +7220,52 @@ TEST(Constraints, UnionFailureReasons)
               "yyjson::one_of_variant<int, bool>");
     expect_reasons<yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(1)>, bool>>(
         "0",
-        "yyjson::one_of_variant<int, bool> is not constructible from JSON: alternative 0 (int): the value is "
-        "less than the minimum 1; alternative 1 (bool): reads no JSON number",
+        "no alternative accepts the value; reading yyjson::one_of_variant<int, bool>: alternative 0 (int): the number "
+        "is less than the minimum 1; alternative 1 (bool): expected a boolean, got a number",
         "");
     // a union inside a union has the same name in the label of its alternative and in its reason
     expect_reasons<yyjson::any_of_variant<yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(1)>, bool>, bool>>(
         "0",
-        "yyjson::any_of_variant<yyjson::any_of_variant<int, bool>, bool> is not constructible from JSON: alternative 0 "
-        "(yyjson::any_of_variant<int, bool>): yyjson::any_of_variant<int, bool> is not constructible from JSON; "
-        "alternative 1 (bool): reads no JSON number",
+        "no alternative accepts the value; reading yyjson::any_of_variant<yyjson::any_of_variant<int, bool>, bool>: "
+        "alternative 0 (yyjson::any_of_variant<int, bool>): no alternative accepts the value (reading "
+        "yyjson::any_of_variant<int, bool>); alternative 1 (bool): expected a boolean, got a number",
         "");
     expect_reasons<std::variant<std::variant<int, bool>, bool>>(
         "null",
-        "std::variant<std::variant<int, bool>, bool> is not constructible from JSON: alternative 0 "
-        "(std::variant<int, bool>): reads no JSON null; alternative 1 (bool): reads no JSON null",
+        "no alternative accepts the value; reading std::variant<std::variant<int, bool>, bool>: alternative 0 "
+        "(std::variant<int, bool>): expected a boolean or an integer, got null; alternative 1 (bool): expected a "
+        "boolean, got null",
         "");
 
     // each alternative that does not read the kind of the value
     using Kinds = std::variant<int, std::string, UnionPoint>;
-    const auto no_bool = "reads no JSON bool";
-    expect_reasons<Kinds>("true", read_by_none_because<Kinds>({no_bool, no_bool, no_bool}), "");
-    const auto no_null = "reads no JSON null";
-    expect_reasons<std::vector<Kinds>>(R"([1,"a",null])", read_by_none_because<Kinds>({no_null, no_null, no_null}),
-                                       "/2");
+    expect_reasons<Kinds>("true",
+                          std::format("no alternative accepts the value; reading {}: alternative 0 (int): expected an "
+                                      "integer, got a boolean; alternative 1 ({}): expected a string, got a boolean; "
+                                      "alternative 2 (UnionPoint): expected an object, got a boolean",
+                                      yyjson::detail::variant_name<std::variant<int, std::string, UnionPoint>>(),
+                                      yyjson::detail::type_name<std::string>()),
+                          "");
+    expect_reasons<std::vector<Kinds>>(
+        R"([1,"a",null])",
+        std::format(
+            "no alternative accepts the value at /2; reading {}: alternative 0 (int): expected an integer, got null; "
+            "alternative 1 ({}): expected a string, got null; alternative 2 (UnionPoint): expected an object, got null",
+            yyjson::detail::variant_name<std::variant<int, std::string, UnionPoint>>(),
+            yyjson::detail::type_name<std::string>()),
+        "/2");
     // the reason of a struct gives the path of the value within it, and the path of the variant ends the message once
     using IntOrPoint = std::variant<int, UnionPoint>;
-    const auto point_reasons =
-        read_by_none_because<IntOrPoint>({"reads no JSON object", {"int is not constructible from JSON string", "/x"}});
-    expect_reasons<IntOrPoint>(R"({"x":"a"})", point_reasons, "");
-    expect_reasons<UnionReasonField>(R"({"v":{"x":"a"}})", point_reasons, "/v");
+    expect_reasons<IntOrPoint>(
+        R"({"x":"a"})",
+        "no alternative accepts the value; reading std::variant<int, UnionPoint>: alternative 0 (int): expected an "
+        "integer, got an object; alternative 1 (UnionPoint) at /x: expected an integer, got a string (reading int)",
+        "");
+    expect_reasons<UnionReasonField>(
+        R"({"v":{"x":"a"}})",
+        "no alternative accepts the value at /v; reading std::variant<int, UnionPoint>: alternative 0 (int): expected "
+        "an integer, got an object; alternative 1 (UnionPoint) at /x: expected an integer, got a string (reading int)",
+        "/v");
     try
     {
         (void)yyjson::read<UnionReasonField>(R"({"v":{"x":"a"}})");
@@ -6509,59 +7273,77 @@ TEST(Constraints, UnionFailureReasons)
     }
     catch (const yyjson::bad_cast& e)
     {
-        EXPECT_EQ(std::string(e.what()), point_reasons + " at /v (line 1, column 6, pos 5)");
+        EXPECT_EQ(std::string(e.what()),
+                  "no alternative accepts the value at /v (line 1, column 6, pos 5); reading std::variant<int, "
+                  "UnionPoint>: alternative 0 (int): expected an integer, got an object; alternative 1 (UnionPoint) at "
+                  "/x: expected an integer, got a string (reading int)");
     }
 
     // the setting of an alternative that the value does not satisfy
     using NonNegative = yyjson::any_of_variant<yyjson::alt<int, yyjson::minimum(0)>, std::string>;
     expect_reasons<NonNegative>(
-        "-1", read_by_none_because<NonNegative>({"the value is less than the minimum 0", "reads no JSON number"}), "");
+        "-1",
+        std::format("no alternative accepts the value; reading {}: alternative 0 (int): the number is less than the "
+                    "minimum 0; alternative 1 ({}): expected a string, got a number",
+                    yyjson::detail::variant_name<yyjson::any_of_variant<int, std::string>>(),
+                    yyjson::detail::type_name<std::string>()),
+        "");
 
     // the alternatives of yyjson::one_of_variant under the policies that count the matches, the one that the keys
     // of the object prove to fail too
     using ClosedOrXZ = yyjson::one_of_variant<OneOfClosedX, OneOfXZ>;
     expect_reasons<ClosedOrXZ>(
         R"({"z":1})",
-        read_by_none_because<ClosedOrXZ>(
-            {{R"(OneOfClosedX has the key "z", which yyjson::additional_properties(false) rejects)", "/z"},
-             R"(OneOfXZ is not constructible from JSON without the key "x")"}),
+        R"(no alternative accepts the value; reading yyjson::one_of_variant<OneOfClosedX, OneOfXZ>: alternative 0 (OneOfClosedX) at /z: the object has a key that is not allowed (reading OneOfClosedX, which yyjson::additional_properties(false) closes); alternative 1 (OneOfXZ): a required key is missing (reading the key "x" of OneOfXZ))",
         "");
     // the one that matches under those policies and fails under the policies of the call gives its own failure
     using XOrText = yyjson::one_of_variant<OneOfX, std::string>;
-    expect_reasons<XOrText>(R"({"x":1,"x":2})", R"(the object read into OneOfX has the key "x" twice)", "/x",
+    expect_reasons<XOrText>(R"({"x":1,"x":2})", "the object has a duplicate key at /x; reading OneOfX", "/x",
                             yyjson::reject_duplicates);
     // also a variant within it, which gives the reasons of its alternatives
-    using IntOrX = std::variant<int, OneOfX>;
     expect_reasons<UnionReasonNode>(
         R"({"v":1,"next":{"v":{"x":1,"x":2},"next":null}})",
-        read_by_none_because<IntOrX>(
-            {"reads no JSON object", {R"(the object read into OneOfX has the key "x" twice)", "/x"}}),
+        "no alternative accepts the value at /next/v; reading std::variant<int, OneOfX>: alternative 0 (int): expected "
+        "an integer, got an object; alternative 1 (OneOfX) at /x: the object has a duplicate key (reading OneOfX)",
         "/next/v", yyjson::reject_duplicates);
     // yyjson::reject_unknown_keys of the call closes the struct alternatives before the count
     expect_reasons<XOrText>(
         R"({"x":1,"k":2})",
-        read_by_none_because<XOrText>({{R"(OneOfX has no field of the key "k")", "/k"}, "reads no JSON object"}), "",
-        yyjson::reject_unknown_keys);
+        std::format("no alternative accepts the value; reading {}: alternative 0 (OneOfX) at /k: the object has a key "
+                    "that is not allowed (reading OneOfX); alternative 1 ({}): expected a string, got an object",
+                    yyjson::detail::variant_name<XOrText>(), yyjson::detail::type_name<std::string>()),
+        "", yyjson::reject_unknown_keys);
 
     // the path within an alternative goes through its members and elements, and a failure of the whole value has none
     using IntOrLine = std::variant<int, UnionReasonLine>;
     expect_reasons<IntOrLine>(R"({"from":{"x":1,"y":2},"to":[{"x":3,"y":4},{"x":5,"y":true}]})",
-                              read_by_none_because<IntOrLine>(
-                                  {"reads no JSON object", {"int is not constructible from JSON bool", "/to/1/y"}}),
+                              "no alternative accepts the value; reading std::variant<int, UnionReasonLine>: "
+                              "alternative 0 (int): expected an integer, got an object; alternative 1 "
+                              "(UnionReasonLine) at /to/1/y: expected an integer, got a boolean (reading int)",
                               "");
-    expect_reasons<IntOrLine>("[]", read_by_none_because<IntOrLine>({"reads no JSON array", "reads no JSON array"}),
-                              "");
+    expect_reasons<IntOrLine>(
+        "[]",
+        "no alternative accepts the value; reading std::variant<int, UnionReasonLine>: alternative 0 (int): expected "
+        "an integer, got an array; alternative 1 (UnionReasonLine): expected an object, got an array",
+        "");
     using IntOrMap = std::variant<int, std::map<std::string, int>>;
-    expect_reasons<IntOrMap>(R"({"a/b~c":"x"})",
-                             read_by_none_because<IntOrMap>(
-                                 {"reads no JSON object", {"int is not constructible from JSON string", "/a~1b~0c"}}),
-                             "");
+    expect_reasons<IntOrMap>(
+        R"({"a/b~c":"x"})",
+        std::format("no alternative accepts the value; reading {}: alternative 0 (int): expected an integer, got an "
+                    "object; alternative 1 ({}) at /a~1b~0c: expected an integer, got a string (reading int)",
+                    yyjson::detail::variant_name<IntOrMap>(), yyjson::detail::type_name<std::map<std::string, int>>()),
+        "");
 
     // a variant within an alternative gives no reasons of its own alternatives, which bounds the work
     using Nested = std::variant<int, std::variant<std::string, std::variant<bool, UnionPoint>>>;
     using Inner = std::variant_alternative_t<1, Nested>;
-    expect_reasons<Nested>(R"({"x":"a"})",
-                           read_by_none_because<Nested>({"reads no JSON object", read_by_none<Inner>()}), "");
+    expect_reasons<Nested>(
+        R"({"x":"a"})",
+        std::format("no alternative accepts the value; reading {}: alternative 0 (int): expected an integer, got an "
+                    "object; alternative 1 ({}): no alternative accepts the value (reading {})",
+                    yyjson::detail::variant_name<Nested>(), yyjson::detail::variant_name<Inner>(),
+                    yyjson::detail::variant_name<Inner>()),
+        "");
 }
 
 TEST(Constraints, OneOfBounds)
@@ -6605,17 +7387,28 @@ TEST(Constraints, OneOfBounds)
     static_assert(one_of_overlapping<Wide, 0, 1> && !one_of_contained<Wide>);
     expect_accepted<Wide>("-1", Wide(std::int64_t{-1}), false);
     expect_accepted<Wide>("18446744073709551615", Wide(std::uint64_t{18446744073709551615u}));
-    expect_rejected<Wide>("1", read_by_two<Wide>(0, 1), "");
+    expect_rejected<Wide>(
+        "1",
+        std::format("the value matches more than one alternative; reading {}: the alternatives 0 and 1 match",
+                    yyjson::detail::variant_name<yyjson::one_of_variant<std::int64_t, std::uint64_t>>()),
+        "");
     using Steps =
         yyjson::one_of_variant<yyjson::alt<int, yyjson::multiple_of(2)>, yyjson::alt<int, yyjson::multiple_of(3)>>;
     static_assert(one_of_overlapping<Steps, 0, 1> && !one_of_contained<Steps>);
     expect_accepted<Steps>("4", Steps(std::in_place_index<0>, 4), false);
-    expect_rejected<Steps>("6", read_by_two<Steps>(0, 1), "");
+    expect_rejected<Steps>("6",
+                           "the value matches more than one alternative; reading yyjson::one_of_variant<int, int>: the "
+                           "alternatives 0 and 1 match",
+                           "");
     // a float compares a JSON integer exactly, also from 2^53, where a double rounds it
     using BigFloat = yyjson::one_of_variant<yyjson::alt<float, yyjson::exclusive_minimum(9007199254740992)>,
                                             yyjson::alt<std::uint64_t, yyjson::maximum(9007199254740993U)>>;
     static_assert(one_of_overlapping<BigFloat, 0, 1>);
-    expect_rejected<BigFloat>("9007199254740993", read_by_two<BigFloat>(0, 1), "");
+    expect_rejected<BigFloat>(
+        "9007199254740993",
+        std::format("the value matches more than one alternative; reading {}: the alternatives 0 and 1 match",
+                    yyjson::detail::variant_name<yyjson::one_of_variant<float, std::uint64_t>>()),
+        "");
     using FloatOrBig =
         yyjson::one_of_variant<yyjson::alt<float, yyjson::maximum(9007199254740992)>,
                                yyjson::alt<std::uint64_t, yyjson::const_(std::uint64_t{9007199254740993U})>>;
@@ -6642,7 +7435,9 @@ TEST(Constraints, OneOfBounds)
     // a caster of the user that takes a value of the other document reads any value
     using OtherOrString = yyjson::one_of_variant<OneOfOtherCode, std::string>;
     static_assert(one_of_overlapping<OtherOrString, 0, 1>);
-    expect_rejected_under<OtherOrString>(R"("a")", read_by_two<OtherOrString>(0, 1));
+    expect_rejected_under<OtherOrString>(
+        R"("a")", std::format("the value matches more than one alternative; reading {}: the alternatives 0 and 1 match",
+                              yyjson::detail::variant_name<yyjson::one_of_variant<OneOfOtherCode, std::string>>()));
     expect_alternative<std::variant<OneOfOtherCode, std::string>>(R"("a")", 0);
     // such a caster of a range or a map reads values that the elements or the values cannot
     expect_alternative<std::variant<OtherCodeRange, std::vector<std::string>>>(R"(["x"])", 0);
@@ -6668,7 +7463,9 @@ TEST(Constraints, OneOfBounds)
     static_assert(!one_of_contained<yyjson::one_of_variant<OneOfX, OneOfWrapped<OneOfXZ>>>);
     using XOrXZ = yyjson::one_of_variant<OneOfX, OneOfXZ>;
     static_assert(!one_of_contained<XOrXZ> && one_of_overlapping<XOrXZ, 0, 1>);
-    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})", read_by_two<XOrXZ>(0, 1));
+    expect_rejected_under<XOrXZ>(R"({"x":1,"z":2})",
+                                 "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfX, "
+                                 "OneOfXZ>: the alternatives 0 and 1 match");
     expect_alternative<XOrXZ>(R"({"x":1,"z":2})", 1, yyjson::reject_unknown_keys);
     expect_alternative<XOrXZ>(R"({"x":1})", 0, yyjson::reject_unknown_keys);
     // a map of other keys keeps a struct open under the call's yyjson::reject_unknown_keys
@@ -6701,23 +7498,36 @@ TEST(Constraints, OneOfBounds)
     // two structs that read some values of each other at a key are counted
     using SignedOrUnsigned = yyjson::one_of_variant<OneOfSignedX, OneOfUnsignedX>;
     static_assert(!one_of_contained<SignedOrUnsigned> && one_of_overlapping<SignedOrUnsigned, 0, 1>);
-    expect_rejected<SignedOrUnsigned>(R"({"x":1})", read_by_two<SignedOrUnsigned>(0, 1), "");
+    expect_rejected<SignedOrUnsigned>(
+        R"({"x":1})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfSignedX, OneOfUnsignedX>: "
+        "the alternatives 0 and 1 match",
+        "");
     expect_alternative<SignedOrUnsigned>(R"({"x":-1})", 0);
 
     // the analysis does not prove that a struct reads each value at a key that it does not name
     using MaybeYOrZ = yyjson::one_of_variant<OneOfXMaybeY, OneOfXMaybeZ>;
     static_assert(!one_of_contained<MaybeYOrZ> && one_of_overlapping<MaybeYOrZ, 0, 1>);
-    expect_rejected<MaybeYOrZ>(R"({"x":1})", read_by_two<MaybeYOrZ>(0, 1), "");
+    expect_rejected<MaybeYOrZ>(R"({"x":1})",
+                               "the value matches more than one alternative; reading "
+                               "yyjson::one_of_variant<OneOfXMaybeY, OneOfXMaybeZ>: the alternatives 0 and 1 match",
+                               "");
     expect_alternative<MaybeYOrZ>(R"({"x":1,"y":"a"})", 1);
     // nor what a struct reads with a setting other than the keys that it takes
     using MinimumX = yyjson::one_of_variant<yyjson::alt<OneOfX, yyjson::property("x", yyjson::minimum(0))>,
                                             yyjson::alt<OneOfXZ, yyjson::property("x", yyjson::minimum(0))>>;
     static_assert(!one_of_contained<MinimumX> && one_of_overlapping<MinimumX, 0, 1>);
-    expect_rejected<MinimumX>(R"({"x":1,"z":2})", read_by_two<MinimumX>(0, 1), "");
+    expect_rejected<MinimumX>(R"({"x":1,"z":2})",
+                              "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfX, "
+                              "OneOfXZ>: the alternatives 0 and 1 match",
+                              "");
     // nor what a struct with a map of other keys reads at those keys
     using XZOrAny = yyjson::one_of_variant<OneOfXZ, OneOfXAny>;
     static_assert(!one_of_contained<XZOrAny> && one_of_overlapping<XZOrAny, 0, 1>);
-    expect_rejected<XZOrAny>(R"({"x":1,"z":2})", read_by_two<XZOrAny>(0, 1), "");
+    expect_rejected<XZOrAny>(R"({"x":1,"z":2})",
+                             "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfXZ, "
+                             "OneOfXAny>: the alternatives 0 and 1 match",
+                             "");
     // nor compares the keys of two structs beyond 256 pairs of them
     using Many = yyjson::one_of_variant<OneOfMany16, OneOfMany17>;
     static_assert(!one_of_contained<Many> && one_of_overlapping<Many, 0, 1>);
@@ -6726,23 +7536,37 @@ TEST(Constraints, OneOfBounds)
     // caster of the user, by a caster of the user of a std::optional, or as the value of an adjacent tag
     using CodeOrText = yyjson::one_of_variant<OneOfCodeX, OneOfTextX>;
     static_assert(one_of_overlapping<CodeOrText, 0, 1>);
-    expect_rejected_under<CodeOrText>(R"({"x":"a"})", read_by_two<CodeOrText>(0, 1));
+    expect_rejected_under<CodeOrText>(R"({"x":"a"})",
+                                      "the value matches more than one alternative; reading "
+                                      "yyjson::one_of_variant<OneOfCodeX, OneOfTextX>: the alternatives 0 and 1 match");
     // a caster of the user of the other document reads any value, also in a field
     using OtherCodeOrText = yyjson::one_of_variant<OneOfOtherCodeX, OneOfTextX>;
     static_assert(one_of_overlapping<OtherCodeOrText, 0, 1>);
-    expect_rejected_under<OtherCodeOrText>(R"({"x":"a"})", read_by_two<OtherCodeOrText>(0, 1));
+    expect_rejected_under<OtherCodeOrText>(
+        R"({"x":"a"})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfOtherCodeX, OneOfTextX>: the "
+        "alternatives 0 and 1 match");
     using NumberOrText = yyjson::one_of_variant<OneOfMaybeNumberX, OneOfTextX>;
     static_assert(one_of_overlapping<NumberOrText, 0, 1>);
-    expect_rejected_under<NumberOrText>(R"({"x":"a"})", read_by_two<NumberOrText>(0, 1));
+    expect_rejected_under<NumberOrText>(
+        R"({"x":"a"})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfMaybeNumberX, OneOfTextX>: "
+        "the alternatives 0 and 1 match");
     using AdjacentOrX = yyjson::one_of_variant<OneOfAdjacentX, OneOfX>;
     static_assert(one_of_overlapping<AdjacentOrX, 0, 1>);
-    expect_rejected_under<AdjacentOrX>(R"({"kind":"i","x":1})", read_by_two<AdjacentOrX>(0, 1));
+    expect_rejected_under<AdjacentOrX>(
+        R"({"kind":"i","x":1})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfAdjacentX, OneOfX>: the "
+        "alternatives 0 and 1 match");
     // the key of the tag of an enclosing variant tells no closed struct apart, and a closed struct does not read
     // only what another one reads that names that key
     using XKind = std::variant_alternative_t<0, OneOfTaggedXKind>;
     static_assert(!one_of_overlapping<XKind, 0, 1> && yyjson::detail::one_of_variant_cast<XKind>::tagged_overlap[1][0]);
     expect_alternative<XKind>(R"({"x":1,"kind":"p"})", 1);
-    expect_rejected_under<OneOfTaggedXKind>(R"({"kind":"p","x":1})", read_by_two<XKind>(0, 1));
+    expect_rejected_under<OneOfTaggedXKind>(
+        R"({"kind":"p","x":1})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfClosedX, OneOfXKind>: the "
+        "alternatives 0 and 1 match");
     using MaybeKind = std::variant_alternative_t<0, OneOfTaggedMaybeKind>;
     static_assert(!one_of_contained<MaybeKind>);
     EXPECT_EQ(std::get<0>(yyjson::read<OneOfTaggedMaybeKind>(R"({"kind":"p","x":1})")).index(), 0);
@@ -6752,12 +7576,18 @@ TEST(Constraints, OneOfBounds)
     static_assert(!one_of_contained<TextKind>);
     EXPECT_EQ(std::get<0>(yyjson::read<OneOfTaggedTextKind>(R"({"kind":"p","kind":1,"x":1})")).index(), 0);
     EXPECT_EQ(std::get<0>(yyjson::read(R"({"kind":"p","kind":1,"x":1})").cast<OneOfTaggedTextKind>()).index(), 0);
-    expect_rejected_under<OneOfTaggedTextKind>(R"({"kind":"p","x":1})", read_by_two<TextKind>(0, 1));
+    expect_rejected_under<OneOfTaggedTextKind>(
+        R"({"kind":"p","x":1})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfClosedX, "
+        "OneOfXMaybeTextKind>: the alternatives 0 and 1 match");
     // each transparent struct between an alternative and its keyed struct may have settings
     using LayeredOrXZ = yyjson::one_of_variant<OneOfWrapped<OneOfMidX>, OneOfXZ>;
     static_assert(!one_of_contained<LayeredOrXZ>);
     expect_alternative<LayeredOrXZ>(R"({"x":-1,"z":1})", 1);
-    expect_rejected_under<LayeredOrXZ>(R"({"x":1,"z":1})", read_by_two<LayeredOrXZ>(0, 1));
+    expect_rejected_under<LayeredOrXZ>(
+        R"({"x":1,"z":1})",
+        "the value matches more than one alternative; reading yyjson::one_of_variant<OneOfWrapped<OneOfMidX>, "
+        "OneOfXZ>: the alternatives 0 and 1 match");
 }
 
 #if defined(__cpp_lib_define_static)
@@ -6798,34 +7628,61 @@ TEST(Constraints, CasterJson)
     const auto value = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of CasterFields )", key);
     };
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of CasterFields )", key);
-    };
-    expect_rejected<CasterFields>(R"({"color":"green"})", value("color") + R"(is not one of "red", "blue")", "/color");
-    expect_rejected<CasterFields>(R"({"name":"abcd"})", value("name") + "is longer than the maximum length 3", "/name");
-    expect_rejected<CasterFields>(R"({"name":"Ab"})", value("name") + R"(does not match the pattern "^[a-z]")",
-                                  "/name");
-    expect_rejected<CasterFields>(R"({"label":"x"})", value("label") + "is shorter than the minimum length 2",
-                                  "/label");
-    expect_rejected<CasterFields>(R"({"real":-1})", value("real") + "is less than the minimum 0", "/real");
-    expect_rejected<CasterFields>(R"({"real":1.5})", value("real") + "is not less than the exclusive maximum 1.5",
-                                  "/real");
-    expect_rejected<CasterFields>(R"({"small":11})", value("small") + "is greater than the maximum 10", "/small");
-    expect_rejected<CasterFields>(R"({"flag":false})", value("flag") + "is not equal to the constant true", "/flag");
-    expect_rejected<CasterFields>(R"({"list":[1,2,3]})", value("list") + "has more items than the maximum 2", "/list");
-    expect_rejected<CasterFields>(R"({"list":[1,1]})", element("list") + "is equal to an earlier element", "/list/1");
-    expect_rejected<CasterFields>(R"({"pos":{"x":2,"y":2}})",
-                                  value("pos") + R"(is not equal to the constant {"x":1,"y":2})", "/pos");
-    expect_rejected<CasterFields>(R"({"dom":[]})", value("dom") + "has fewer items than the minimum 1", "/dom");
-    expect_rejected<CasterFields>(R"({"opt":"abc"})", value("opt") + "is longer than the maximum length 2", "/opt");
-    expect_rejected<CasterFields>(R"({"nul":"abc"})", value("nul") + "is longer than the maximum length 2", "/nul");
+    expect_rejected<CasterFields>(
+        R"({"color":"green"})",
+        R"(the value is not one of "red", "blue" at /color; reading the key "color" of CasterFields)", "/color");
+    expect_rejected<CasterFields>(
+        R"({"name":"abcd"})",
+        R"(the string is longer than the maximum length 3 at /name; reading the key "name" of CasterFields)", "/name");
+    expect_rejected<CasterFields>(
+        R"({"name":"Ab"})",
+        R"(the string does not match the pattern "^[a-z]" at /name; reading the key "name" of CasterFields)", "/name");
+    expect_rejected<CasterFields>(
+        R"({"label":"x"})",
+        R"(the string is shorter than the minimum length 2 at /label; reading the key "label" of CasterFields)",
+        "/label");
+    expect_rejected<CasterFields>(
+        R"({"real":-1})", R"(the number is less than the minimum 0 at /real; reading the key "real" of CasterFields)",
+        "/real");
+    expect_rejected<CasterFields>(
+        R"({"real":1.5})",
+        R"(the number is not less than the exclusive maximum 1.5 at /real; reading the key "real" of CasterFields)",
+        "/real");
+    expect_rejected<CasterFields>(
+        R"({"small":11})",
+        R"(the number is greater than the maximum 10 at /small; reading the key "small" of CasterFields)", "/small");
+    expect_rejected<CasterFields>(
+        R"({"flag":false})",
+        R"(the value is not equal to the constant true at /flag; reading the key "flag" of CasterFields)", "/flag");
+    expect_rejected<CasterFields>(
+        R"({"list":[1,2,3]})",
+        R"(the array has more items than the maximum 2 at /list; reading the key "list" of CasterFields)", "/list");
+    expect_rejected<CasterFields>(
+        R"({"list":[1,1]})",
+        R"(the item is equal to an earlier item at /list/1; reading an element of the value at the key "list" of CasterFields)",
+        "/list/1");
+    expect_rejected<CasterFields>(
+        R"({"pos":{"x":2,"y":2}})",
+        R"(the value is not equal to the constant {"x":1,"y":2} at /pos; reading the key "pos" of CasterFields)",
+        "/pos");
+    expect_rejected<CasterFields>(
+        R"({"dom":[]})",
+        R"(the array has fewer items than the minimum 1 at /dom; reading the key "dom" of CasterFields)", "/dom");
+    expect_rejected<CasterFields>(
+        R"({"opt":"abc"})",
+        R"(the string is longer than the maximum length 2 at /opt; reading the key "opt" of CasterFields)", "/opt");
+    expect_rejected<CasterFields>(
+        R"({"nul":"abc"})",
+        R"(the string is longer than the maximum length 2 at /nul; reading the key "nul" of CasterFields)", "/nul");
     // a value that the keywords accept can still fail to convert
     EXPECT_THROW((void)yyjson::read<CasterFields>(R"({"small":1.5})"), yyjson::bad_cast);
 
     expect_accepted<CasterPairs>(R"({"pair":{"x":1,"y":2},"pairs":[{"y":3,"x":4}]})", {{1, 2}, {{4, 3}}});
-    expect_rejected<CasterPairs>(R"({"pair":{"x":1,"y":2,"z":3}})", "CasterPair has more properties than the maximum 2",
+    expect_rejected<CasterPairs>(R"({"pair":{"x":1,"y":2,"z":3}})",
+                                 "the object has more properties than the maximum 2 at /pair; reading CasterPair",
                                  "/pair");
-    expect_rejected<CasterPairs>(R"({"pairs":[{"x":1}]})", "CasterPair has fewer properties than the minimum 2",
+    expect_rejected<CasterPairs>(R"({"pairs":[{"x":1}]})",
+                                 "the object has fewer properties than the minimum 2 at /pairs/0; reading CasterPair",
                                  "/pairs/0");
 }
 
@@ -6833,10 +7690,11 @@ TEST(Constraints, CasterJsonSameKind)
 {
     // a keyword of the kind that the type writes checks the JSON value too, and not the sorted value
     const auto check = []<typename T>(std::type_identity<T>) {
-        const auto value = std::format(R"(the value of the key "h" of {} )", yyjson::detail::type_name<T>());
+        const auto message = std::format(R"(the value is not one of ["a","b"] at /h; reading the key "h" of {})",
+                                         yyjson::detail::type_name<T>());
         expect_accepted<T>(R"({"h":["a","b"]})", {CasterSorted({"a", "b"})});
-        expect_rejected<T>(R"({"h":["b","a"]})", value + R"(is not one of ["a","b"])", "/h");
-        expect_rejected<T>(R"({"h":["c"]})", value + R"(is not one of ["a","b"])", "/h");
+        expect_rejected<T>(R"({"h":["b","a"]})", message, "/h");
+        expect_rejected<T>(R"({"h":["c"]})", message, "/h");
         EXPECT_TRUE(expect_merge_rule(T(), R"({"h":["b","a"]})").starts_with("bad cast"));
         EXPECT_FALSE(expect_merge_rule(T(), R"({"h":["a","b"]})").starts_with("bad cast"));
     };
@@ -6851,14 +7709,23 @@ TEST(Constraints, CasterJsonText)
     const auto good = T{CasterSorted({"a", "bc"}), CasterSorted({"a\"b", "\u00e9\n"})};
     expect_accepted<T>(R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9\n"]})", {good});
     expect_accepted<T>(R"({"plain":["\u0061","b\u0063"],"quoted":["\u0061\"b","\u00e9\u000a"]})", {good});
-    const auto plain = R"(the value of the key "plain" of CasterSortedText is not one of ["a","bc"])";
-    const auto quoted =
-        R"(the value of the key "quoted" of CasterSortedText is not equal to the constant ["a\"b","\u00e9\n"])";
-    expect_rejected<T>(R"({"plain":["a","b"],"quoted":["a\"b","\u00e9\n"]})", plain, "/plain");
-    expect_rejected<T>(R"({"plain":["a","bcd"],"quoted":["a\"b","\u00e9\n"]})", plain, "/plain");
-    expect_rejected<T>(R"({"plain":["a","bc","d"],"quoted":["a\"b","\u00e9\n"]})", plain, "/plain");
-    expect_rejected<T>(R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9"]})", quoted, "/quoted");
-    expect_rejected<T>(R"({"plain":["a","bc"],"quoted":["a\\b","\u00e9\n"]})", quoted, "/quoted");
+    expect_rejected<T>(R"({"plain":["a","b"],"quoted":["a\"b","\u00e9\n"]})",
+                       R"(the value is not one of ["a","bc"] at /plain; reading the key "plain" of CasterSortedText)",
+                       "/plain");
+    expect_rejected<T>(R"({"plain":["a","bcd"],"quoted":["a\"b","\u00e9\n"]})",
+                       R"(the value is not one of ["a","bc"] at /plain; reading the key "plain" of CasterSortedText)",
+                       "/plain");
+    expect_rejected<T>(R"({"plain":["a","bc","d"],"quoted":["a\"b","\u00e9\n"]})",
+                       R"(the value is not one of ["a","bc"] at /plain; reading the key "plain" of CasterSortedText)",
+                       "/plain");
+    expect_rejected<T>(
+        R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9"]})",
+        R"(the value is not equal to the constant ["a\"b","\u00e9\n"] at /quoted; reading the key "quoted" of CasterSortedText)",
+        "/quoted");
+    expect_rejected<T>(
+        R"({"plain":["a","bc"],"quoted":["a\\b","\u00e9\n"]})",
+        R"(the value is not equal to the constant ["a\"b","\u00e9\n"] at /quoted; reading the key "quoted" of CasterSortedText)",
+        "/quoted");
 }
 
 TEST(Constraints, CasterJsonMerged)
@@ -6873,7 +7740,8 @@ TEST(Constraints, CasterJsonMerged)
     EXPECT_TRUE(expect_merge_rule(t, R"({"list":[2,2]})").starts_with("bad cast"));
     // the fields that the patch leaves out are checked as they are written, and a null gives a field its default
     EXPECT_FALSE(expect_merge_rule(t, R"({"small":1})").starts_with("bad cast"));
-    EXPECT_TRUE(expect_merge_rule(CasterFields(), R"({"small":1})").ends_with(" at /color"));
+    EXPECT_EQ(expect_merge_rule(CasterFields(), R"({"small":1})"),
+              R"(bad cast: the value is not one of "red", "blue" at /color; reading the key "color" of CasterFields)");
     EXPECT_FALSE(expect_merge_rule(t, R"({"opt":null})").starts_with("bad cast"));
     EXPECT_TRUE(expect_merge_rule(t, R"({"opt":"abc"})").starts_with("bad cast"));
     EXPECT_FALSE(expect_merge_rule(CasterPairs{{1, 2}, {}}, R"({"pair":{"x":3,"y":4}})").starts_with("bad cast"));
@@ -6890,51 +7758,72 @@ TEST(Constraints, CasterJsonViews)
                                  {T({"a", "b"}), T({"ab"}), CasterFirst(7), bag, {}, {}, {}});
     expect_accepted<CasterViews>(R"({"mixed":["abc"],"opt":["a"],"xy":{"x":1,"y":2},"xys":[{"x":3,"y":4}]})",
                                  {{}, T({"abc"}), {}, {}, T({"a"}), {1, 2}, {{3, 4}}});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of CasterViews )", key);
-    };
     const auto element = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of CasterViews )", key);
     };
-    expect_rejected<CasterViews>(R"({"tags":[]})", value("tags") + "has fewer items than the minimum 1", "/tags");
-    expect_rejected<CasterViews>(R"({"tags":["a","b","c","d"]})", value("tags") + "has more items than the maximum 3",
-                                 "/tags");
-    expect_rejected<CasterViews>(R"({"tags":["a","a"]})", element("tags") + "is equal to an earlier element",
-                                 "/tags/1");
-    expect_rejected<CasterViews>(R"({"mixed":["a","b"]})", value("mixed") + "has more items than the maximum 1",
-                                 "/mixed");
-    expect_rejected<CasterViews>(R"({"mixed":"abc"})", value("mixed") + "is longer than the maximum length 2",
-                                 "/mixed");
+    expect_rejected<CasterViews>(
+        R"({"tags":[]})",
+        R"(the array has fewer items than the minimum 1 at /tags; reading the key "tags" of CasterViews)", "/tags");
+    expect_rejected<CasterViews>(
+        R"({"tags":["a","b","c","d"]})",
+        R"(the array has more items than the maximum 3 at /tags; reading the key "tags" of CasterViews)", "/tags");
+    expect_rejected<CasterViews>(
+        R"({"tags":["a","a"]})",
+        R"(the item is equal to an earlier item at /tags/1; reading an element of the value at the key "tags" of CasterViews)",
+        "/tags/1");
+    expect_rejected<CasterViews>(
+        R"({"mixed":["a","b"]})",
+        R"(the array has more items than the maximum 1 at /mixed; reading the key "mixed" of CasterViews)", "/mixed");
+    expect_rejected<CasterViews>(
+        R"({"mixed":"abc"})",
+        R"(the string is longer than the maximum length 2 at /mixed; reading the key "mixed" of CasterViews)",
+        "/mixed");
     // the caster reads the first element only, and the keywords count them all
-    expect_rejected<CasterViews>(R"({"first":[1,2,3]})", value("first") + "has more items than the maximum 2",
-                                 "/first");
-    expect_rejected<CasterViews>(R"({"bag":{"a":1,"b":2}})", value("bag") + "has more properties than the maximum 1",
-                                 "/bag");
-    expect_rejected<CasterViews>(R"({"opt":["a","b","c"]})", value("opt") + "has more items than the maximum 2",
-                                 "/opt");
+    expect_rejected<CasterViews>(
+        R"({"first":[1,2,3]})",
+        R"(the array has more items than the maximum 2 at /first; reading the key "first" of CasterViews)", "/first");
+    expect_rejected<CasterViews>(
+        R"({"bag":{"a":1,"b":2}})",
+        R"(the object has more properties than the maximum 1 at /bag; reading the key "bag" of CasterViews)", "/bag");
+    expect_rejected<CasterViews>(
+        R"({"opt":["a","b","c"]})",
+        R"(the array has more items than the maximum 2 at /opt; reading the key "opt" of CasterViews)", "/opt");
     // the caster reads null, so the keywords check it
-    expect_rejected<CasterViews>(R"({"opt":null})", value("opt") + R"(is not one of ["a"], ["a","b","c"])", "/opt");
-    expect_rejected<CasterViews>(R"({"opt":["b"]})", value("opt") + R"(is not one of ["a"], ["a","b","c"])", "/opt");
-    expect_rejected<CasterViews>(R"({"xy":{"x":1,"y":2,"z":3}})", "CasterXY has more properties than the maximum 2",
-                                 "/xy");
-    expect_rejected<CasterViews>(R"({"xys":[{"x":1,"y":2,"z":3}]})", "CasterXY has more properties than the maximum 2",
+    expect_rejected<CasterViews>(
+        R"({"opt":null})",
+        R"(the value is not one of ["a"], ["a","b","c"] at /opt; reading the key "opt" of CasterViews)", "/opt");
+    expect_rejected<CasterViews>(
+        R"({"opt":["b"]})",
+        R"(the value is not one of ["a"], ["a","b","c"] at /opt; reading the key "opt" of CasterViews)", "/opt");
+    expect_rejected<CasterViews>(R"({"xy":{"x":1,"y":2,"z":3}})",
+                                 "the object has more properties than the maximum 2 at /xy; reading CasterXY", "/xy");
+    expect_rejected<CasterViews>(R"({"xys":[{"x":1,"y":2,"z":3}]})",
+                                 "the object has more properties than the maximum 2 at /xys/0; reading CasterXY",
                                  "/xys/0");
-    expect_rejected<CasterXY>(R"({"x":1,"y":2,"z":3})", "CasterXY has more properties than the maximum 2", "");
+    expect_rejected<CasterXY>(R"({"x":1,"y":2,"z":3})",
+                              "the object has more properties than the maximum 2; reading CasterXY", "");
     EXPECT_EQ(yyjson::read<CasterShortKeys>(R"({"a":1,"b":2})"), CasterShortKeys{2});
-    expect_rejected<CasterShortKeys>(R"({"a":1,"bc":2})",
-                                     "a key of CasterShortKeys is longer than the maximum length 1", "/bc");
-    expect_rejected<CasterShortKeys>(R"({"\u0061b":1})", "a key of CasterShortKeys is longer than the maximum length 1",
-                                     "/ab");
+    expect_rejected<CasterShortKeys>(
+        R"({"a":1,"bc":2})", "the key is longer than the maximum length 1 at /bc; reading a key of CasterShortKeys",
+        "/bc");
+    expect_rejected<CasterShortKeys>(
+        R"({"\u0061b":1})", "the key is longer than the maximum length 1 at /ab; reading a key of CasterShortKeys",
+        "/ab");
     EXPECT_EQ(yyjson::read<CasterNoKeys>("{}"), CasterNoKeys{0});
-    expect_rejected<CasterNoKeys>(
-        R"({"a":1})", R"(CasterNoKeys has the key "a", which yyjson::additional_properties(false) rejects)", "/a");
+    expect_rejected<CasterNoKeys>(R"({"a":1})",
+                                  "the object has a key that is not allowed at /a; reading CasterNoKeys, which "
+                                  "yyjson::additional_properties(false) closes",
+                                  "/a");
 
     expect_accepted<CasterWrapped>(R"(["a"])", {T({"a"})});
-    expect_rejected<CasterWrapped>(R"(["a","b"])", "the value of CasterWrapped has more items than the maximum 1", "");
+    expect_rejected<CasterWrapped>(R"(["a","b"])", "the array has more items than the maximum 1; reading CasterWrapped",
+                                   "");
 
     // the in-place form fills a field that the merge resets, so the keywords count the members of the patch
     const auto t = yyjson::read<CasterViews>(R"({"tags":["a"],"bag":{"a":1}})");
-    EXPECT_TRUE(expect_merge_into(CasterViews(), R"({"bag":{"b":2}})").ends_with(" at /tags"));
+    EXPECT_EQ(
+        expect_merge_into(CasterViews(), R"({"bag":{"b":2}})"),
+        R"(bad cast: the array has fewer items than the minimum 1 at /tags; reading the key "tags" of CasterViews)");
     const auto merged = expect_merge_into(t, R"({"bag":{"b":2}})");
     EXPECT_NE(merged.find(R"("bag":{"b":2})"), std::string::npos) << merged;
     EXPECT_TRUE(expect_merge_into(t, R"({"bag":{"b":2,"c":3}})").starts_with("bad cast"));
@@ -6957,7 +7846,7 @@ TEST(Constraints, CasterJsonThreads)
     worker.run([&] { direct = read_or_error([&] { return yyjson::read<CasterRemoteItems>(text); }); });
     EXPECT_EQ(
         direct,
-        R"(bad cast: the value of the key "items" of CasterRemoteItems has more items than the maximum 3 at /items)");
+        R"(bad cast: the array has more items than the maximum 3 at /items; reading the key "items" of CasterRemoteItems)");
 }
 
 TEST(Constraints, CasterJsonNull)
@@ -6971,16 +7860,21 @@ TEST(Constraints, CasterJsonNull)
     }
     EXPECT_FALSE(yyjson::read<CasterNulls>(R"({})").opt.has_value());
     EXPECT_EQ(yyjson::read<CasterNulls>(R"({"opt":null})").opt, std::optional(T()));
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of CasterNulls )", key);
-    };
-    expect_rejected<CasterNulls>(R"({"opt":["b"]})", value("opt") + R"(is not one of ["a"], null)", "/opt", false);
-    expect_rejected<CasterNulls>(R"({"text":[]})", value("text") + "is not equal to the constant null", "/text", false);
-    expect_rejected<CasterNulls>(R"({"one":[]})", value("one") + "is not equal to the constant null", "/one", false);
+    expect_rejected<CasterNulls>(R"({"opt":["b"]})",
+                                 R"(the value is not one of ["a"], null at /opt; reading the key "opt" of CasterNulls)",
+                                 "/opt", false);
+    expect_rejected<CasterNulls>(
+        R"({"text":[]})",
+        R"(the value is not equal to the constant null at /text; reading the key "text" of CasterNulls)", "/text",
+        false);
+    expect_rejected<CasterNulls>(
+        R"({"one":[]})", R"(the value is not equal to the constant null at /one; reading the key "one" of CasterNulls)",
+        "/one", false);
     // a null member of the patch gives the field its default, which the keywords do not check, while the fields
     // that the patch leaves out are checked as they are written
     const auto t = yyjson::read<CasterNulls>(R"({"opt":["a"],"one":null})");
-    EXPECT_TRUE(expect_merge_into(t, R"({"opt":null})").ends_with(" at /one"));
+    EXPECT_EQ(expect_merge_into(t, R"({"opt":null})"),
+              R"(bad cast: the value is not equal to the constant null at /one; reading the key "one" of CasterNulls)");
     EXPECT_FALSE(expect_merge_into(t, R"({"one":null})").starts_with("bad cast"));
     EXPECT_FALSE(expect_merge_into(t, R"({"opt":null,"one":null})").starts_with("bad cast"));
     EXPECT_TRUE(expect_merge_into(t, R"({"opt":["b"]})").starts_with("bad cast"));
@@ -7016,29 +7910,25 @@ TEST(Constraints, CasterJsonMessages)
     {
         const auto caster = failure(std::type_identity<CasterMessagesOfCaster>(), json);
         EXPECT_EQ(caster, failure(std::type_identity<CasterMessagesOfValue>(), json)) << json;
-        EXPECT_TRUE(caster[0].first.starts_with("the value of the key") ||
-                    caster[0].first.starts_with("an element of the value") ||
-                    caster[0].first.starts_with("a key of the value"))
-            << caster[0].first;
+        // the message names the field that the caster of the struct reads
+        EXPECT_NE(caster[0].first.find("the key \""), std::string::npos) << caster[0].first;
     }
 }
 
 TEST(Constraints, CasterJsonKeys)
 {
-    const auto closed = "has a key that yyjson::additional_properties(false) rejects";
-    const auto names = "is longer than the maximum length 1";
     {
         using T = CasterKeysField;
-        const auto value = [](std::string_view key) {
-            return std::format(R"(the value of the key "{}" of CasterKeysField )", key);
-        };
-        const auto key = [](std::string_view name) {
-            return std::format(R"(a key of the value of the key "{}" of CasterKeysField )", name);
-        };
         auto bag = CasterBag();
         expect_accepted<T>(R"({"bag":{},"set":{"k":1}})", {T{bag, CasterKeySet({{"k", 1}})}});
-        expect_rejected<T>(R"({"bag":{"k":1},"set":{}})", value("bag") + closed, "/bag");
-        expect_rejected<T>(R"({"bag":{},"set":{"k":1,"kk":2}})", key("set") + names, "/set/kk");
+        expect_rejected<T>(
+            R"({"bag":{"k":1},"set":{}})",
+            R"(the object has a key that additionalProperties does not allow at /bag; reading the key "bag" of CasterKeysField)",
+            "/bag");
+        expect_rejected<T>(
+            R"({"bag":{},"set":{"k":1,"kk":2}})",
+            R"(the key is longer than the maximum length 1 at /set/kk; reading a key of the value at the key "set" of CasterKeysField)",
+            "/set/kk");
         bag.set("k", 1);
         EXPECT_TRUE(expect_merge_rule(T{bag, {}}, R"({"bag":{"x":1}})").starts_with("bad cast"));
         EXPECT_FALSE(expect_merge_rule(T{bag, {}}, R"({"bag":{}})").starts_with("bad cast"));
@@ -7047,17 +7937,17 @@ TEST(Constraints, CasterJsonKeys)
     }
     {
         using T = CasterKeysProperty;
-        const auto value = [](std::string_view key) {
-            return std::format(R"(the value of the key "{}" of CasterKeysProperty )", key);
-        };
-        const auto key = [](std::string_view name) {
-            return std::format(R"(a key of the value of the key "{}" of CasterKeysProperty )", name);
-        };
         auto bag = CasterBag();
         bag.set("k", 1);
         expect_accepted<T>(R"({"bag":{"k":1},"set":{}})", {T{bag, {}}});
-        expect_rejected<T>(R"({"bag":{"kk":1},"set":{}})", key("bag") + names, "/bag/kk");
-        expect_rejected<T>(R"({"bag":{},"set":{"k":1}})", value("set") + closed, "/set");
+        expect_rejected<T>(
+            R"({"bag":{"kk":1},"set":{}})",
+            R"(the key is longer than the maximum length 1 at /bag/kk; reading a key of the value at the key "bag" of CasterKeysProperty)",
+            "/bag/kk");
+        expect_rejected<T>(
+            R"({"bag":{},"set":{"k":1}})",
+            R"(the object has a key that additionalProperties does not allow at /set; reading the key "set" of CasterKeysProperty)",
+            "/set");
         EXPECT_TRUE(expect_merge_rule(T{}, R"({"bag":{"xx":1}})").starts_with("bad cast"));
         EXPECT_FALSE(expect_merge_rule(T{}, R"({"bag":{"x":1}})").starts_with("bad cast"));
         EXPECT_TRUE(expect_merge_rule(T{}, R"({"set":{"x":1}})").starts_with("bad cast"));
@@ -7075,26 +7965,41 @@ TEST(Constraints, CasterJsonElements)
     bag.set("b", 2);
     expect_accepted<T>(R"({"list":[0,1],"tags":["a"],"set":{"a":1,"b":0},"bag":{"a":1,"b":2}})",
                        {CasterList({0, 1}), CasterTags({"a"}), CasterKeySet({{"a", 1}, {"b", 0}}), bag});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of CasterItems )", key);
-    };
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of CasterItems )", key);
-    };
-    expect_rejected<T>(R"({"list":[-1]})", element("list") + "is less than the minimum 0", "/list/0");
-    expect_rejected<T>(R"({"list":[0,2]})", element("list") + "is greater than the maximum 1", "/list/1");
-    expect_rejected<T>(R"({"list":[0,0]})", value("list") + "satisfies none of the subschemas of yyjson::any_of",
-                       "/list");
-    expect_rejected<T>(R"({"tags":["ab"]})", element("tags") + "is longer than the maximum length 1", "/tags/0");
-    expect_rejected<T>(R"({"tags":["a","x"]})", value("tags") + "satisfies the settings of yyjson::not_", "/tags");
-    const auto members = value("set") + "does not have the keys and the values that yyjson::property and required give";
-    expect_rejected<T>(R"({"set":{"a":2}})", members, "/set");
-    expect_rejected<T>(R"({"set":{"b":0}})", members, "/set");
-    expect_rejected<T>(R"({"set":{"a":1,"b":-1}})", element("set") + "is less than the minimum 0", "/set/b");
-    expect_rejected<T>(R"({"bag":{"a":1}})",
-                       value("bag") + "does not have all the keys that yyjson::dependent_required requires", "/bag");
+    expect_rejected<T>(
+        R"({"list":[-1]})",
+        R"(the number is less than the minimum 0 at /list/0; reading an element of the value at the key "list" of CasterItems)",
+        "/list/0");
+    expect_rejected<T>(
+        R"({"list":[0,2]})",
+        R"(the number is greater than the maximum 1 at /list/1; reading an element of the value at the key "list" of CasterItems)",
+        "/list/1");
+    expect_rejected<T>(
+        R"({"list":[0,0]})",
+        R"(the value satisfies none of the subschemas of anyOf at /list; reading the key "list" of CasterItems)",
+        "/list");
+    expect_rejected<T>(
+        R"({"tags":["ab"]})",
+        R"(the string is longer than the maximum length 1 at /tags/0; reading an element of the value at the key "tags" of CasterItems)",
+        "/tags/0");
+    expect_rejected<T>(R"({"tags":["a","x"]})",
+                       R"(the value satisfies the subschema of not at /tags; reading the key "tags" of CasterItems)",
+                       "/tags");
+    expect_rejected<T>(R"({"set":{"a":2}})",
+                       R"(the object does not satisfy properties at /set; reading the key "set" of CasterItems)",
+                       "/set");
+    expect_rejected<T>(R"({"set":{"b":0}})",
+                       R"(the object does not satisfy properties at /set; reading the key "set" of CasterItems)",
+                       "/set");
+    expect_rejected<T>(
+        R"({"set":{"a":1,"b":-1}})",
+        R"(the number is less than the minimum 0 at /set/b; reading an element of the value at the key "set" of CasterItems)",
+        "/set/b");
+    expect_rejected<T>(
+        R"({"bag":{"a":1}})",
+        R"(the object does not have all the keys that dependentRequired requires at /bag; reading the key "bag" of CasterItems)",
+        "/bag");
     expect_rejected<T>(R"({"bag":{"c":1,"d":2}})",
-                       value("bag") + "satisfies the settings of yyjson::if_ and not those of yyjson::then", "/bag");
+                       R"(the value satisfies if and not then at /bag; reading the key "bag" of CasterItems)", "/bag");
     // validate checks the JSON that the caster writes
     auto t = T{CasterList({0, 1}), CasterTags({"a"}), CasterKeySet({{"a", 1}}), {}};
     EXPECT_NO_THROW(yyjson::validate(t));
@@ -7116,30 +8021,37 @@ TEST(Constraints, Annotations)
     expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "pq", "xy", 4});
     expect_rejected<ConstrainedAnnotated>(
         R"({"p":"pp"})",
-        R"(the value of the key "p" of ConstrainedAnnotated does not match all of the patterns "^p", "q$")", "/p");
+        R"(the string does not match all of the patterns "^p", "q$" at /p; reading the key "p" of ConstrainedAnnotated)",
+        "/p");
     expect_rejected<ConstrainedAnnotated>(
-        R"({"n":4})", R"(the value of the key "n" of ConstrainedAnnotated is greater than the maximum 3)", "/n");
+        R"({"n":4})", R"(the number is greater than the maximum 3 at /n; reading the key "n" of ConstrainedAnnotated)",
+        "/n");
     expect_rejected<ConstrainedAnnotated>(
-        R"({"s":"y"})", R"(the value of the key "s" of ConstrainedAnnotated does not match the pattern "^x")", "/s");
+        R"({"s":"y"})",
+        R"(the string does not match the pattern "^x" at /s; reading the key "s" of ConstrainedAnnotated)", "/s");
     expect_rejected<ConstrainedAnnotated>(
-        R"({"even":3})", R"(the value of the key "even" of ConstrainedAnnotated is rejected by yyjson::satisfies)",
+        R"({"even":3})",
+        R"(the value does not satisfy the predicate at /even; reading the key "even" of ConstrainedAnnotated)",
         "/even");
 
     expect_accepted<KeywordsAnnotated>(R"({"version":2,"unit":"b","day":"2024-02-29","note":"y","step":1.5})",
                                        {2, "b", "2024-02-29", "y", 1.5, {}});
     expect_accepted<KeywordsAnnotated>(R"({"list":[1,2]})", {.list = {1, 2}});
-    const auto keywords = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of KeywordsAnnotated )", key);
+    const auto keywords = [](std::string_view what, std::string_view key) {
+        return std::format(R"({} at /{}; reading the key "{}" of KeywordsAnnotated)", what, key, key);
     };
-    expect_rejected<KeywordsAnnotated>(R"({"version":1})", keywords("version") + "is not equal to the constant 2",
-                                       "/version");
-    expect_rejected<KeywordsAnnotated>(R"({"unit":"c"})", keywords("unit") + R"(is not one of "a", "b")", "/unit");
+    expect_rejected<KeywordsAnnotated>(R"({"version":1})",
+                                       keywords("the value is not equal to the constant 2", "version"), "/version");
+    expect_rejected<KeywordsAnnotated>(R"({"unit":"c"})", keywords(R"(the value is not one of "a", "b")", "unit"),
+                                       "/unit");
     expect_rejected<KeywordsAnnotated>(R"({"day":"2024-02-30"})",
-                                       keywords("day") + R"(does not have the format "date")", "/day");
-    expect_rejected<KeywordsAnnotated>(R"({"step":0.7})", keywords("step") + "is not a multiple of 0.5", "/step");
-    expect_rejected<KeywordsAnnotated>(R"({"step":2})", keywords("step") + "is not less than the exclusive maximum 2",
+                                       keywords(R"(the string does not have the format "date")", "day"), "/day");
+    expect_rejected<KeywordsAnnotated>(R"({"step":0.7})", keywords("the number is not a multiple of 0.5", "step"),
                                        "/step");
-    expect_rejected<KeywordsAnnotated>(R"({"list":[2,1]})", keywords("list") + "is not one of [1,2], []", "/list");
+    expect_rejected<KeywordsAnnotated>(
+        R"({"step":2})", keywords("the number is not less than the exclusive maximum 2", "step"), "/step");
+    expect_rejected<KeywordsAnnotated>(R"({"list":[2,1]})", keywords("the value is not one of [1,2], []", "list"),
+                                       "/list");
 }
 
 TEST(Constraints, ElementAnnotations)
@@ -7147,50 +8059,50 @@ TEST(Constraints, ElementAnnotations)
     expect_accepted<ElementsAnnotated>(
         R"({"scores":[0],"ids":[1,2],"row":[0,"a"],"names":{"a":1},"tags":["x","y"],"groups":{"g":[9]}})",
         {{0}, {1, 2}, {0, "a"}, {{"a", 1}}, {"x", "y"}, {{"g", {9}}}});
-    const auto element = [](std::string_view key) {
-        return std::format(R"(an element of the value of the key "{}" of ElementsAnnotated )", key);
+    const auto element = [](std::string_view what, std::string_view path, std::string_view key) {
+        return std::format(R"({} at {}; reading an element of the value at the key "{}" of ElementsAnnotated)", what,
+                           path, key);
     };
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of ElementsAnnotated )", key);
+    const auto value = [](std::string_view what, std::string_view key) {
+        return std::format(R"({} at /{}; reading the key "{}" of ElementsAnnotated)", what, key, key);
     };
-    expect_rejected<ElementsAnnotated>(R"({"scores":[0,-1]})", element("scores") + "is less than the minimum 0",
-                                       "/scores/1");
-    expect_rejected<ElementsAnnotated>(R"({"ids":[1,1]})", element("ids") + "is equal to an earlier element", "/ids/1");
-    expect_rejected<ElementsAnnotated>(R"({"ids":[]})", value("ids") + "has fewer items than the minimum 1", "/ids");
-    expect_rejected<ElementsAnnotated>(R"({"row":[0,"ab"]})", element("row") + "is longer than the maximum length 1",
-                                       "/row/1");
+    expect_rejected<ElementsAnnotated>(
+        R"({"scores":[0,-1]})", element("the number is less than the minimum 0", "/scores/1", "scores"), "/scores/1");
+    expect_rejected<ElementsAnnotated>(R"({"ids":[1,1]})",
+                                       element("the item is equal to an earlier item", "/ids/1", "ids"), "/ids/1");
+    expect_rejected<ElementsAnnotated>(R"({"ids":[]})", value("the array has fewer items than the minimum 1", "ids"),
+                                       "/ids");
+    expect_rejected<ElementsAnnotated>(
+        R"({"row":[0,"ab"]})", element("the string is longer than the maximum length 1", "/row/1", "row"), "/row/1");
     expect_rejected<ElementsAnnotated>(
         R"({"names":{"A":1}})",
-        R"(a key of the value of the key "names" of ElementsAnnotated does not match the pattern "^[a-z]+$")",
+        R"(the key does not match the pattern "^[a-z]+$" at /names/A; reading a key of the value at the key "names" of ElementsAnnotated)",
         "/names/A");
     expect_rejected<ElementsAnnotated>(
-        R"({"tags":["x","x"]})",
-        value("tags") + "has more than 1 item that satisfies the constraints of yyjson::contains", "/tags");
-    expect_rejected<ElementsAnnotated>(R"({"groups":{"g":[10]}})", element("groups") + "is greater than the maximum 9",
+        R"({"tags":["x","x"]})", value("the array has more than 1 item that satisfies contains", "tags"), "/tags");
+    expect_rejected<ElementsAnnotated>(R"({"groups":{"g":[10]}})",
+                                       element("the number is greater than the maximum 9", "/groups/g/0", "groups"),
                                        "/groups/g/0");
     expect_rejected<ElementsAnnotated>(R"({"groups":{"g":[],"h":[]}})",
-                                       value("groups") + "has more properties than the maximum 1", "/groups");
+                                       value("the object has more properties than the maximum 1", "groups"), "/groups");
 }
 
 TEST(Constraints, CombinatorAnnotations)
 {
     expect_accepted<CombinedAnnotated>(R"({"n":2,"even":12,"digit":9,"s":"bc","one":4})", {2, 12, 9, "bc", 4, {}});
-    const auto value = [](std::string_view key) {
-        return std::format(R"(the value of the key "{}" of CombinedAnnotated )", key);
+    const auto value = [](std::string_view what, std::string_view key) {
+        return std::format(R"(the value {} at /{}; reading the key "{}" of CombinedAnnotated)", what, key, key);
     };
-    expect_rejected<CombinedAnnotated>(R"({"n":0})", value("n") + "satisfies the settings of yyjson::not_", "/n");
-    expect_rejected<CombinedAnnotated>(
-        R"({"even":11})", value("even") + "satisfies the settings of yyjson::if_ and not those of yyjson::then",
-        "/even");
-    expect_rejected<CombinedAnnotated>(
-        R"({"digit":10})", value("digit") + "does not satisfy all the subschemas of yyjson::all_of", "/digit");
-    expect_rejected<CombinedAnnotated>(R"({"s":"c"})",
-                                       value("s") + "satisfies none of the subschemas of yyjson::any_of", "/s");
-    expect_rejected<CombinedAnnotated>(R"({"one":6})",
-                                       value("one") + "satisfies more than one subschema of yyjson::one_of", "/one");
+    expect_rejected<CombinedAnnotated>(R"({"n":0})", value("satisfies the subschema of not", "n"), "/n");
+    expect_rejected<CombinedAnnotated>(R"({"even":11})", value("satisfies if and not then", "even"), "/even");
+    expect_rejected<CombinedAnnotated>(R"({"digit":10})",
+                                       value("does not satisfy all the subschemas of allOf", "digit"), "/digit");
+    expect_rejected<CombinedAnnotated>(R"({"s":"c"})", value("satisfies none of the subschemas of anyOf", "s"), "/s");
+    expect_rejected<CombinedAnnotated>(R"({"one":6})", value("satisfies more than one subschema of oneOf", "one"),
+                                       "/one");
     expect_rejected<CombinedAnnotated>(
         R"({"ints":[1,"a"]})",
-        R"(an element of the value of the key "ints" of CombinedAnnotated is not read as int by yyjson::matches)",
+        R"(the value does not satisfy matches at /ints/1; reading an element of the value at the key "ints" of CombinedAnnotated)",
         "/ints/1");
 }
 
@@ -7199,27 +8111,32 @@ TEST(Constraints, StructConditionAnnotations)
     static_assert(yyjson::detail::has_struct_conditions<ExclusiveAnnotated>);
     expect_accepted<ExclusiveAnnotated>(R"({"first":1})", {1, {}});
     expect_accepted<ExclusiveAnnotated>(R"({"b":0})", {{}, 0});
-    expect_rejected<ExclusiveAnnotated>(R"({"first":1,"b":2})",
-                                        "ExclusiveAnnotated has the keys and the values that yyjson::not_ rejects", "");
-    expect_rejected<ExclusiveAnnotated>(R"({"b":-1})",
-                                        "ExclusiveAnnotated satisfies none of the subschemas of yyjson::any_of", "");
+    expect_rejected<ExclusiveAnnotated>(
+        R"({"first":1,"b":2})", "the value satisfies the subschema of not; reading ExclusiveAnnotated in yyjson::not_",
+        "");
+    expect_rejected<ExclusiveAnnotated>(
+        R"({"b":-1})", "the value satisfies none of the subschemas of anyOf; reading ExclusiveAnnotated", "");
 }
 
 TEST(Constraints, PatternAnnotations)
 {
     expect_accepted<PatternAnnotated>(R"({"x1":2,"a":1})", {1, {{"x1", 2}}});
     expect_rejected<PatternAnnotated>(
-        R"({"x1":-1})", R"(the value of the key "x1" of PatternAnnotated is less than the minimum 0)", "/x1");
+        R"({"x1":-1})", "the number is less than the minimum 0 at /x1; reading a member value of PatternAnnotated",
+        "/x1");
     EXPECT_EQ(std::string(yyjson::write(PatternAnnotated{1, {{"x1", 2}}})), R"({"a":1,"x1":2})");
 }
 
 TEST(Constraints, CasterAnnotations)
 {
     expect_accepted<CasterAnnotated>(R"({"list":[1,2],"name":"abc"})", {CasterList({1, 2}), CasterName("abc")});
-    expect_rejected<CasterAnnotated>(R"({"list":[1,1]})",
-                                     R"(the value of the key "list" of CasterAnnotated has duplicate items)", "/list");
     expect_rejected<CasterAnnotated>(
-        R"({"name":"abcd"})", R"(the value of the key "name" of CasterAnnotated is longer than the maximum length 3)",
+        R"({"list":[1,1]})",
+        R"(the item is equal to an earlier item at /list/1; reading an element of the value at the key "list" of CasterAnnotated)",
+        "/list/1");
+    expect_rejected<CasterAnnotated>(
+        R"({"name":"abcd"})",
+        R"(the string is longer than the maximum length 3 at /name; reading the key "name" of CasterAnnotated)",
         "/name");
 }
 #endif
@@ -7326,52 +8243,60 @@ TEST(Constraints, JsonKindObjects)
     // every member of the object of the struct satisfies the subschema, and the tag counts as a member
     expect_rejected<KjObjects>(
         R"({"r":{"w":1,"h":-2}})",
-        R"(the value of the key "r" of KjObjects has a value that does not satisfy the constraints of yyjson::additional_properties)",
+        R"(the object has a value that does not satisfy additionalProperties at /r; reading the key "r" of KjObjects)",
         "/r");
-    expect_rejected<KjObjects>(R"({"s":{"type":"rect","w":1,"h":2}})",
-                               R"(the value of the key "s" of KjObjects has more properties than the maximum 2)", "/s");
+    expect_rejected<KjObjects>(
+        R"({"s":{"type":"rect","w":1,"h":2}})",
+        R"(the object has more properties than the maximum 2 at /s; reading the key "s" of KjObjects)", "/s");
 }
 
 TEST(Constraints, JsonKindScalars)
 {
     expect_accepted<KjScalars>(R"({"v":"red","c":"red","w":""})", {KjColor::red, KjColor::red, std::string()});
-    expect_rejected<KjScalars>(R"({"v":"green"})",
-                               R"(the value of the key "v" of KjScalars is longer than the maximum length 3)", "/v");
-    expect_rejected<KjScalars>(R"({"c":"green"})",
-                               R"(the value of the key "c" of KjScalars is longer than the maximum length 3)", "/c");
+    expect_rejected<KjScalars>(
+        R"({"v":"green"})", R"(the string is longer than the maximum length 3 at /v; reading the key "v" of KjScalars)",
+        "/v");
+    expect_rejected<KjScalars>(
+        R"({"c":"green"})", R"(the string is longer than the maximum length 3 at /c; reading the key "c" of KjScalars)",
+        "/c");
     // `yyjson::min_length` holds for a number, so that `yyjson::not_` rejects it
-    expect_rejected<KjScalars>(R"({"w":1})",
-                               R"(the value of the key "w" of KjScalars satisfies the settings of yyjson::not_)", "/w");
+    expect_rejected<KjScalars>(
+        R"({"w":1})", R"(the value satisfies the subschema of not at /w; reading the key "w" of KjScalars)", "/w");
 }
 
 TEST(Constraints, JsonKindArrays)
 {
     expect_accepted<KjArrays>(R"({"a":[1,2,3],"t":[1,2,"x"],"s":[1,2]})", {{1, 2, 3}, {1, 2.0, "x"}, {1, 2}});
-    expect_rejected<KjArrays>(R"({"a":[1,2,101]})",
-                              R"(an element of the value of the key "a" of KjArrays is greater than the maximum 100)",
-                              "/a/2");
-    expect_rejected<KjArrays>(R"({"t":[-1,2,"x"]})",
-                              R"(an element of the value of the key "t" of KjArrays is less than the minimum 0)",
-                              "/t/0");
-    expect_rejected<KjArrays>(R"({"t":[1,1,"x"]})",
-                              R"(an element of the value of the key "t" of KjArrays is equal to an earlier element)",
-                              "/t/1");
+    expect_rejected<KjArrays>(
+        R"({"a":[1,2,101]})",
+        R"(the number is greater than the maximum 100 at /a/2; reading an element of the value at the key "a" of KjArrays)",
+        "/a/2");
+    expect_rejected<KjArrays>(
+        R"({"t":[-1,2,"x"]})",
+        R"(the number is less than the minimum 0 at /t/0; reading an element of the value at the key "t" of KjArrays)",
+        "/t/0");
+    expect_rejected<KjArrays>(
+        R"({"t":[1,1,"x"]})",
+        R"(the item is equal to an earlier item at /t/1; reading an element of the value at the key "t" of KjArrays)",
+        "/t/1");
     // the set drops a duplicate, but the keyword checks the JSON value
-    expect_rejected<KjArrays>(R"({"s":[1,1]})",
-                              R"(an element of the value of the key "s" of KjArrays is equal to an earlier element)",
-                              "/s/1");
+    expect_rejected<KjArrays>(
+        R"({"s":[1,1]})",
+        R"(the item is equal to an earlier item at /s/1; reading an element of the value at the key "s" of KjArrays)",
+        "/s/1");
 }
 
 TEST(Constraints, JsonKindKeys)
 {
     // the struct writes any key with the map of `yyjson::extra_keys`, and the key of an adjacent tag
     expect_accepted<KjExtra>(R"({"a":1,"b":5})", {1, {{"b", 5}}});
-    expect_rejected<KjExtra>(R"({"a":1,"b":-5})", R"(the value of the key "b" of KjExtra is less than the minimum 0)",
-                             "/b");
-    expect_rejected<KjExtra>(R"({"a":1})", R"(KjExtra is not constructible from JSON without the key "b")", "");
+    expect_rejected<KjExtra>(R"({"a":1,"b":-5})",
+                             R"(the number is less than the minimum 0 at /b; reading the key "b" of KjExtra)", "/b");
+    expect_rejected<KjExtra>(R"({"a":1})", R"(a required key is missing; reading the key "b" of KjExtra)", "");
     expect_accepted<KjEvent>(R"({"id":1,"data":5,"kind":"count"})", {1, 5});
-    expect_rejected<KjEvent>(R"({"id":1,"data":{"w":1,"h":2},"kind":"rect"})",
-                             R"(the value of the key "kind" of KjEvent is not equal to the constant "count")", "/kind");
+    expect_rejected<KjEvent>(
+        R"({"id":1,"data":{"w":1,"h":2},"kind":"rect"})",
+        R"(the value is not equal to the constant "count" at /kind; reading the key "kind" of KjEvent)", "/kind");
 }
 
 TEST(Constraints, JsonKindCasters)
@@ -7381,10 +8306,12 @@ TEST(Constraints, JsonKindCasters)
                                {{N("a"), N("bc")}, {{"k", N("ab")}}, {"long"}});
     expect_rejected<KjCasters>(
         R"({"names":["a","bcd"]})",
-        R"(an element of the value of the key "names" of KjCasters is longer than the maximum length 2)", "/names/1");
+        R"(the string is longer than the maximum length 2 at /names/1; reading an element of the value at the key "names" of KjCasters)",
+        "/names/1");
     expect_rejected<KjCasters>(
         R"({"map":{"k":"abc"}})",
-        R"(an element of the value of the key "map" of KjCasters is longer than the maximum length 2)", "/map/k");
+        R"(the string is longer than the maximum length 2 at /map/k; reading an element of the value at the key "map" of KjCasters)",
+        "/map/k");
 }
 
 // `yyjson::additional_properties` on the type of a struct checks each member that `yyjson::property` does not name
@@ -7438,15 +8365,17 @@ inline constexpr auto yyjson::annotations<KjDomPrefix> =
 TEST(Constraints, JsonKindTypeRest)
 {
     expect_accepted<KjTypeRest>(R"({"a":1,"b":"x","z":3})", {1, "x", {{"z", 3}}});
-    const auto rest = [](std::string_view key) {
-        return std::format(
-            R"(the value of the key "{}" of KjTypeRest is less than the minimum 0 in yyjson::additional_properties)",
-            key);
-    };
-    expect_rejected<KjTypeRest>(R"({"a":-1,"b":"x"})", rest("a"), "/a");
-    expect_rejected<KjTypeRest>(R"({"a":1,"b":"x","z":-3})", rest("z"), "/z");
-    expect_rejected<KjTypeRest>(R"({"a":1,"b":""})",
-                                R"(the value of the key "b" of KjTypeRest is shorter than the minimum length 1)", "/b");
+    expect_rejected<KjTypeRest>(
+        R"({"a":-1,"b":"x"})",
+        "the number is less than the minimum 0 at /a; reading a value of KjTypeRest in yyjson::additional_properties",
+        "/a");
+    expect_rejected<KjTypeRest>(
+        R"({"a":1,"b":"x","z":-3})",
+        "the number is less than the minimum 0 at /z; reading a value of KjTypeRest in yyjson::additional_properties",
+        "/z");
+    expect_rejected<KjTypeRest>(
+        R"({"a":1,"b":""})",
+        R"(the string is shorter than the minimum length 1 at /b; reading the key "b" of KjTypeRest)", "/b");
     EXPECT_NO_THROW(yyjson::validate(KjTypeRest{1, "x", {{"q", 2}}}));
     EXPECT_THROW(yyjson::validate(KjTypeRest{-1, "x", {}}), yyjson::bad_cast);
     EXPECT_THROW(yyjson::validate(KjTypeRest{1, "x", {{"q", -2}}}), yyjson::bad_cast);
@@ -7455,15 +8384,11 @@ TEST(Constraints, JsonKindTypeRest)
 TEST(Constraints, JsonKindTag)
 {
     expect_accepted<KjTagged>(R"({"s":{"type":"circle","r":1}})", {KjCircle{1}});
-    expect_rejected<KjTagged>(
-        R"({"s":{"type":"rect","w":1}})",
-        R"(the value of the key "s" of KjTagged does not have the keys and the values that yyjson::property and required give)",
-        "/s");
+    expect_rejected<KjTagged>(R"({"s":{"type":"rect","w":1}})",
+                              R"(the object does not satisfy properties at /s; reading the key "s" of KjTagged)", "/s");
     // the read checks the input object, which can hold a key that the struct does not write
-    expect_rejected<KjTagged>(
-        R"({"s":{"type":"circle","r":1,"x":0}})",
-        R"(the value of the key "s" of KjTagged satisfies the settings of yyjson::if_ and not those of yyjson::then)",
-        "/s");
+    expect_rejected<KjTagged>(R"({"s":{"type":"circle","r":1,"x":0}})",
+                              R"(the value satisfies if and not then at /s; reading the key "s" of KjTagged)", "/s");
     EXPECT_NO_THROW(yyjson::validate(KjTagged{KjCircle{1}}));
     EXPECT_THROW(yyjson::validate(KjTagged{KjRect{}}), yyjson::bad_cast);
     // a merge checks the object as merged, with the tag of the alternative that it holds
@@ -7477,8 +8402,8 @@ TEST(Constraints, JsonKindInputValues)
     // the read checks the value of the input, and `validate` the value that the struct writes
     expect_accepted<KjLevels>(R"({"a":0,"z":"one"})", {0, {{"z", KjLevel::one}}});
     expect_accepted<KjLevels>(R"({"a":0,"z":0})", {0, {{"z", KjLevel::zero}}});
-    expect_rejected<KjLevels>(R"({"a":0,"z":1})",
-                              R"(the value of the key "z" of KjLevels is greater than the maximum 0)", "/z");
+    expect_rejected<KjLevels>(
+        R"({"a":0,"z":1})", R"(the number is greater than the maximum 0 at /z; reading the key "z" of KjLevels)", "/z");
     EXPECT_NO_THROW(yyjson::validate(KjLevels{0, {{"z", KjLevel::one}}}));
     // a value of the DOM checks its elements by their positions
     EXPECT_NO_THROW((void)yyjson::read<KjDomPrefix>(R"({"v":[0,-1]})"));
@@ -7594,9 +8519,10 @@ TEST(Constraints, ExtraKeyProperty)
     expect_accepted<ScExtra>(R"({"a":1,"b":2,"c":1})", {1, {{"b", 2}, {"c", 1}}});
     expect_rejected<ScExtra>(
         R"({"a":1,"b":2,"c":-1})",
-        R"(the value of the key "c" of ScExtra is less than the minimum 0 in yyjson::additional_properties)", "/c");
-    expect_rejected<ScExtra>(R"({"a":1,"b":-2})", R"(the value of the key "b" of ScExtra is less than the minimum 0)",
-                             "/b");
+        "the number is less than the minimum 0 at /c; reading a value of ScExtra in yyjson::additional_properties",
+        "/c");
+    expect_rejected<ScExtra>(R"({"a":1,"b":-2})",
+                             R"(the number is less than the minimum 0 at /b; reading the key "b" of ScExtra)", "/b");
     EXPECT_NO_THROW(yyjson::validate(ScExtra{0, {{"b", 2}, {"c", 1}}}));
     EXPECT_THROW(yyjson::validate(ScExtra{0, {{"b", 2}, {"c", -1}}}), yyjson::bad_cast);
 }
@@ -7623,8 +8549,9 @@ TEST(Constraints, MergeChecksPatch)
     // a patched member is checked by the value of the patch, not by the value that it writes
     auto rest = ScLevelRest{};
     const auto r = bad_cast_of([&] { yyjson::merge_into(R"({"e":1})", rest); });
-    EXPECT_TRUE(message_of(r).starts_with(
-        R"(the value of the key "e" of ScLevelRest is greater than the maximum 0 in yyjson::additional_properties)"))
+    EXPECT_EQ(message_of(r),
+              "the number is greater than the maximum 0 at /e; reading a value of ScLevelRest in "
+              "yyjson::additional_properties")
         << r.what();
     yyjson::merge_into(R"({"e":0})", rest);
     EXPECT_EQ(rest, ScLevelRest{});
@@ -7633,15 +8560,17 @@ TEST(Constraints, MergeChecksPatch)
 TEST(Constraints, InPlaceCasterKind)
 {
     expect_accepted<ScInPlaceField>(R"({"x":1})", {{1}});
-    expect_rejected<ScInPlaceField>(R"({"x":-1})",
-                                    R"(the value of the key "x" of ScInPlaceField is less than the minimum 0)", "/x");
+    expect_rejected<ScInPlaceField>(
+        R"({"x":-1})", R"(the number is less than the minimum 0 at /x; reading the key "x" of ScInPlaceField)", "/x");
 }
 
 TEST(Constraints, TupleCombinatorKinds)
 {
     expect_accepted<ScPair>(R"({"t":[0,"a"]})", {{0, "a"}});
     expect_accepted<ScPair>(R"({"t":[1,"ab"]})", {{1, "ab"}});
-    expect_rejected<ScPair>(R"({"t":[1,"a"]})", R"(the value of the key "t" of ScPair has no item)", "/t");
+    expect_rejected<ScPair>(R"({"t":[1,"a"]})",
+                            R"(the array has no item that satisfies contains at /t; reading the key "t" of ScPair)",
+                            "/t");
     EXPECT_NO_THROW(yyjson::validate(ScPair{{1, "ab"}}));
     EXPECT_THROW(yyjson::validate(ScPair{{1, "a"}}), yyjson::bad_cast);
 }
@@ -7723,26 +8652,27 @@ struct CtHolder
 TEST(Constraints, CasterTypeKeywords)
 {
     expect_accepted<CtList>("[1,2]", {{1, 2}});
-    expect_rejected<CtList>("[1,5]", "CtList satisfies the settings of yyjson::not_", "");
-    expect_rejected<CtList>("[4]",
-                            "CtList has an element that does not satisfy the constraints of yyjson::prefix_items", "");
-    expect_rejected<CtList>("[1,1]", "CtList has duplicate items", "");
+    expect_rejected<CtList>("[1,5]", "the value satisfies the subschema of not; reading CtList", "");
+    expect_rejected<CtList>("[4]", "the array has an item that does not satisfy prefixItems; reading CtList", "");
+    expect_rejected<CtList>("[1,1]", "the array has duplicate items; reading CtList", "");
     EXPECT_NO_THROW(yyjson::validate(CtList{{1, 2}}));
     EXPECT_THROW(yyjson::validate(CtList{{6}}), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::write(CtList{{1, 1}}, yyjson::with_validation), yyjson::bad_cast);
 
     expect_accepted<CtMap>(R"({"a":1,"b":2})", {{{"a", 1}, {"b", 2}}});
-    expect_rejected<CtMap>(R"({"a":1})", "CtMap does not have all the keys that yyjson::dependent_required requires",
-                           "");
-    expect_rejected<CtMap>(R"({"a":-1,"b":1})", "CtMap does not have the keys and the values", "");
-    expect_rejected<CtMap>(R"({"c":1})", R"(CtMap has the key "c", which yyjson::additional_properties(false) rejects)",
+    expect_rejected<CtMap>(R"({"a":1})",
+                           "the object does not have all the keys that dependentRequired requires; reading CtMap", "");
+    expect_rejected<CtMap>(R"({"a":-1,"b":1})", "the object does not satisfy properties; reading CtMap", "");
+    expect_rejected<CtMap>(R"({"c":1})",
+                           "the object has a key that is not allowed at /c; reading CtMap, which "
+                           "yyjson::additional_properties(false) closes",
                            "/c");
     EXPECT_NO_THROW(yyjson::validate(CtMap{{{"a", 1}, {"b", 1}}}));
     EXPECT_THROW(yyjson::validate(CtMap{{{"b", -1}}}), yyjson::bad_cast);
 
     expect_accepted<CtNumber>("1", {1});
-    expect_rejected<CtNumber>("2", "CtNumber satisfies the settings of yyjson::not_", "");
-    expect_rejected<CtNumber>("7", "CtNumber satisfies the settings of yyjson::not_", "");
+    expect_rejected<CtNumber>("2", "the value satisfies the subschema of not; reading CtNumber", "");
+    expect_rejected<CtNumber>("7", "the value satisfies the subschema of not; reading CtNumber", "");
     EXPECT_THROW(yyjson::validate(CtNumber{2}), yyjson::bad_cast);
 
     // the read checks the object that it reads, and `validate` the array that the caster writes
@@ -7853,15 +8783,17 @@ struct C4EmptyHolder
 TEST(Constraints, CasterElementPredicates)
 {
     expect_accepted<C4Words>(R"({"v":["yes"],"m":{"k":"yes"}})", {{{"yes"}}, {{"k", {"yes"}}}});
-    expect_rejected<C4Words>(R"({"v":["no"],"m":{}})",
-                             R"(an element of the value of the key "v" of C4Words is rejected by yyjson::satisfies)",
-                             "/v/0");
-    expect_rejected<C4Words>(R"({"v":["long"],"m":{}})",
-                             R"(an element of the value of the key "v" of C4Words is longer than the maximum length 3)",
-                             "/v/0");
+    expect_rejected<C4Words>(
+        R"({"v":["no"],"m":{}})",
+        R"(the value does not satisfy the predicate at /v/0; reading an element of the value at the key "v" of C4Words)",
+        "/v/0");
+    expect_rejected<C4Words>(
+        R"({"v":["long"],"m":{}})",
+        R"(the string is longer than the maximum length 3 at /v/0; reading an element of the value at the key "v" of C4Words)",
+        "/v/0");
     expect_rejected<C4Words>(
         R"({"v":[],"m":{"k":"no"}})",
-        R"(an element of the value of the key "m" of C4Words does not satisfy all the subschemas of yyjson::all_of)",
+        R"(the value does not satisfy all the subschemas of allOf at /m/k; reading an element of the value at the key "m" of C4Words)",
         "/m/k");
     EXPECT_NO_THROW(yyjson::validate(C4Words{{{"yes"}}, {{"k", {"yes"}}}}));
     EXPECT_EQ(bad_cast_of([] { yyjson::validate(C4Words{{{"no"}}, {}}); }).path(), "/v/0");
@@ -7871,8 +8803,10 @@ TEST(Constraints, CasterElementPredicates)
 
 TEST(Constraints, NestedMergeObject)
 {
-    expect_rejected<C4Outer>(R"({"in":{"e":1,"k":0}})", R"(the value of the key "in" of C4Outer has a value)", "/in",
-                             false);
+    expect_rejected<C4Outer>(R"({"in":{"e":1,"k":0}})",
+                             "the object has a value that does not satisfy additionalProperties at /in; reading a "
+                             "value of C4Outer in yyjson::additional_properties",
+                             "/in", false);
     auto outer = C4Outer{};
     const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"in":{"e":1,"k":0}})", outer); });
     EXPECT_EQ(e.path(), "/in");
@@ -7887,7 +8821,7 @@ TEST(Constraints, NestedMergeObject)
 TEST(Constraints, CasterTypeKeywordsOfOtherTypes)
 {
     expect_accepted<C4Code>("0", C4Code::a);
-    expect_rejected<C4Code>("1", "C4Code does not satisfy all the subschemas of yyjson::all_of", "");
+    expect_rejected<C4Code>("1", "the value does not satisfy all the subschemas of allOf; reading C4Code", "");
     EXPECT_NO_THROW(yyjson::validate(C4Code::a));
     EXPECT_THROW(yyjson::validate(C4Code::b), yyjson::bad_cast);
 
@@ -7897,13 +8831,11 @@ TEST(Constraints, CasterTypeKeywordsOfOtherTypes)
                               auto x = C4Number();
                               yyjson::merge_into("2", x);
                           })})
-        EXPECT_TRUE(message_of(e).starts_with("C4Number does not satisfy all the subschemas of yyjson::all_of"))
-            << e.what();
+        EXPECT_EQ(what_without_position(e), "the value does not satisfy all the subschemas of allOf; reading C4Number");
     EXPECT_THROW(yyjson::validate(C4Number{2}), yyjson::bad_cast);
 
     expect_accepted<C4Empty>("[]", C4Empty{});
-    expect_rejected<C4Empty>("[1]", "C4Empty has an element that does not satisfy the constraints of yyjson::items",
-                             "");
+    expect_rejected<C4Empty>("[1]", "the array has an item that does not satisfy items; reading C4Empty", "");
     EXPECT_THROW(yyjson::validate(C4Empty{{1}}), yyjson::bad_cast);
     auto holder = C4EmptyHolder{};
     EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"x":[1]})", holder); }).path(), "/x");
@@ -8039,7 +8971,7 @@ TEST(Constraints, CasterEnumObjectKeywords)
                               auto x = C5Shape::b;
                               yyjson::merge_into(R"({"a":1})", x);
                           })})
-        EXPECT_TRUE(message_of(e).starts_with("C5Shape has fewer properties than the minimum 2")) << e.what();
+        EXPECT_EQ(what_without_position(e), "the object has fewer properties than the minimum 2; reading C5Shape");
     EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<C5Shape>(R"({"a":1,"bb":1})"); }).path(), "/bb");
     EXPECT_NO_THROW(yyjson::validate(C5Shape::b));
     EXPECT_THROW(yyjson::validate(C5Shape::a), yyjson::bad_cast);
@@ -8062,18 +8994,17 @@ TEST(Constraints, WrittenCasterElementsOfSets)
     EXPECT_THROW((void)yyjson::write(u, yyjson::with_validation), yyjson::bad_cast);
 
     expect_accepted<C5Words>(R"({"v":["yes"]})", {{{"yes"}}});
-    expect_rejected<C5Words>(R"({"v":["no"]})",
-                             R"(an element of the value of the key "v" of C5Words is rejected by yyjson::satisfies)",
-                             "/v/0");
+    expect_rejected<C5Words>(
+        R"({"v":["no"]})",
+        R"(the value does not satisfy the predicate at /v/0; reading an element of the value at the key "v" of C5Words)",
+        "/v/0");
     EXPECT_NO_THROW(yyjson::validate(C5Words{{{"yes"}}}));
-    EXPECT_TRUE(
-        message_of(bad_cast_of([] {
-            yyjson::validate(C5Words{{{"no"}}});
-        })).starts_with(R"(an element of the value of the key "v" of C5Words is rejected by yyjson::satisfies)"));
-    EXPECT_TRUE(
-        message_of(bad_cast_of([] {
-            yyjson::validate(C5Words{{{"long"}}});
-        })).starts_with(R"(an element of the value of the key "v" of C5Words is longer than the maximum length 4)"));
+    EXPECT_EQ(
+        message_of(bad_cast_of([] { yyjson::validate(C5Words{{{"no"}}}); })),
+        R"(the value does not satisfy the predicate at /v/0; reading an element of the value at the key "v" of C5Words)");
+    EXPECT_EQ(
+        message_of(bad_cast_of([] { yyjson::validate(C5Words{{{"long"}}}); })),
+        R"(the string is longer than the maximum length 4 at /v/0; reading an element of the value at the key "v" of C5Words)");
 }
 
 // the elements of a vector<bool> and the values of a map, which the check copies
@@ -8795,10 +9726,9 @@ inline constexpr auto yyjson::annotations<R11Property> =
 
 TEST(Constraints, MergeChecksAFieldPropertyOnTheMergedMember)
 {
-    expect_rejected<R11Property>(
-        R"({"f":{"x":1}})",
-        R"(the value of the key "f" of R11Property does not have the keys and the values that yyjson::property and required give)",
-        "/f", false);
+    expect_rejected<R11Property>(R"({"f":{"x":1}})",
+                                 R"(the object does not satisfy properties at /f; reading the key "f" of R11Property)",
+                                 "/f", false);
     auto t = R11Property{};
     EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":1}})", t); }).path(), "/f");
     t = R11Property{{1, 0}};
@@ -8859,9 +9789,9 @@ inline constexpr auto yyjson::annotations<R11Mixed> =
 
 TEST(Constraints, MergeChecksAMixedSchemaOnTheMergedJson)
 {
-    expect_rejected<R11Mixed>(R"({"f":{"y":0}})",
-                              R"(the value of the key "f" of R11Mixed has fewer properties than the minimum 2)", "/f",
-                              false);
+    expect_rejected<R11Mixed>(
+        R"({"f":{"y":0}})",
+        R"(the object has fewer properties than the minimum 2 at /f; reading the key "f" of R11Mixed)", "/f", false);
     auto t = R11Mixed{};
     EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"f":{"x":null}})", t); }).path(), "/f");
 }
@@ -9347,7 +10277,7 @@ TEST(Constraints, InfAndNanAsNullReadsNoCasterValue)
     // a `double` that `from_json` takes cannot read null
     const auto e =
         bad_cast_of([&] { (void)yyjson::write(R13Positions{R12Finite{nan}, {}}, as_null, yyjson::with_validation); });
-    EXPECT_EQ(std::string_view(e.what()), "double is not constructible from JSON null at /0");
+    EXPECT_EQ(std::string_view(e.what()), "expected a number, got null at /0; reading double");
     EXPECT_EQ(r13_real_reads, 0);
     EXPECT_EQ(r12_finite_reads, 0);
 }
@@ -9499,13 +10429,13 @@ TEST(Constraints, InfAndNanAsNullReadsTheHeldCasterValue)
     // null is read as the type that `from_json` takes
     const auto e = bad_cast_of(
         [&] { (void)yyjson::write(yyjson::with_caster<double, R14Int>{nan}, as_null, yyjson::with_validation); });
-    EXPECT_EQ(std::string_view(e.what()), "int is not constructible from JSON null");
+    EXPECT_EQ(std::string_view(e.what()), "expected an integer, got null; reading int");
     const auto f = bad_cast_of([&] { (void)yyjson::write(R14Translated{nan}, as_null, yyjson::with_validation); });
-    EXPECT_EQ(std::string_view(f.what()), "double is not constructible from JSON null at /a");
+    EXPECT_EQ(std::string_view(f.what()), "expected a number, got null at /a; reading double");
     // a std::optional field of the type that `from_json` takes rejects null, as read rejects it under the policy
     const auto g = bad_cast_of([&] { (void)yyjson::write(R14Accepting{nan}, as_null, yyjson::with_validation); });
     EXPECT_EQ(std::string_view(g.what()),
-              "std::optional<double> is not constructible from JSON null under yyjson::reject_null_as_missing at /a");
+              "the value must not be null at /a; reading std::optional<double> under yyjson::reject_null_as_missing");
 }
 
 // the check of a merge follows no field that write leaves out
@@ -9666,10 +10596,10 @@ TEST(Constraints, InfAndNanAsNullReadsAsTheReadPosition)
     EXPECT_EQ(std::string_view(yyjson::write(R15Both{nan}, as_null, yyjson::with_validation)), "null");
     EXPECT_THROW((void)yyjson::read<R15BothField>(R"({"b":null})"), yyjson::bad_cast);
     const auto e = bad_cast_of([&] { (void)yyjson::write(R15BothField{{nan}}, as_null, yyjson::with_validation); });
-    EXPECT_EQ(std::string_view(e.what()), "int is not constructible from JSON null at /b");
+    EXPECT_EQ(std::string_view(e.what()), "expected an integer, got null at /b; reading int");
     EXPECT_THROW((void)yyjson::read<R15Beside>(R"({"a":null,"b":0})"), yyjson::bad_cast);
     const auto f = bad_cast_of([&] { (void)yyjson::write(R15Beside{nan}, as_null, yyjson::with_validation); });
-    EXPECT_EQ(std::string_view(f.what()), "double is not constructible from JSON null at /a");
+    EXPECT_EQ(std::string_view(f.what()), "expected a number, got null at /a; reading double");
 }
 
 // a key of a map that read stores in another map is found before a value of the map is read back
@@ -9688,8 +10618,9 @@ TEST(Constraints, InfAndNanAsNullChecksTheRoutesFirst)
         (void)yyjson::write(R15Routed{{}, {{"x", R13Real{5}}}}, yyjson::WriteFlag::InfAndNanAsNull,
                             yyjson::with_validation);
     });
-    EXPECT_EQ(std::string_view(e.what()),
-              R"(the key "x" of the field "rest" of R15Routed is read into the field "first" at /x)");
+    EXPECT_EQ(
+        std::string_view(e.what()),
+        R"(the value is not valid at /x; validating R15Routed: a read gives this key of the field "rest" to the field "first")");
     EXPECT_EQ(r13_real_reads, 0);
 }
 

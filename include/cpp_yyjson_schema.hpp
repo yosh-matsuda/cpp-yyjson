@@ -522,7 +522,7 @@ namespace yyjson
                     const auto json = yyjson::read(text);
                     if (const auto kind = yd::constraint_violation<Schema, true>(v, yd::input_for<Schema, T>(&json));
                         kind != yd::constraint_kind::none)
-                        throw std::invalid_argument("the value " + yd::constraint_what<Schema>(kind));
+                        throw std::invalid_argument(yd::keyword_failure_text(yd::constraint_facts<Schema>(kind)));
                 }
             }
         };

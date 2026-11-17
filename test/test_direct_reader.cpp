@@ -920,7 +920,7 @@ void expect_bounded_reads()
 {
     using ints = BoundedVector<int, 2, Boost>;
     const auto exceeds = [](const std::string& error) {
-        return error.starts_with("bad cast: the size of JSON array exceeds the capacity of ");
+        return error.starts_with("bad cast: expected an array of at most 2 elements");
     };
     EXPECT_TRUE(expect_direct_read<ints>("[]"));
     EXPECT_TRUE(expect_direct_read<ints>("[1,2]"));
@@ -960,7 +960,8 @@ void expect_bounded_reads()
         ADD_FAILURE() << "no exception";
         return yyjson::bad_cast("no exception");
     };
-    constexpr auto message = std::string_view("the size of JSON array exceeds the capacity of ");
+    const auto head = std::string("expected an array of at most 2 elements at /r");
+    const auto note = std::format("; reading {}", yyjson::detail::type_name<BoundedVector<int, 2, Boost>>());
     const auto read = bad_cast_of([&] { (void)yyjson::read<HoldsBoundedRest<Boost>>(json); });
     const auto into = bad_cast_of([&] {
         auto t = HoldsBoundedRest<Boost>();
@@ -968,12 +969,12 @@ void expect_bounded_reads()
     });
     for (const auto& e : {read, into})
     {
-        EXPECT_TRUE(std::string_view(e.what()).starts_with(message)) << e.what();
+        EXPECT_EQ(e.what(), head + " (line 1, column 6, pos 5)" + note);
         EXPECT_EQ(e.path(), "/r");
         EXPECT_EQ(e.position(), (yyjson::text_position{1, 6, 5}));
     }
     const auto cast = bad_cast_of([&] { (void)yyjson::read(json).cast<HoldsBoundedRest<Boost>>(); });
-    EXPECT_TRUE(std::string_view(cast.what()).starts_with(message)) << cast.what();
+    EXPECT_EQ(cast.what(), head + note);
     EXPECT_EQ(cast.path(), "/r");
 }
 

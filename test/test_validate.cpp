@@ -46,34 +46,46 @@ TEST(Validate, ValueKeywordsOfFields)
     expect_valid(VdFields{});
     expect_valid(VdFields{5, 9.5, "abcd", 6, {1, 2, 5}, {{"abc", 0}}, {3, "y"}, "cm", 1, "2000-02-29"});
     expect_invalid(with<VdFields>([](auto& t) { t.a = -1; }),
-                   R"(the value of the key "a" of VdFields is less than the minimum 0)", "/a");
+                   R"(the number is less than the minimum 0 at /a; reading the key "a" of VdFields)", "/a");
     expect_invalid(with<VdFields>([](auto& t) { t.d = 10; }),
-                   R"(the value of the key "d" of VdFields is not less than the exclusive maximum 10)", "/d");
+                   R"(the number is not less than the exclusive maximum 10 at /d; reading the key "d" of VdFields)",
+                   "/d");
     expect_invalid(with<VdFields>([](auto& t) { t.s = "a"; }),
-                   R"(the value of the key "s" of VdFields is shorter than the minimum length 2)", "/s");
+                   R"(the string is shorter than the minimum length 2 at /s; reading the key "s" of VdFields)", "/s");
     expect_invalid(with<VdFields>([](auto& t) { t.u = 4; }),
-                   R"(the value of the key "u" of VdFields is not a multiple of 3)", "/u");
-    expect_invalid(with<VdFields>([](auto& t) { t.v = {1, 9}; }),
-                   R"(an element of the value of the key "v" of VdFields is greater than the maximum 5)", "/v/1");
+                   R"(the number is not a multiple of 3 at /u; reading the key "u" of VdFields)", "/u");
+    expect_invalid(
+        with<VdFields>([](auto& t) { t.v = {1, 9}; }),
+        R"(the number is greater than the maximum 5 at /v/1; reading an element of the value at the key "v" of VdFields)",
+        "/v/1");
     expect_invalid(with<VdFields>([](auto& t) { t.v = {1, 2, 3, 4}; }),
-                   R"(the value of the key "v" of VdFields has more items than the maximum 3)", "/v");
-    expect_invalid(with<VdFields>([](auto& t) { t.v = {1, 1}; }),
-                   R"(an element of the value of the key "v" of VdFields is equal to an earlier element)", "/v/1");
-    expect_invalid(with<VdFields>([](auto& t) { t.m = {{"a", 0}, {"b", -1}}; }),
-                   R"(an element of the value of the key "m" of VdFields is less than the minimum 0)", "/m/b");
-    expect_invalid(with<VdFields>([](auto& t) { t.m = {{"abcd", 0}}; }),
-                   R"(a key of the value of the key "m" of VdFields is longer than the maximum length 3)", "/m/abcd");
-    expect_invalid(with<VdFields>([](auto& t) { t.t = {-1, "x"}; }),
-                   R"(an element of the value of the key "t" of VdFields is less than the minimum 0)", "/t/0");
-    expect_invalid(with<VdFields>([](auto& t) { t.t = {0, ""}; }),
-                   R"(an element of the value of the key "t" of VdFields is shorter than the minimum length 1)",
-                   "/t/1");
+                   R"(the array has more items than the maximum 3 at /v; reading the key "v" of VdFields)", "/v");
+    expect_invalid(
+        with<VdFields>([](auto& t) { t.v = {1, 1}; }),
+        R"(the item is equal to an earlier item at /v/1; reading an element of the value at the key "v" of VdFields)",
+        "/v/1");
+    expect_invalid(
+        with<VdFields>([](auto& t) { t.m = {{"a", 0}, {"b", -1}}; }),
+        R"(the number is less than the minimum 0 at /m/b; reading an element of the value at the key "m" of VdFields)",
+        "/m/b");
+    expect_invalid(
+        with<VdFields>([](auto& t) { t.m = {{"abcd", 0}}; }),
+        R"(the key is longer than the maximum length 3 at /m/abcd; reading a key of the value at the key "m" of VdFields)",
+        "/m/abcd");
+    expect_invalid(
+        with<VdFields>([](auto& t) { t.t = {-1, "x"}; }),
+        R"(the number is less than the minimum 0 at /t/0; reading an element of the value at the key "t" of VdFields)",
+        "/t/0");
+    expect_invalid(
+        with<VdFields>([](auto& t) { t.t = {0, ""}; }),
+        R"(the string is shorter than the minimum length 1 at /t/1; reading an element of the value at the key "t" of VdFields)",
+        "/t/1");
     expect_invalid(with<VdFields>([](auto& t) { t.e = "km"; }),
-                   R"(the value of the key "e" of VdFields is not one of "mm", "cm")", "/e");
+                   R"(the value is not one of "mm", "cm" at /e; reading the key "e" of VdFields)", "/e");
     expect_invalid(with<VdFields>([](auto& t) { t.c = 2; }),
-                   R"(the value of the key "c" of VdFields is not equal to the constant 1)", "/c");
+                   R"(the value is not equal to the constant 1 at /c; reading the key "c" of VdFields)", "/c");
     expect_invalid(with<VdFields>([](auto& t) { t.day = "2023-02-29"; }),
-                   R"(the value of the key "day" of VdFields does not have the format "date")", "/day");
+                   R"(the string does not have the format "date" at /day; reading the key "day" of VdFields)", "/day");
 }
 
 // a float takes the keywords on numbers as the number of the text that write gives for it
@@ -104,11 +116,14 @@ inline constexpr auto yyjson::annotations<VdFloatRow> = yyjson::annotate(
 TEST(Validate, FloatNumberKeywords)
 {
     expect_valid(VdFloat{});
-    expect_invalid(with<VdFloat>([](auto& t) { t.v = {0.1F, std::nextafter(0.1F, 1.0F)}; }),
-                   R"(an element of the value of the key "v" of VdFloat is greater than the maximum 0.1)", "/v/1");
+    expect_invalid(
+        with<VdFloat>([](auto& t) { t.v = {0.1F, std::nextafter(0.1F, 1.0F)}; }),
+        R"(the number is greater than the maximum 0.1 at /v/1; reading an element of the value at the key "v" of VdFloat)",
+        "/v/1");
     expect_valid(VdFloatBelow{std::nextafter(0.1F, 0.0F)});
     expect_invalid(VdFloatBelow{},
-                   R"(the value of the key "f" of VdFloatBelow is greater than the maximum 0.099999999)", "/f");
+                   R"(the number is greater than the maximum 0.099999999 at /f; reading the key "f" of VdFloatBelow)",
+                   "/f");
 #if YYJSON_VERSION_HEX >= 0x000C00
     // the extra items take the numbers as the flags write them
     const auto fixed = static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(1));
@@ -116,11 +131,11 @@ TEST(Validate, FloatNumberKeywords)
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(VdFloatRow{0, {0.5F, 0.14F}}, fixed, yyjson::with_validation);
                           }).what()),
-              "an element of the value of VdFloatRow is less than the minimum 0.12 at /2");
+              "the number is less than the minimum 0.12 at /2; reading an element of VdFloatRow");
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(std::vector{VdFloatRow{0, {0.14F}}}, fixed, yyjson::with_validation);
                           }).what()),
-              "an element of the value of VdFloatRow is less than the minimum 0.12 at /0/1");
+              "the number is less than the minimum 0.12 at /0/1; reading an element of VdFloatRow");
 #endif
 }
 
@@ -145,19 +160,33 @@ struct VdNested
 TEST(Validate, NestedValues)
 {
     const auto bad = VdInner{-1};
-    const auto message = R"(the value of the key "n" of VdInner is less than the minimum 0)";
     expect_valid(VdNested{{{1}}, {{"a/b", {2}}}, {{3, {3}}}, {{VdColor::green, {4}}}, {1, {5}}, {6}, {}});
-    expect_invalid(with<VdNested>([&](auto& t) { t.list = {{}, bad}; }), message, "/list/1/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.by_name = {{"a/b", bad}}; }), message, "/by_name/a~1b/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.by_name = {{"m~n", bad}}; }), message, "/by_name/m~0n/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.by_id = {{7, bad}}; }), message, "/by_id/0/1/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.by_color = {{VdColor::green, bad}}; }), message,
+    expect_invalid(with<VdNested>([&](auto& t) { t.list = {{}, bad}; }),
+                   R"(the number is less than the minimum 0 at /list/1/n; reading the key "n" of VdInner)",
+                   "/list/1/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.by_name = {{"a/b", bad}}; }),
+                   R"(the number is less than the minimum 0 at /by_name/a~1b/n; reading the key "n" of VdInner)",
+                   "/by_name/a~1b/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.by_name = {{"m~n", bad}}; }),
+                   R"(the number is less than the minimum 0 at /by_name/m~0n/n; reading the key "n" of VdInner)",
+                   "/by_name/m~0n/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.by_id = {{7, bad}}; }),
+                   R"(the number is less than the minimum 0 at /by_id/0/1/n; reading the key "n" of VdInner)",
+                   "/by_id/0/1/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.by_color = {{VdColor::green, bad}}; }),
+                   R"(the number is less than the minimum 0 at /by_color/green/n; reading the key "n" of VdInner)",
                    "/by_color/green/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.pair = {0, bad}; }), message, "/pair/1/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.inner = bad; }), message, "/inner/n");
-    expect_invalid(with<VdNested>([&](auto& t) { t.fixed = {VdInner{}, bad}; }), message, "/fixed/1/n");
-    expect_invalid(std::vector<VdInner>{{}, {}, bad}, message, "/2/n");
-    expect_invalid(bad, message, "/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.pair = {0, bad}; }),
+                   R"(the number is less than the minimum 0 at /pair/1/n; reading the key "n" of VdInner)",
+                   "/pair/1/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.inner = bad; }),
+                   R"(the number is less than the minimum 0 at /inner/n; reading the key "n" of VdInner)", "/inner/n");
+    expect_invalid(with<VdNested>([&](auto& t) { t.fixed = {VdInner{}, bad}; }),
+                   R"(the number is less than the minimum 0 at /fixed/1/n; reading the key "n" of VdInner)",
+                   "/fixed/1/n");
+    expect_invalid(std::vector<VdInner>{{}, {}, bad},
+                   R"(the number is less than the minimum 0 at /2/n; reading the key "n" of VdInner)", "/2/n");
+    expect_invalid(bad, R"(the number is less than the minimum 0 at /n; reading the key "n" of VdInner)", "/n");
 }
 
 // the values that pointers, `std::optional`, `yyjson::nullable` and `yyjson::indirect` hold, and the null that
@@ -200,23 +229,24 @@ TEST(Validate, Holders)
         t.u = std::make_unique<int>(5);
     }));
     expect_invalid(with<VdHolders>([](auto& t) { t.o = -1; }),
-                   R"(the value of the key "o" of VdHolders is less than the minimum 0)", "/o");
+                   R"(the number is less than the minimum 0 at /o; reading the key "o" of VdHolders)", "/o");
     expect_invalid(with<VdHolders>([](auto& t) { t.n = -1; }),
-                   R"(the value of the key "n" of VdHolders is less than the minimum 0)", "/n");
+                   R"(the number is less than the minimum 0 at /n; reading the key "n" of VdHolders)", "/n");
     expect_invalid(with<VdHolders>([](auto& t) { t.p = std::make_shared<VdInner>(-1); }),
-                   R"(the value of the key "n" of VdInner is less than the minimum 0)", "/p/n");
+                   R"(the number is less than the minimum 0 at /p/n; reading the key "n" of VdInner)", "/p/n");
     expect_invalid(with<VdHolders>([](auto& t) { t.u = std::make_unique<int>(6); }),
-                   R"(the value of the key "u" of VdHolders is greater than the maximum 5)", "/u");
+                   R"(the number is greater than the maximum 5 at /u; reading the key "u" of VdHolders)", "/u");
     expect_invalid(with<VdHolders>([](auto& t) { t.i = yyjson::indirect<VdInner>(VdInner{-1}); }),
-                   R"(the value of the key "n" of VdInner is less than the minimum 0)", "/i/n");
+                   R"(the number is less than the minimum 0 at /i/n; reading the key "n" of VdInner)", "/i/n");
 
     expect_valid(VdNotMinimum{std::make_shared<int>(-1)});
-    expect_invalid(VdNotMinimum{}, R"(the value of the key "p" of VdNotMinimum satisfies the settings of yyjson::not_)",
-                   "/p");
+    expect_invalid(VdNotMinimum{},
+                   R"(the value satisfies the subschema of not at /p; reading the key "p" of VdNotMinimum)", "/p");
     expect_invalid(VdNotMinimum{std::make_shared<int>(0)},
-                   R"(the value of the key "p" of VdNotMinimum satisfies the settings of yyjson::not_)", "/p");
+                   R"(the value satisfies the subschema of not at /p; reading the key "p" of VdNotMinimum)", "/p");
     expect_valid(VdConstNull{1});
-    expect_invalid(VdConstNull{}, R"(the value of the key "n" of VdConstNull is not equal to the constant 1)", "/n");
+    expect_invalid(VdConstNull{},
+                   R"(the value is not equal to the constant 1 at /n; reading the key "n" of VdConstNull)", "/n");
 }
 
 // `yyjson::satisfies` and the combinators
@@ -243,24 +273,20 @@ TEST(Validate, SatisfiesAndCombinators)
     expect_valid(VdLogic{});
     expect_valid(VdLogic{2, 10, 6, 3, 12});
     expect_invalid(with<VdLogic>([](auto& t) { t.even = 1; }),
-                   R"(the value of the key "even" of VdLogic is rejected by yyjson::satisfies)", "/even");
+                   R"(the value does not satisfy the predicate at /even; reading the key "even" of VdLogic)", "/even");
     expect_invalid(with<VdLogic>([](auto& t) { t.any = 5; }),
-                   R"(the value of the key "any" of VdLogic satisfies none of the subschemas of yyjson::any_of)",
+                   R"(the value satisfies none of the subschemas of anyOf at /any; reading the key "any" of VdLogic)",
                    "/any");
     expect_invalid(with<VdLogic>([](auto& t) { t.one = 3; }),
-                   R"(the value of the key "one" of VdLogic satisfies more than one subschema of yyjson::one_of)",
+                   R"(the value satisfies more than one subschema of oneOf at /one; reading the key "one" of VdLogic)",
                    "/one");
-    expect_invalid(with<VdLogic>([](auto& t) { t.all = 4; }),
-                   R"(the value of the key "all" of VdLogic does not satisfy all the subschemas of yyjson::all_of)",
-                   "/all");
     expect_invalid(
-        with<VdLogic>([](auto& t) { t.cond = 11; }),
-        R"(the value of the key "cond" of VdLogic satisfies the settings of yyjson::if_ and not those of yyjson::then)",
-        "/cond");
-    expect_invalid(
-        with<VdLogic>([](auto& t) { t.cond = 6; }),
-        R"(the value of the key "cond" of VdLogic satisfies neither the settings of yyjson::if_ nor those of yyjson::else_)",
-        "/cond");
+        with<VdLogic>([](auto& t) { t.all = 4; }),
+        R"(the value does not satisfy all the subschemas of allOf at /all; reading the key "all" of VdLogic)", "/all");
+    expect_invalid(with<VdLogic>([](auto& t) { t.cond = 11; }),
+                   R"(the value satisfies if and not then at /cond; reading the key "cond" of VdLogic)", "/cond");
+    expect_invalid(with<VdLogic>([](auto& t) { t.cond = 6; }),
+                   R"(the value satisfies neither if nor else at /cond; reading the key "cond" of VdLogic)", "/cond");
 }
 
 // a transparent struct, which is written as its field, and the fields of DOM values
@@ -283,13 +309,16 @@ inline constexpr auto yyjson::annotations<VdDom> =
 TEST(Validate, TransparentAndDom)
 {
     expect_valid(VdPercent{100});
-    expect_invalid(VdPercent{101}, "the value of VdPercent is greater than the maximum 100", "");
+    expect_invalid(VdPercent{101}, "the number is greater than the maximum 100; reading VdPercent", "");
     expect_valid(VdDom{{5}, yyjson::read("[1,2]")});
-    expect_invalid(VdDom{{-1}, yyjson::read("[1,2]")}, "the value of VdPercent is less than the minimum 0", "/pct");
+    expect_invalid(VdDom{{-1}, yyjson::read("[1,2]")},
+                   "the number is less than the minimum 0 at /pct; reading VdPercent", "/pct");
     expect_invalid(VdDom{{1}, yyjson::read("[1]")},
-                   R"(the value of the key "any" of VdDom has fewer items than the minimum 2)", "/any");
-    expect_invalid(VdDom{{1}, yyjson::read("[1,-1]")},
-                   R"(an element of the value of the key "any" of VdDom is less than the minimum 0)", "/any/1");
+                   R"(the array has fewer items than the minimum 2 at /any; reading the key "any" of VdDom)", "/any");
+    expect_invalid(
+        VdDom{{1}, yyjson::read("[1,-1]")},
+        R"(the number is less than the minimum 0 at /any/1; reading an element of the value at the key "any" of VdDom)",
+        "/any/1");
 }
 
 // `yyjson::as_array`, whose positions and extra items are checked as they are written
@@ -306,8 +335,9 @@ inline constexpr auto yyjson::annotations<VdRow> =
 TEST(Validate, AsArray)
 {
     expect_valid(VdRow{1, {2, 5}});
-    expect_invalid(VdRow{-1, {}}, "an element of the value of VdRow is less than the minimum 0", "/0");
-    expect_invalid(VdRow{1, {1, 6}}, "an element of the value of VdRow is greater than the maximum 5", "/2");
+    expect_invalid(VdRow{-1, {}}, "the number is less than the minimum 0 at /0; reading an element of VdRow", "/0");
+    expect_invalid(VdRow{1, {1, 6}}, "the number is greater than the maximum 5 at /2; reading an element of VdRow",
+                   "/2");
 }
 
 // the keywords of the whole array of `yyjson::as_array`, counted on the array that write gives: the positions up
@@ -366,18 +396,19 @@ TEST(Validate, AsArrayWholeArray)
     static_assert(yyjson::detail::needs_validation<VdArrayShort>);
     const auto keys = VdArrayKeys{7, 2, 3, {}};
     expect_valid(keys);
-    expect_invalid(VdArrayKeys{7, 2, std::nullopt, {}}, "the value of VdArrayKeys has fewer items than the minimum 3",
+    expect_invalid(VdArrayKeys{7, 2, std::nullopt, {}},
+                   "the array has fewer items than the minimum 3; reading VdArrayKeys", "");
+    expect_invalid(VdArrayKeys{1, 1, 7, {}},
+                   "the item is equal to an earlier item at /1; reading an element of VdArrayKeys", "/1");
+    expect_invalid(VdArrayKeys{1, 2, 3, {}}, "the array has no item that satisfies contains; reading VdArrayKeys", "");
+    expect_invalid(VdArrayKeys{1, 2, 7, {8, 9}}, "the array has more items than the maximum 4; reading VdArrayKeys",
                    "");
-    expect_invalid(VdArrayKeys{1, 1, 7, {}}, "an element of the value of VdArrayKeys is equal to an earlier element",
-                   "/1");
-    expect_invalid(VdArrayKeys{1, 2, 3, {}},
-                   "the value of VdArrayKeys has no item that satisfies the constraints of yyjson::contains", "");
-    expect_invalid(VdArrayKeys{1, 2, 7, {8, 9}}, "the value of VdArrayKeys has more items than the maximum 4", "");
     expect_valid(VdArrayKeys{1, 2, 3, {7}});
-    expect_invalid(VdArrayKeys{7, 2, 3, {2}}, "an element of the value of VdArrayKeys is equal to an earlier element",
-                   "/3");
+    expect_invalid(VdArrayKeys{7, 2, 3, {2}},
+                   "the item is equal to an earlier item at /3; reading an element of VdArrayKeys", "/3");
     expect_valid(VdArrayShort{1, 2});
-    expect_invalid(VdArrayShort{1, std::nullopt}, "the value of VdArrayShort has fewer items than the minimum 2", "");
+    expect_invalid(VdArrayShort{1, std::nullopt}, "the array has fewer items than the minimum 2; reading VdArrayShort",
+                   "");
 
     // write throws for a position that it leaves out before an extra item, and the keywords are not checked
     const auto gap = VdArrayKeys{7, 2, std::nullopt, {3}};
@@ -386,22 +417,21 @@ TEST(Validate, AsArrayWholeArray)
 
     expect_valid(VdArrayAny{7, {}});
     expect_valid(VdArrayAny{1, {2, 3}});
-    expect_invalid(VdArrayAny{1, {2}}, "the value of VdArrayAny satisfies none of the subschemas of yyjson::any_of",
-                   "");
+    expect_invalid(VdArrayAny{1, {2}}, "the value satisfies none of the subschemas of anyOf; reading VdArrayAny", "");
 
     const auto cells = VdArrayCells{{1, 2}, {1, 2}};
     expect_valid(cells);
-    expect_invalid(VdArrayCells{{1, 2}, {}}, "the value of VdArrayCells satisfies the settings of yyjson::not_", "");
+    expect_invalid(VdArrayCells{{1, 2}, {}}, "the value satisfies the subschema of not; reading VdArrayCells", "");
 
     expect_valid(VdArrayHolder{keys, cells});
     expect_invalid(VdArrayHolder{{1, 1, 7, {}}, cells},
-                   "an element of the value of VdArrayKeys is equal to an earlier element", "/row/1");
-    expect_invalid(VdArrayHolder{keys, {}}, "the value of VdArrayCells satisfies the settings of yyjson::not_",
+                   "the item is equal to an earlier item at /row/1; reading an element of VdArrayKeys", "/row/1");
+    expect_invalid(VdArrayHolder{keys, {}}, "the value satisfies the subschema of not at /cells; reading VdArrayCells",
                    "/cells");
     expect_invalid(std::vector<VdArrayKeys>{keys, {7, 2, std::nullopt, {}}},
-                   "the value of VdArrayKeys has fewer items than the minimum 3", "/1");
+                   "the array has fewer items than the minimum 3 at /1; reading VdArrayKeys", "/1");
     expect_invalid(std::vector<VdArrayCells>{cells, {}},
-                   "the value of VdArrayCells satisfies the settings of yyjson::not_", "/1");
+                   "the value satisfies the subschema of not at /1; reading VdArrayCells", "/1");
 }
 
 // a field that write leaves out is not checked, and a field that a read gives another value is a violation; each
@@ -467,16 +497,16 @@ TEST(Validate, Presence)
     EXPECT_EQ(std::string(yyjson::write(e1, emit_defaults, with_validation)), R"({"e":1})");
     EXPECT_EQ(std::string(yyjson::write(VdDefaults{0, 0, {0, 7}}, emit_defaults, with_validation)), "{}");
     // a value other than the default is checked
-    expect_invalid(VdDefaults{-1, 1, {0, 3}}, R"(the value of the key "d" of VdDefaults is less than the minimum 1)",
-                   "/d");
-    expect_invalid(VdDefaults{1, -1, {0, 3}}, R"(the value of the key "e" of VdDefaults is less than the minimum 1)",
-                   "/e");
-    expect_invalid(VdDefaults{1, 1, {-1, 3}}, R"(the value of the key "a" of VdWeight is less than the minimum 1)",
-                   "/w/a");
+    expect_invalid(VdDefaults{-1, 1, {0, 3}},
+                   R"(the number is less than the minimum 1 at /d; reading the key "d" of VdDefaults)", "/d");
+    expect_invalid(VdDefaults{1, -1, {0, 3}},
+                   R"(the number is less than the minimum 1 at /e; reading the key "e" of VdDefaults)", "/e");
+    expect_invalid(VdDefaults{1, 1, {-1, 3}},
+                   R"(the number is less than the minimum 1 at /w/a; reading the key "a" of VdWeight)", "/w/a");
 
     // `yyjson::emit_defaults` of the call writes and checks the other defaults
     expect_valid(VdCapped{});
-    const auto capped = std::string("VdCapped has more properties than the maximum 1");
+    const auto capped = std::string("the object has more properties than the maximum 1; reading VdCapped");
     EXPECT_EQ(validation_error([&] { yyjson::validate(VdCapped{}, emit_defaults); }).what(), capped);
     EXPECT_EQ(validation_error([&] { (void)yyjson::write(VdCapped{}, emit_defaults, with_validation); }).what(),
               capped);
@@ -497,19 +527,19 @@ TEST(Validate, Presence)
     // an empty `std::optional`, whose default holds a value, is read back as that value
     expect_valid(VdReadBack{});
     expect_valid(VdReadBack{4, std::nullopt, 5});
-    expect_invalid(VdReadBack{std::nullopt, {}, 1},
-                   "the key \"x\" of VdReadBack holds an empty std::optional, which is not written and reads back "
-                   "as the default value",
-                   "/x", read_leg::skipped);
-    expect_invalid(VdReadBack{3, {}, std::nullopt},
-                   "the key \"z\" of VdReadBack holds an empty std::optional, which is not written and reads back "
-                   "as the default value",
-                   "/z", read_leg::skipped);
+    expect_invalid(
+        VdReadBack{std::nullopt, {}, 1},
+        R"(the value is not valid at /x; validating VdReadBack: the field "x" holds an empty std::optional, which write leaves out and a read gives the default value)",
+        "/x", read_leg::skipped);
+    expect_invalid(
+        VdReadBack{3, {}, std::nullopt},
+        R"(the value is not valid at /z; validating VdReadBack: the field "z" holds an empty std::optional, which write leaves out and a read gives the default value)",
+        "/z", read_leg::skipped);
     expect_valid(VdReadBackTransparent{});
-    expect_invalid(VdReadBackTransparent{VdOptionalPercent{}},
-                   "the key \"p\" of VdReadBackTransparent holds an empty std::optional, which is not written and "
-                   "reads back as the default value",
-                   "/p", read_leg::skipped);
+    expect_invalid(
+        VdReadBackTransparent{VdOptionalPercent{}},
+        R"(the value is not valid at /p; validating VdReadBackTransparent: the field "p" holds an empty std::optional, which write leaves out and a read gives the default value)",
+        "/p", read_leg::skipped);
 }
 
 // an error of write itself takes the place of a violation in a checked write
@@ -561,7 +591,7 @@ TEST(Validate, Precedence)
     // a NaN that the write rejects, and one that it writes
     const auto nan = VdReal{std::nan("")};
     EXPECT_EQ(std::string(validation_error([&] { yyjson::validate(nan); }).what()),
-              R"(the value of the key "d" of VdReal is less than the minimum 0 at /d)");
+              R"(the number is less than the minimum 0 at /d; reading the key "d" of VdReal)");
     EXPECT_THROW((void)yyjson::write(nan, with_validation), yyjson::write_error);
     auto out = std::string("previous");
     EXPECT_THROW(yyjson::write(nan, out, with_validation), yyjson::write_error);
@@ -569,7 +599,7 @@ TEST(Validate, Precedence)
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(nan, WriteFlag::AllowInfAndNan, with_validation);
                           }).what()),
-              R"(the value of the key "d" of VdReal is less than the minimum 0 at /d)");
+              R"(the number is less than the minimum 0 at /d; reading the key "d" of VdReal)");
     EXPECT_EQ(std::string(yyjson::write(std::vector{std::nan("")}, WriteFlag::AllowInfAndNan, with_validation)),
               "[NaN]");
     const auto negative = VdReal{-INFINITY};
@@ -577,10 +607,10 @@ TEST(Validate, Precedence)
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(negative, WriteFlag::AllowInfAndNan, with_validation);
                           }).what()),
-              R"(the value of the key "d" of VdReal is less than the minimum 0 at /d)");
+              R"(the number is less than the minimum 0 at /d; reading the key "d" of VdReal)");
     // a non-finite number written as null is checked as the null that a read gets
     const auto e = validation_error([&] { (void)yyjson::write(nan, WriteFlag::InfAndNanAsNull, with_validation); });
-    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /d");
+    EXPECT_EQ(std::string(e.what()), "expected a number, got null at /d; reading double");
     EXPECT_EQ(e.path(), "/d");
     EXPECT_FALSE(e.position().has_value());
     out = "previous";
@@ -591,7 +621,7 @@ TEST(Validate, Precedence)
                               (void)yyjson::write(std::vector{std::nan("")}, WriteFlag::InfAndNanAsNull,
                                                   with_validation);
                           }).what()),
-              "double is not constructible from JSON null at /0");
+              "expected a number, got null at /0; reading double");
     const auto optional_nan = std::vector<std::optional<double>>{std::nan("")};
     EXPECT_EQ(std::string(yyjson::write(optional_nan, WriteFlag::InfAndNanAsNull, with_validation)), "[null]");
 }
@@ -631,7 +661,8 @@ struct yyjson::caster<VdLoop>
 TEST(Validate, DepthLimit)
 {
     expect_invalid(VdTree{0, {VdTree{}, VdTree{0, {VdTree{-1, {}}}}}},
-                   R"(the value of the key "v" of VdTree is less than the minimum 0)", "/kids/1/kids/0/v");
+                   R"(the number is less than the minimum 0 at /kids/1/kids/0/v; reading the key "v" of VdTree)",
+                   "/kids/1/kids/0/v");
     auto tree = VdTree();
     for (auto i = 0; i < 300; ++i) tree = VdTree{0, {std::move(tree)}};
     const auto e = validation_error([&] { yyjson::validate(tree); });
@@ -677,23 +708,25 @@ TEST(Validate, MoreValueKeywords)
         t.v = {10, 1, 11, 12};
     }));
     expect_invalid(with<VdMore>([](auto& t) { t.code = "ba"; }),
-                   R"(the value of the key "code" of VdMore does not match the pattern "^a")", "/code");
+                   R"(the string does not match the pattern "^a" at /code; reading the key "code" of VdMore)", "/code");
     expect_invalid(with<VdMore>([](auto& t) { t.word = "日本"; }),
-                   R"(the value of the key "word" of VdMore is longer than the maximum length 1)", "/word");
-    expect_invalid(
-        with<VdMore>([](auto& t) { t.v = {10, 1}; }),
-        R"(the value of the key "v" of VdMore has fewer than 2 items that satisfy the constraints of yyjson::contains)",
-        "/v");
-    expect_invalid(
-        with<VdMore>([](auto& t) { t.v = {10, 11, 12, 13}; }),
-        R"(the value of the key "v" of VdMore has more than 3 items that satisfy the constraints of yyjson::contains)",
-        "/v");
+                   R"(the string is longer than the maximum length 1 at /word; reading the key "word" of VdMore)",
+                   "/word");
+    expect_invalid(with<VdMore>([](auto& t) { t.v = {10, 1}; }),
+                   R"(the array has fewer than 2 items that satisfy contains at /v; reading the key "v" of VdMore)",
+                   "/v");
+    expect_invalid(with<VdMore>([](auto& t) { t.v = {10, 11, 12, 13}; }),
+                   R"(the array has more than 3 items that satisfy contains at /v; reading the key "v" of VdMore)",
+                   "/v");
     expect_invalid(with<VdMore>([](auto& t) { t.pair = {2, 1}; }),
-                   R"(the value of the key "pair" of VdMore is not equal to the constant [1, 2])", "/pair");
-    expect_invalid(with<VdMore>([](auto& t) { t.colors = {{VdColor::green, 0}}; }),
-                   R"(a key of the value of the key "colors" of VdMore is not one of "red")", "/colors/green");
+                   R"(the value is not equal to the constant [1, 2] at /pair; reading the key "pair" of VdMore)",
+                   "/pair");
+    expect_invalid(
+        with<VdMore>([](auto& t) { t.colors = {{VdColor::green, 0}}; }),
+        R"(the key is not one of "red" at /colors/green; reading a key of the value at the key "colors" of VdMore)",
+        "/colors/green");
     expect_invalid(with<VdMore>([](auto& t) { t.unit = std::make_shared<std::string>("km"); }),
-                   R"(the value of the key "unit" of VdMore is not one of "mm", "cm")", "/unit");
+                   R"(the value is not one of "mm", "cm" at /unit; reading the key "unit" of VdMore)", "/unit");
 }
 
 // a non-finite number that the write gives as null is checked as a read under yyjson::reject_null_as_missing
@@ -722,8 +755,7 @@ TEST(Validate, NonFiniteAsNull)
     const auto as_null = WriteFlag::InfAndNanAsNull;
     const auto nan = std::nan("");
     const auto optional_null =
-        "std::optional<double> is not constructible from JSON null under "
-        "yyjson::reject_null_as_missing at /o";
+        "the value must not be null at /o; reading std::optional<double> under yyjson::reject_null_as_missing";
     auto e = validation_error([&] { (void)yyjson::write(VdOptionalReal{nan}, as_null, with_validation); });
     EXPECT_EQ(std::string(e.what()), optional_null);
     EXPECT_EQ(e.path(), "/o");
@@ -734,10 +766,10 @@ TEST(Validate, NonFiniteAsNull)
 
     static_assert(!yyjson::readable<VdUnreadable>);
     e = validation_error([&] { (void)yyjson::write(VdUnreadable{"x", nan}, as_null, with_validation); });
-    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /d");
+    EXPECT_EQ(std::string(e.what()), "expected a number, got null at /d; reading double");
     EXPECT_EQ(e.path(), "/d");
     EXPECT_EQ(std::string(validation_error([&] { yyjson::validate(VdUnreadable{"x", nan}); }).what()),
-              R"(the value of the key "d" of VdUnreadable is less than the minimum 0 at /d)");
+              R"(the number is less than the minimum 0 at /d; reading the key "d" of VdUnreadable)");
 }
 
 // a field that the write rejects alone is still checked against its keywords
@@ -756,13 +788,13 @@ TEST(Validate, FieldThatWriteRejects)
     const auto many = VdUnwritable{{1, std::nan("")}, ""};
     auto e = validation_error([&] { yyjson::validate(many); });
     EXPECT_EQ(std::string(e.what()),
-              R"(the value of the key "v" of VdUnwritable has more items than the maximum 1 at /v)");
+              R"(the array has more items than the maximum 1 at /v; reading the key "v" of VdUnwritable)");
     EXPECT_EQ(e.path(), "/v");
     EXPECT_THROW((void)yyjson::write(many, with_validation), yyjson::write_error);
     const auto invalid = VdUnwritable{{}, "\xff\xfe"};
     e = validation_error([&] { yyjson::validate(invalid); });
     EXPECT_EQ(std::string(e.what()),
-              R"(the value of the key "s" of VdUnwritable is longer than the maximum length 1 at /s)");
+              R"(the string is longer than the maximum length 1 at /s; reading the key "s" of VdUnwritable)");
     EXPECT_THROW((void)yyjson::write(invalid, with_validation), yyjson::write_error);
     EXPECT_NO_THROW(yyjson::validate(VdUnwritable{{std::nan("")}, "\xff"}));
 }
@@ -788,10 +820,10 @@ struct VdChainTop
 TEST(Validate, TransparentChain)
 {
     expect_valid(VdChainTop{});
-    expect_invalid(VdChainTop{VdChainOut{VdChainIn{std::nullopt}}},
-                   "the key \"out\" of VdChainTop holds an empty std::optional, which is not written and reads back "
-                   "as the default value",
-                   "/out", read_leg::skipped);
+    expect_invalid(
+        VdChainTop{VdChainOut{VdChainIn{std::nullopt}}},
+        R"(the value is not valid at /out; validating VdChainTop: the field "out" holds an empty std::optional, which write leaves out and a read gives the default value)",
+        "/out", read_leg::skipped);
 }
 
 // an enumerator without a name is an error of write, which the check reports as write does
@@ -1099,17 +1131,22 @@ TEST(Validate, ObjectKeys)
 {
     expect_valid(VdPatternOnly{0, {{"p1", 1}}});
     expect_invalid(VdPatternOnly{0, {{"q", 1}}},
-                   R"(VdPatternOnly has the key "q", which yyjson::additional_properties(false) rejects)", "/q");
+                   "the object has a key that is not allowed at /q; reading VdPatternOnly, which "
+                   "yyjson::additional_properties(false) closes",
+                   "/q");
     // the key of the internal tag is a key of the object of the alternative
     expect_valid(VdTagShape{VdTagCircle{1, std::nullopt}});
     expect_valid(VdTagShape{VdTagSquare{}});
     expect_valid(VdTagShape{VdTagNamed{}});
-    expect_invalid(VdTagShape{VdTagLine{}}, R"(a key of VdTagLine does not match the pattern "^[a-n]")", "/type");
+    expect_invalid(VdTagShape{VdTagLine{}},
+                   R"(the key does not match the pattern "^[a-n]" at /type; reading a key of VdTagLine)", "/type");
     expect_invalid(VdTagHolder{{VdTagCircle{}, VdTagCircle{1, 2}}},
-                   "VdTagCircle has more properties than the maximum 2", "/shapes/1");
+                   "the object has more properties than the maximum 2 at /shapes/1; reading VdTagCircle", "/shapes/1");
     expect_valid(VdShortNames{0, {{"xy", 1}}});
-    expect_invalid(VdShortNames{0, {{"xyz", 1}}}, "a key of VdShortNames is longer than the maximum length 2", "/xyz");
-    expect_invalid(VdLongField{}, "a key of VdLongField is longer than the maximum length 2", "/abc");
+    expect_invalid(VdShortNames{0, {{"xyz", 1}}},
+                   "the key is longer than the maximum length 2 at /xyz; reading a key of VdShortNames", "/xyz");
+    expect_invalid(VdLongField{}, "the key is longer than the maximum length 2 at /abc; reading a key of VdLongField",
+                   "/abc");
 }
 
 TEST(Validate, ObjectCounts)
@@ -1117,59 +1154,67 @@ TEST(Validate, ObjectCounts)
     using yyjson::emit_defaults, yyjson::with_validation;
     expect_valid(VdCount{});
     expect_valid(VdCount{0, 0, {{"x", 1}}});
-    expect_invalid(VdCount{1, 1, {{"x", 1}}}, "VdCount has more properties than the maximum 2", "");
+    expect_invalid(VdCount{1, 1, {{"x", 1}}}, "the object has more properties than the maximum 2; reading VdCount", "");
     // the defaults that `yyjson::emit_defaults` writes are counted
-    const auto message = std::string("VdCount has more properties than the maximum 2");
+    const auto message = std::string("the object has more properties than the maximum 2; reading VdCount");
     const auto defaults = VdCount{0, 0, {{"x", 1}}};
     EXPECT_EQ(validation_error([&] { yyjson::validate(defaults, emit_defaults); }).what(), message);
     EXPECT_EQ(validation_error([&] { (void)yyjson::write(defaults, emit_defaults, with_validation); }).what(), message);
     EXPECT_THROW((void)yyjson::read<VdCount>(std::string(yyjson::write(defaults, emit_defaults))), yyjson::bad_cast);
     expect_valid(VdCountEmit{0, 0, {{"x", 1}}});
-    expect_invalid(VdCountEmit{0, 0, {{"x", 1}, {"y", 1}}}, "VdCountEmit has more properties than the maximum 2", "");
+    expect_invalid(VdCountEmit{0, 0, {{"x", 1}, {"y", 1}}},
+                   "the object has more properties than the maximum 2; reading VdCountEmit", "");
     expect_valid(VdCountMin{0, {{"x", 1}, {"y", 2}}});
-    expect_invalid(VdCountMin{0, {{"x", 1}}}, "VdCountMin has fewer properties than the minimum 3", "");
+    expect_invalid(VdCountMin{0, {{"x", 1}}}, "the object has fewer properties than the minimum 3; reading VdCountMin",
+                   "");
     // at a field of struct type, and in a condition of the struct
     expect_valid(VdOuterObj{});
     expect_invalid(VdOuterObj{VdInnerObj{0, 1}, std::nullopt},
-                   R"(the value of the key "in" of VdOuterObj has more properties than the maximum 1)", "/in");
-    expect_invalid(VdOuterObj{{}, 1}, "VdOuterObj has more properties than the maximum 1 of yyjson::all_of", "");
+                   R"(the object has more properties than the maximum 1 at /in; reading the key "in" of VdOuterObj)",
+                   "/in");
+    expect_invalid(VdOuterObj{{}, 1},
+                   "the value does not satisfy all the subschemas of allOf; reading VdOuterObj in yyjson::all_of", "");
 }
 
 TEST(Validate, Conditions)
 {
     expect_valid(VdPresence{1, 1, 0});
     expect_valid(VdPresence{});
-    expect_invalid(VdPresence{1, std::nullopt, 0},
-                   R"(VdPresence is not constructible from JSON without the key "b", which yyjson::dependent_required )"
-                   "requires",
-                   "");
+    expect_invalid(
+        VdPresence{1, std::nullopt, 0},
+        R"(the object does not have all the keys that dependentRequired requires; reading the key "b" of VdPresence, which yyjson::dependent_required requires)",
+        "");
     expect_invalid(VdPresence{std::nullopt, std::nullopt, -1},
-                   R"(the value of the key "v" of VdPresence is less than the minimum 0)", "/v");
+                   R"(the number is less than the minimum 0 at /v; reading the key "v" of VdPresence)", "/v");
     // a default that the write leaves out is a missing key
     expect_valid(VdDroppedDefault{1, 1});
-    expect_invalid(VdDroppedDefault{0, 1},
-                   R"(VdDroppedDefault is not constructible from JSON without the key "a", which )"
-                   "yyjson::dependent_required requires",
-                   "");
+    expect_invalid(
+        VdDroppedDefault{0, 1},
+        R"(the object does not have all the keys that dependentRequired requires; reading the key "a" of VdDroppedDefault, which yyjson::dependent_required requires)",
+        "");
     EXPECT_NO_THROW(yyjson::validate(VdDroppedDefault{0, 1}, yyjson::emit_defaults));
 
     expect_valid(VdConditions{0, std::nullopt, 1, std::nullopt});
     expect_valid(VdConditions{1, 1, std::nullopt, 1});
-    expect_invalid(VdConditions{1, std::nullopt, 1, std::nullopt},
-                   R"(VdConditions is not constructible from JSON without the key "x", which yyjson::if_then_else )"
-                   "requires",
-                   "");
+    expect_invalid(
+        VdConditions{1, std::nullopt, 1, std::nullopt},
+        R"(a required key is missing; reading the key "x" of VdConditions, which yyjson::if_then_else requires)", "");
     expect_invalid(VdConditions{0, 1, 1, std::nullopt},
-                   "VdConditions has the keys and the values that yyjson::not_ rejects", "");
-    expect_invalid(VdConditions{0, std::nullopt, 1, 1},
-                   R"(VdConditions is not constructible from JSON with all the keys of more than one of ["y"], ["z"])",
-                   "");
-    expect_invalid(VdConditions{0, std::nullopt, std::nullopt, std::nullopt},
-                   R"(VdConditions is not constructible from JSON without all the keys of one of ["y"], ["z"])", "");
+                   "the value satisfies neither if nor else; reading VdConditions in yyjson::not_", "");
+    expect_invalid(
+        VdConditions{0, std::nullopt, 1, 1},
+        R"(the value satisfies more than one subschema of oneOf; reading VdConditions with all the keys of more than one of ["y"], ["z"])",
+        "");
+    expect_invalid(
+        VdConditions{0, std::nullopt, std::nullopt, std::nullopt},
+        R"(the value satisfies none of the subschemas of oneOf; reading VdConditions without all the keys of one of ["y"], ["z"])",
+        "");
     expect_invalid(VdConditions{1, 1, 1, std::nullopt},
-                   "VdConditions satisfies none of the subschemas of yyjson::any_of", "");
-    expect_invalid(VdConditions{2, std::nullopt, 1, std::nullopt},
-                   R"(the value of the key "kind" of VdConditions is greater than the maximum 1)", "/kind");
+                   "the value satisfies none of the subschemas of anyOf; reading VdConditions", "");
+    expect_invalid(
+        VdConditions{2, std::nullopt, 1, std::nullopt},
+        R"(the value does not satisfy all the subschemas of allOf at /kind; reading the key "kind" of VdConditions)",
+        "/kind");
 }
 
 TEST(Validate, KeyMaps)
@@ -1177,21 +1222,24 @@ TEST(Validate, KeyMaps)
     expect_valid(VdKeyMaps{{{"ab", 1}}, {{"a", 0}}, {{"x", 1}}});
     // a key is checked by each pattern that matches it
     expect_invalid(VdKeyMaps{{{"ab", -1}}, {}, {}},
-                   R"(the value of the key "ab" of VdKeyMaps is less than the minimum 0)", "/ab");
+                   "the number is less than the minimum 0 at /ab; reading a member value of VdKeyMaps", "/ab");
     expect_invalid(VdKeyMaps{{{"ab", 6}}, {}, {}},
-                   R"(the value of the key "ab" of VdKeyMaps is greater than the maximum 5)", "/ab");
-    expect_invalid(VdKeyMaps{{}, {}, {{"x", 0}}}, R"(the value of the key "x" of VdKeyMaps is less than the minimum 1)",
-                   "/x");
+                   "the number is greater than the maximum 5 at /ab; reading a member value of VdKeyMaps", "/ab");
+    expect_invalid(VdKeyMaps{{}, {}, {{"x", 0}}},
+                   "the number is less than the minimum 1 at /x; reading a member value of VdKeyMaps", "/x");
     // a key that the read stores in another field
-    expect_invalid(VdKeyMaps{{}, {{"abc", 1}}, {}},
-                   R"(the key "abc" of the field "a" of VdKeyMaps is read into the field "ab")", "/abc",
-                   read_leg::skipped);
-    expect_invalid(VdKeyMaps{{}, {}, {{"ax", 1}}},
-                   R"(the key "ax" of the field "rest" of VdKeyMaps is read into the field "a")", "/ax",
-                   read_leg::skipped);
-    expect_invalid(VdKeyMaps{{{"q", 1}}, {}, {}},
-                   R"(the key "q" of the field "ab" of VdKeyMaps is read into the field "rest")", "/q",
-                   read_leg::skipped);
+    expect_invalid(
+        VdKeyMaps{{}, {{"abc", 1}}, {}},
+        R"(the value is not valid at /abc; validating VdKeyMaps: a read gives this key of the field "a" to the field "ab")",
+        "/abc", read_leg::skipped);
+    expect_invalid(
+        VdKeyMaps{{}, {}, {{"ax", 1}}},
+        R"(the value is not valid at /ax; validating VdKeyMaps: a read gives this key of the field "rest" to the field "a")",
+        "/ax", read_leg::skipped);
+    expect_invalid(
+        VdKeyMaps{{{"q", 1}}, {}, {}},
+        R"(the value is not valid at /q; validating VdKeyMaps: a read gives this key of the field "ab" to the field "rest")",
+        "/q", read_leg::skipped);
 }
 
 template <typename T>
@@ -1255,18 +1303,18 @@ TEST(Validate, NonFiniteBesideStruct)
     const auto nan = std::nan("");
     expect_valid(VdNanBeside{});
     auto e = validation_error([&] { (void)yyjson::write(VdNanBeside{{nan, {}}, {}}, as_null, with_validation); });
-    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /t/0");
+    EXPECT_EQ(std::string(e.what()), "expected a number, got null at /t/0; reading double");
     EXPECT_EQ(e.path(), "/t/0");
     const auto nullable = VdNanBeside{{0, {}}, {{{}, nan}}};
     EXPECT_EQ(std::string(yyjson::write(nullable, as_null, with_validation)),
               R"({"t":[0.0,{"a":0}],"v":[[{"a":0},null]]})");
     // the struct beside the null is still checked
     e = validation_error([&] { (void)yyjson::write(VdNanBeside{{0, {}}, {{{0, 1}, nan}}}, as_null, with_validation); });
-    EXPECT_EQ(std::string(e.what()), "VdNanInner has more properties than the maximum 1 at /v/0/0");
+    EXPECT_EQ(std::string(e.what()), "the object has more properties than the maximum 1 at /v/0/0; reading VdNanInner");
     e = validation_error(
         [&] { (void)yyjson::write(VdNanBeside{{0, {}}, {{{}, nan}, {{}, nan}}}, as_null, with_validation); });
     EXPECT_EQ(std::string(e.what()),
-              R"(the value of the key "v" of VdNanBeside has more items than the maximum 1 at /v)");
+              R"(the array has more items than the maximum 1 at /v; reading the key "v" of VdNanBeside)");
 }
 
 // a non-finite number in a map of keys, written as null
@@ -1305,17 +1353,18 @@ TEST(Validate, NonFiniteInKeyMapsAndFields)
     const auto as_null = WriteFlag::InfAndNanAsNull;
     const auto nan = std::nan("");
     auto e = validation_error([&] { (void)yyjson::write(VdNanExtra{0, {{"k", nan}}}, as_null, with_validation); });
-    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /k");
+    EXPECT_EQ(std::string(e.what()), "expected a number, got null at /k; reading double");
     e = validation_error([&] { (void)yyjson::write(VdNanPattern{0, {{"k", nan}}}, as_null, with_validation); });
-    EXPECT_EQ(std::string(e.what()), "double is not constructible from JSON null at /k");
+    EXPECT_EQ(std::string(e.what()), "expected a number, got null at /k; reading double");
     EXPECT_EQ(std::string(yyjson::write(VdNanPattern{0, {{"k", 1.5}}}, as_null, with_validation)),
               R"({"x":0,"k":1.5})");
 
     // read checks the null, which `yyjson::not_` accepts, and not the NaN
     const auto not_null = VdNotNull{{std::optional<double>(nan)}};
     e = validation_error([&] { (void)yyjson::write(not_null, as_null, with_validation); });
-    EXPECT_EQ(std::string(e.what()),
-              R"(an element of the value of the key "v" of VdNotNull satisfies the settings of yyjson::not_ at /v/0)");
+    EXPECT_EQ(
+        std::string(e.what()),
+        R"(the value satisfies the subschema of not at /v/0; reading an element of the value at the key "v" of VdNotNull)");
     EXPECT_THROW((void)yyjson::read<VdNotNull>(std::string(yyjson::write(not_null, as_null))), yyjson::bad_cast);
 }
 
@@ -1342,13 +1391,14 @@ TEST(Validate, NestedObjectKeywords)
     EXPECT_NO_THROW(yyjson::validate(valid));
     const auto counted = VdLink{0, std::nullopt, chain(3, 1, 0)};
     auto e = validation_error([&] { yyjson::validate(counted); });
-    EXPECT_EQ(std::string(e.what()), "VdLink has more properties than the maximum 2 at /next/next/next");
+    EXPECT_EQ(std::string(e.what()),
+              "the object has more properties than the maximum 2 at /next/next/next; reading VdLink");
     e = validation_error([&] { (void)yyjson::write(counted, yyjson::with_validation); });
     EXPECT_EQ(e.path(), "/next/next/next");
     const auto negative = VdLink{0, std::nullopt, chain(2, std::nullopt, -1)};
     e = validation_error([&] { yyjson::validate(negative); });
     EXPECT_EQ(std::string(e.what()),
-              R"(the value of the key "v" of VdLink is less than the minimum 0 at /next/next/v)");
+              R"(the number is less than the minimum 0 at /next/next/v; reading the key "v" of VdLink)");
 }
 
 // a key of a pattern map that read stores in no field
@@ -1364,8 +1414,10 @@ inline constexpr auto yyjson::annotations<VdUnmatched> =
 TEST(Validate, KeyReadIntoNoField)
 {
     expect_valid(VdUnmatched{0, {{"p1", 1}}});
-    expect_invalid(VdUnmatched{0, {{"q", 1}}}, R"(the key "q" of the field "p" of VdUnmatched is read into no field)",
-                   "/q", read_leg::skipped);
+    expect_invalid(
+        VdUnmatched{0, {{"q", 1}}},
+        R"(the value is not valid at /q; validating VdUnmatched: a read gives this key of the field "p" to no field)",
+        "/q", read_leg::skipped);
 }
 
 // the keys that read needs and that write leaves out
@@ -1434,10 +1486,9 @@ void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
 TEST(Validate, MissingKeys)
 {
     expect_valid(VdRequiredOmitted{1});
-    expect_invalid(VdRequiredOmitted{0}, R"(VdRequiredOmitted is not constructible from JSON without the key "a")", "");
+    expect_invalid(VdRequiredOmitted{0}, R"(a required key is missing; reading the key "a" of VdRequiredOmitted)", "");
     expect_valid(VdMissingOmitted{1, 0});
-    expect_invalid(VdMissingOmitted{0, 1}, R"(VdMissingOmitted is not constructible from JSON without the key "a")",
-                   "");
+    expect_invalid(VdMissingOmitted{0, 1}, R"(a required key is missing; reading the key "a" of VdMissingOmitted)", "");
     EXPECT_EQ(validate_allocations(VdUnknownOnly{1}), 0U);
     EXPECT_EQ(validate_allocations(VdRequiredOnly{1}), 0U);
     EXPECT_EQ(validate_allocations(VdRequiredOmitted{1}), 0U);
@@ -1447,19 +1498,16 @@ TEST(Validate, MissingKeys)
 namespace
 {
     // `Object` is the type of the object in `t` that gives `key` twice.
-    template <typename Object = void, typename T>
-    void expect_repeated_key(const T& t, std::string_view key, std::string_view path)
+    template <typename T>
+    void expect_repeated_key(const T& t, const expected_text& message, std::string_view path)
     {
-        using named = std::conditional_t<std::is_void_v<Object>, T, Object>;
-        const auto message =
-            std::format(R"(the object read into {} has the key "{}" twice)", yyjson::detail::type_name<named>(), key);
         expect_invalid(t, message, path, read_leg::skipped);
         if constexpr (yyjson::readable<T>)
         {
             const auto json = std::string(yyjson::write(t));
             EXPECT_NO_THROW((void)yyjson::read<T>(json));
             const auto r = validation_error([&] { (void)yyjson::read<T>(json, yyjson::strict); });
-            EXPECT_TRUE(std::string_view(r.what()).starts_with(message)) << json << "\n" << r.what();
+            EXPECT_EQ(what_without_position(r), message.text) << json;
             EXPECT_EQ(r.path(), path) << json;
         }
     }
@@ -1491,19 +1539,47 @@ TEST(Validate, RepeatedKeys)
     static_assert(yyjson::detail::needs_validation<std::multimap<std::string, int>>);
     static_assert(yyjson::detail::needs_validation<VdMulti>);
     expect_valid(std::multimap<std::string, int>{{"a", 1}, {"b", 1}});
-    expect_repeated_key(std::multimap<std::string, int>{{"a", 1}, {"a", 2}}, "a", "/a");
-    expect_repeated_key(std::unordered_multimap<std::string, int>{{"a", 1}, {"a", 2}}, "a", "/a");
-    expect_repeated_key(pairs{{"a", 1}, {"b", 1}, {"a", 2}}, "a", "/a");
-    expect_repeated_key(std::list<std::pair<std::string, int>>{{"a", 1}, {"a", 2}}, "a", "/a");
-    expect_repeated_key(std::deque<std::pair<std::string, int>>{{"a", 1}, {"a", 2}}, "a", "/a");
-    expect_repeated_key(std::vector<std::pair<VdSide, int>>{{VdSide::left, 1}, {VdSide::left, 2}}, "left", "/left");
+    expect_repeated_key(std::multimap<std::string, int>{{"a", 1}, {"a", 2}},
+                        std::format("the object has a duplicate key at /a; reading {}",
+                                    yyjson::detail::type_name<std::multimap<std::string, int>>()),
+                        "/a");
+    expect_repeated_key(std::unordered_multimap<std::string, int>{{"a", 1}, {"a", 2}},
+                        std::format("the object has a duplicate key at /a; reading {}",
+                                    yyjson::detail::type_name<std::unordered_multimap<std::string, int>>()),
+                        "/a");
+    expect_repeated_key(pairs{{"a", 1}, {"b", 1}, {"a", 2}},
+                        std::format("the object has a duplicate key at /a; reading {}",
+                                    yyjson::detail::type_name<std::vector<std::pair<std::string, int>>>()),
+                        "/a");
+    expect_repeated_key(std::list<std::pair<std::string, int>>{{"a", 1}, {"a", 2}},
+                        std::format("the object has a duplicate key at /a; reading {}",
+                                    yyjson::detail::type_name<std::list<std::pair<std::string, int>>>()),
+                        "/a");
+    expect_repeated_key(std::deque<std::pair<std::string, int>>{{"a", 1}, {"a", 2}},
+                        std::format("the object has a duplicate key at /a; reading {}",
+                                    yyjson::detail::type_name<std::deque<std::pair<std::string, int>>>()),
+                        "/a");
+    expect_repeated_key(std::vector<std::pair<VdSide, int>>{{VdSide::left, 1}, {VdSide::left, 2}},
+                        std::format("the object has a duplicate key at /left; reading {}",
+                                    yyjson::detail::type_name<std::vector<std::pair<VdSide, int>>>()),
+                        "/left");
     using keyed = std::tuple<std::pair<std::string, int>, std::pair<std::string, int>>;
-    expect_repeated_key(keyed{{"a", 1}, {"a", 2}}, "a", "/a");
+    expect_repeated_key(
+        keyed{{"a", 1}, {"a", 2}},
+        std::format("the object has a duplicate key at /a; reading {}",
+                    yyjson::detail::type_name<std::tuple<std::pair<std::string, int>, std::pair<std::string, int>>>()),
+        "/a");
     static_assert(!yyjson::detail::needs_validation<std::tuple<std::pair<std::string, int>>>);
     const auto first = std::string("k"), second = std::string("k");
-    expect_repeated_key(std::map<const char*, int>{{first.c_str(), 1}, {second.c_str(), 2}}, "k", "/k");
+    expect_repeated_key(std::map<const char*, int>{{first.c_str(), 1}, {second.c_str(), 2}},
+                        std::format("the object has a duplicate key at /k; reading {}",
+                                    yyjson::detail::type_name<std::map<const char*, int>>()),
+                        "/k");
     // keys that compare apart in C++ but are written as one text
-    expect_repeated_key(std::map<VdTagged, int>{{VdTagged("a", 0), 1}, {VdTagged("a", 1), 2}}, "a", "/a");
+    expect_repeated_key(std::map<VdTagged, int>{{VdTagged("a", 0), 1}, {VdTagged("a", 1), 2}},
+                        std::format("the object has a duplicate key at /a; reading {}",
+                                    yyjson::detail::type_name<std::map<VdTagged, int>>()),
+                        "/a");
     // a null key has no JSON text, so write throws for it and the check of the keys skips it
     using c_pairs = std::vector<std::pair<const char*, int>>;
     EXPECT_NO_THROW(yyjson::validate(c_pairs{{nullptr, 1}, {nullptr, 2}, {"", 3}}));
@@ -1516,7 +1592,10 @@ TEST(Validate, RepeatedKeys)
     expect_valid(many);
     many.emplace_back("7", 0);
     many.emplace_back("3", 0);
-    expect_repeated_key(many, "7", "/7");
+    expect_repeated_key(many,
+                        std::format("the object has a duplicate key at /7; reading {}",
+                                    yyjson::detail::type_name<std::vector<std::pair<std::string, int>>>()),
+                        "/7");
     auto nulls = c_pairs(20, {nullptr, 0});
     EXPECT_NO_THROW(yyjson::validate(nulls));
     nulls.emplace_back("z", 1);
@@ -1524,18 +1603,31 @@ TEST(Validate, RepeatedKeys)
     EXPECT_EQ(validation_error([&] { yyjson::validate(nulls); }).path(), "/z");
     auto sides = std::vector<std::pair<VdSide, int>>();
     for (int i = 0; i < 20; ++i) sides.emplace_back(i % 2 == 0 ? VdSide::right : VdSide::left, i);
-    expect_repeated_key(sides, "right", "/right");
+    expect_repeated_key(sides,
+                        std::format("the object has a duplicate key at /right; reading {}",
+                                    yyjson::detail::type_name<std::vector<std::pair<VdSide, int>>>()),
+                        "/right");
 
-    expect_repeated_key<std::multimap<std::string, int>>(VdMulti{{{"a", 1}, {"a", 2}}}, "a", "/m/a");
-    expect_repeated_key<pairs>(std::vector<pairs>{{{"a", 1}}, {{"a", 1}, {"a", 2}}}, "a", "/1/a");
-    expect_repeated_key<pairs>(std::map<std::string, pairs>{{"k", {{"a", 1}, {"a", 2}}}}, "a", "/k/a");
+    expect_repeated_key(VdMulti{{{"a", 1}, {"a", 2}}},
+                        std::format("the object has a duplicate key at /m/a; reading {}",
+                                    yyjson::detail::type_name<std::multimap<std::string, int>>()),
+                        "/m/a");
+    expect_repeated_key(std::vector<pairs>{{{"a", 1}}, {{"a", 1}, {"a", 2}}},
+                        std::format("the object has a duplicate key at /1/a; reading {}",
+                                    yyjson::detail::type_name<std::vector<std::pair<std::string, int>>>()),
+                        "/1/a");
+    expect_repeated_key(std::map<std::string, pairs>{{"k", {{"a", 1}, {"a", 2}}}},
+                        std::format("the object has a duplicate key at /k/a; reading {}",
+                                    yyjson::detail::type_name<std::vector<std::pair<std::string, int>>>()),
+                        "/k/a");
 
     // the key is reported before the values, as a strict read does; a plain read reports the value
     using rows = std::multimap<std::string, VdRow>;
-    const auto twice =
-        std::format(R"(the object read into {} has the key "a" twice)", yyjson::detail::type_name<rows>());
     const auto bad_rows = rows{{"a", VdRow{-1, {}}}, {"a", VdRow{1, {}}}};
-    expect_invalid(bad_rows, twice, "/a", read_leg::skipped);
+    expect_invalid(bad_rows,
+                   std::format("the object has a duplicate key at /a; reading {}",
+                               yyjson::detail::type_name<std::multimap<std::string, VdRow>>()),
+                   "/a", read_leg::skipped);
     EXPECT_EQ(validation_error([&] { (void)yyjson::read<rows>(yyjson::write(bad_rows), yyjson::strict); }).path(),
               "/a");
 
@@ -1640,34 +1732,38 @@ TEST(Validate, Unions)
     expect_valid(VdLowOrInt(std::in_place_index<0>, -5));
     expect_valid(VdLowOrHigh(std::in_place_index<0>, 3));
     expect_valid(VdLowOrHigh(std::in_place_index<1>, -20));
-    expect_invalid(VdLowOrHigh(std::in_place_index<0>, -5),
-                   vd_name<VdLowOrHigh>() +
-                       " is not constructible from JSON: alternative 0 (int): the value is less than the minimum 0; "
-                       "alternative 1 (int): the value is greater than the maximum -10",
-                   "");
-    const auto text = std::string(yyjson::detail::type_name<std::string>());
+    expect_invalid(
+        VdLowOrHigh(std::in_place_index<0>, -5),
+        "no alternative accepts the value; reading yyjson::one_of_variant<int, int>: alternative 0 (int): the number "
+        "is less than the minimum 0; alternative 1 (int): the number is greater than the maximum -10",
+        "");
     expect_valid(VdLowOrShort(std::string("abc")));
     expect_invalid(VdLowOrShort(-1),
-                   vd_name<VdLowOrShort>() +
-                       " is not constructible from JSON: alternative 0 (int): the value is less than the minimum 0; "
-                       "alternative 1 (" +
-                       text + "): reads no JSON number",
+                   std::format("no alternative accepts the value; reading {}: alternative 0 (int): the number is less "
+                               "than the minimum 0; alternative 1 ({}): expected a string, got a number",
+                               yyjson::detail::variant_name<yyjson::any_of_variant<int, std::string>>(),
+                               yyjson::detail::type_name<std::string>()),
                    "");
-    expect_invalid(VdLowOrShort(std::string("abcd")),
-                   vd_name<VdLowOrShort>() + " is not constructible from JSON: alternative 0 (int): reads no JSON " +
-                       "string; alternative 1 (" + text + "): the value is longer than the maximum length 3",
-                   "");
-    expect_invalid(VdItemsOrText(std::vector<int>{1, -2}),
-                   vd_name<VdItemsOrText>() + " is not constructible from JSON: alternative 0 (std::vector<int>): " +
-                       "the value has an element that does not satisfy the constraints of yyjson::items; " +
-                       "alternative 1 (" + text + "): reads no JSON array",
-                   "");
+    expect_invalid(
+        VdLowOrShort(std::string("abcd")),
+        std::format("no alternative accepts the value; reading {}: alternative 0 (int): expected an integer, got a "
+                    "string; alternative 1 ({}): the string is longer than the maximum length 3",
+                    yyjson::detail::variant_name<yyjson::any_of_variant<int, std::string>>(),
+                    yyjson::detail::type_name<std::string>()),
+        "");
+    expect_invalid(
+        VdItemsOrText(std::vector<int>{1, -2}),
+        std::format("no alternative accepts the value; reading {}: alternative 0 (std::vector<int>): the array has an "
+                    "item that does not satisfy items; alternative 1 ({}): expected a string, got an array",
+                    yyjson::detail::variant_name<yyjson::any_of_variant<std::vector<int>, std::string>>(),
+                    yyjson::detail::type_name<std::string>()),
+        "");
     // a keyword that counts the JSON of the alternative
     expect_valid(VdCountedOrMap(VdCounted{1, 2}));
     expect_valid(VdDefaultedOrInt(VdDefaulted{1, 5}));
-    const auto defaulted = vd_name<VdDefaultedOrInt>() +
-                           " is not constructible from JSON: alternative 0 (VdDefaulted): the value has more "
-                           "properties than the maximum 1; alternative 1 (int): reads no JSON object";
+    const auto defaulted = "no alternative accepts the value; reading " + vd_name<VdDefaultedOrInt>() +
+                           ": alternative 0 (VdDefaulted): the object has more properties than the maximum 1; "
+                           "alternative 1 (int): expected an integer, got an object";
     EXPECT_EQ(std::string(validation_error([] {
                               yyjson::validate(VdDefaultedOrInt(VdDefaulted{1, 5}), yyjson::emit_defaults);
                           }).what()),
@@ -1684,50 +1780,73 @@ TEST(Validate, Unions)
     // another alternative that reads the JSON only without its required keys
     expect_invalid(
         std::variant<VdUnionA, VdUnionE>(VdUnionA{-1}),
-        vd_name<std::variant<VdUnionA, VdUnionE>>() +
-            R"( is not constructible from JSON: alternative 0 (VdUnionA) at /x: the value of the key "x" of )"
-            R"(VdUnionA is less than the minimum 0; alternative 1 )"
-            R"((VdUnionE): VdUnionE is not constructible from JSON without the key "msg")",
+        R"(no alternative accepts the value; reading std::variant<VdUnionA, VdUnionE>: alternative 0 (VdUnionA) at /x: the number is less than the minimum 0 (reading the key "x" of VdUnionA); alternative 1 (VdUnionE): a required key is missing (reading the key "msg" of VdUnionE))",
         "", read_leg::skipped);
-    expect_invalid(VdOneAD(VdUnionA{-1}),
-                   R"(yyjson::one_of_variant<VdUnionA, VdUnionD> is not constructible from JSON: alternative 0 )"
-                   R"((VdUnionA) at /x: the value of the key "x" of VdUnionA is less than the minimum 0; )"
-                   R"(alternative 1 (VdUnionD): VdUnionD is not constructible from JSON without the key "y")",
-                   "");
+    expect_invalid(
+        VdOneAD(VdUnionA{-1}),
+        R"(no alternative accepts the value; reading yyjson::one_of_variant<VdUnionA, VdUnionD>: alternative 0 (VdUnionA) at /x: the number is less than the minimum 0 (reading the key "x" of VdUnionA); alternative 1 (VdUnionD): a required key is missing (reading the key "y" of VdUnionD))",
+        "");
     // a walk that fails for the alternative that read gives too, which read does not check
-    expect_invalid(std::variant<VdReadBack, int>(VdReadBack{3, {}, std::nullopt}),
-                   "the key \"z\" of VdReadBack holds an empty std::optional, which is not written and reads back "
-                   "as the default value",
-                   "/z", read_leg::skipped);
+    expect_invalid(
+        std::variant<VdReadBack, int>(VdReadBack{3, {}, std::nullopt}),
+        R"(the value is not valid at /z; validating VdReadBack: the field "z" holds an empty std::optional, which write leaves out and a read gives the default value)",
+        "/z", read_leg::skipped);
 
     // the count of a one_of, which a disjoint alternative skips
-    const auto matches_cd = std::string("the value matches the alternatives 0 and 1 of ") + vd_name<VdOneCD>();
-    expect_invalid(VdOneCD(VdUnionC{1, 2}), matches_cd, "");
+    expect_invalid(VdOneCD(VdUnionC{1, 2}),
+                   "the value matches more than one alternative; reading yyjson::one_of_variant<VdUnionC, VdUnionD>: "
+                   "the alternatives 0 and 1 match",
+                   "");
     expect_valid(VdOneCD(VdUnionC{1, {}}));
     expect_valid(VdOneCD(VdUnionD{1}));
     expect_valid(yyjson::one_of_variant<int, std::string>(1));
     expect_valid(VdSignedOrUnsigned(std::int64_t{-5}));
-    expect_invalid(VdSignedOrUnsigned(std::int64_t{5}),
-                   "the value matches the alternatives 0 and 1 of " + vd_name<VdSignedOrUnsigned>(), "");
-    expect_invalid(std::vector<VdSignedOrUnsigned>{std::int64_t{-5}, std::uint64_t{5}},
-                   "the value matches the alternatives 0 and 1 of " + vd_name<VdSignedOrUnsigned>(), "/1");
+    expect_invalid(
+        VdSignedOrUnsigned(std::int64_t{5}),
+        std::format("the value matches more than one alternative; reading {}: the alternatives 0 and 1 match",
+                    yyjson::detail::variant_name<yyjson::one_of_variant<std::int64_t, std::uint64_t>>()),
+        "");
+    expect_invalid(
+        std::vector<VdSignedOrUnsigned>{std::int64_t{-5}, std::uint64_t{5}},
+        std::format("the value matches more than one alternative at /1; reading {}: the alternatives 0 and 1 match",
+                    yyjson::detail::variant_name<yyjson::one_of_variant<std::int64_t, std::uint64_t>>()),
+        "/1");
     expect_valid(VdPartlyOverlapping(-300.0));
     expect_valid(VdPartlyOverlapping(std::uint64_t{20}));
-    const auto partly = vd_name<VdPartlyOverlapping>();
-    expect_invalid(VdPartlyOverlapping(std::int64_t{0}), "the value matches the alternatives 0 and 2 of " + partly, "");
-    expect_invalid(VdPartlyOverlapping(std::uint64_t{5}), "the value matches the alternatives 2 and 3 of " + partly,
-                   "");
+    expect_invalid(
+        VdPartlyOverlapping(std::int64_t{0}),
+        std::format(
+            "the value matches more than one alternative; reading {}: the alternatives 0 and 2 match",
+            yyjson::detail::variant_name<yyjson::one_of_variant<double, std::string, std::int64_t, std::uint64_t>>()),
+        "");
+    expect_invalid(
+        VdPartlyOverlapping(std::uint64_t{5}),
+        std::format(
+            "the value matches more than one alternative; reading {}: the alternatives 2 and 3 match",
+            yyjson::detail::variant_name<yyjson::one_of_variant<double, std::string, std::int64_t, std::uint64_t>>()),
+        "");
 
     // nested unions, and a union in an array, a map and a struct
     expect_invalid(yyjson::any_of_variant<VdOneCD, int>(VdOneCD(VdUnionC{1, 2})),
-                   vd_name<yyjson::any_of_variant<VdOneCD, int>>() + " is not constructible from JSON: alternative " +
-                       "0 (" + vd_name<VdOneCD>() + "): " + matches_cd + "; alternative 1 (int): reads no JSON object",
+                   "no alternative accepts the value; reading yyjson::any_of_variant<yyjson::one_of_variant<VdUnionC, "
+                   "VdUnionD>, int>: alternative 0 (yyjson::one_of_variant<VdUnionC, VdUnionD>): the value matches "
+                   "more than one alternative (reading yyjson::one_of_variant<VdUnionC, VdUnionD>: the alternatives 0 "
+                   "and 1 match); alternative 1 (int): expected an integer, got an object",
                    "");
     expect_valid(yyjson::any_of_variant<VdOneAD, VdUnionB>(VdOneAD(VdUnionA{-1})));
     expect_valid(yyjson::one_of_variant<VdAB, VdUnionD>(VdAB(VdUnionA{-1})));
-    expect_invalid(std::vector<VdOneCD>{VdUnionD{1}, VdUnionD{2}, VdUnionD{3}, VdUnionC{1, 2}}, matches_cd, "/3");
-    expect_invalid(std::map<std::string, VdOneCD>{{"k", VdUnionC{1, 2}}}, matches_cd, "/k");
-    expect_invalid(VdUnionFields{VdUnionC{1, 2}, 1}, matches_cd, "/u");
+    expect_invalid(std::vector<VdOneCD>{VdUnionD{1}, VdUnionD{2}, VdUnionD{3}, VdUnionC{1, 2}},
+                   "the value matches more than one alternative at /3; reading yyjson::one_of_variant<VdUnionC, "
+                   "VdUnionD>: the alternatives 0 and 1 match",
+                   "/3");
+    expect_invalid(std::map<std::string, VdOneCD>{{"k", VdUnionC{1, 2}}},
+                   "the value matches more than one alternative at /k; reading yyjson::one_of_variant<VdUnionC, "
+                   "VdUnionD>: the alternatives 0 and 1 match",
+                   "/k");
+    expect_invalid(VdUnionFields{VdUnionC{1, 2}, 1},
+                   "the value matches more than one alternative at /u; reading yyjson::one_of_variant<VdUnionC, "
+                   "VdUnionD>: the alternatives 0 and 1 match",
+                   "/u");
     expect_valid(VdUnionFields{VdUnionC{1, {}}, std::string("ab")});
     // the settings of an alternative that is a variant check the alternative that the inner variant holds
     using VdNested = yyjson::any_of_variant<
@@ -1736,11 +1855,21 @@ TEST(Validate, Unions)
     expect_valid(VdNested(VdInner(std::variant<int, std::string>(7))));
     expect_valid(VdNested(VdInner(std::variant<int, std::string>(std::string("ab")))));
     expect_valid(VdNested(VdInner(true)));
-    const auto nested = vd_name<VdNested>() + " is not constructible from JSON: alternative 0 (" + vd_name<VdInner>() +
-                        "): the value is ";
-    expect_invalid(VdNested(VdInner(std::variant<int, std::string>(1))), nested + "less than the minimum 5", "");
-    expect_invalid(VdNested(VdInner(std::variant<int, std::string>(std::string("a")))),
-                   nested + "shorter than the minimum length 2", "");
+    expect_invalid(
+        VdNested(VdInner(std::variant<int, std::string>(1))),
+        std::format(
+            "no alternative accepts the value; reading {}: alternative 0 ({}): the number is less than the minimum 5",
+            yyjson::detail::variant_name<yyjson::any_of_variant<std::variant<std::variant<int, std::string>, bool>>>(),
+            yyjson::detail::variant_name<std::variant<std::variant<int, std::string>, bool>>()),
+        "");
+    expect_invalid(
+        VdNested(VdInner(std::variant<int, std::string>(std::string("a")))),
+        std::format(
+            "no alternative accepts the value; reading {}: alternative 0 ({}): the string is shorter than the minimum "
+            "length 2",
+            yyjson::detail::variant_name<yyjson::any_of_variant<std::variant<std::variant<int, std::string>, bool>>>(),
+            yyjson::detail::variant_name<std::variant<std::variant<int, std::string>, bool>>()),
+        "");
 
     // a passing check of a disjoint union, or of an alternative that satisfies its settings, allocates nothing
     EXPECT_EQ(validate_allocations(std::vector<VdLowOrInt>(100, VdLowOrInt(std::in_place_index<0>, 1))), 0U);
@@ -1807,32 +1936,71 @@ inline constexpr auto yyjson::annotations<VdAdjacentAB> =
 TEST(Validate, TaggedUnions)
 {
     // the key of the tag lets the alternatives of the one_of read the same object
-    const auto matches = std::string("the value matches the alternatives 0 and 1 of ") + vd_name<VdOneClosed>();
     expect_valid(VdOneClosed(VdClosedA{0}));
-    expect_invalid(VdTaggedOne(VdOneClosed(VdClosedA{0})), matches, "");
-    expect_invalid(VdTaggedOne(VdOneClosed(VdTypedA{"one", 0})), matches, "");
-    expect_invalid(std::vector<VdTaggedOne>{VdOtherZ{}, VdOneClosed(VdClosedA{0})}, matches, "/1");
+    expect_invalid(VdTaggedOne(VdOneClosed(VdClosedA{0})),
+                   "the value matches more than one alternative; reading yyjson::one_of_variant<VdClosedA, VdTypedA>: "
+                   "the alternatives 0 and 1 match",
+                   "");
+    expect_invalid(VdTaggedOne(VdOneClosed(VdTypedA{"one", 0})),
+                   "the value matches more than one alternative; reading yyjson::one_of_variant<VdClosedA, VdTypedA>: "
+                   "the alternatives 0 and 1 match",
+                   "");
+    expect_invalid(std::vector<VdTaggedOne>{VdOtherZ{}, VdOneClosed(VdClosedA{0})},
+                   "the value matches more than one alternative at /1; reading yyjson::one_of_variant<VdClosedA, "
+                   "VdTypedA>: the alternatives 0 and 1 match",
+                   "/1");
     expect_valid(VdTaggedOne(VdOtherZ{1}));
 
     // the tag reaches a union through a transparent struct, a pointer and an optional
-    expect_invalid(VdTaggedWrapped(VdOneWrapped{VdClosedA{0}}), matches, "");
-    expect_invalid(VdTaggedWrapped(std::make_unique<VdOneClosed>(VdClosedA{0})), matches, "");
-    expect_invalid(VdTaggedWrapped(std::optional<VdOneClosed>(VdClosedA{0})), matches, "");
+    expect_invalid(VdTaggedWrapped(VdOneWrapped{VdClosedA{0}}),
+                   "the value matches more than one alternative; reading yyjson::one_of_variant<VdClosedA, VdTypedA>: "
+                   "the alternatives 0 and 1 match",
+                   "");
+    expect_invalid(VdTaggedWrapped(std::make_unique<VdOneClosed>(VdClosedA{0})),
+                   "the value matches more than one alternative; reading yyjson::one_of_variant<VdClosedA, VdTypedA>: "
+                   "the alternatives 0 and 1 match",
+                   "");
+    expect_invalid(VdTaggedWrapped(std::optional<VdOneClosed>(VdClosedA{0})),
+                   "the value matches more than one alternative; reading yyjson::one_of_variant<VdClosedA, VdTypedA>: "
+                   "the alternatives 0 and 1 match",
+                   "");
     expect_valid(VdTaggedWrapped(VdOtherZ{1}));
-    const auto no_map = vd_name<VdUnionOrMap>() + " is not constructible from JSON: alternative 0 (VdUnionA) at /x: " +
-                        R"(the value of the key "x" of VdUnionA is less than the minimum 0; alternative 1 ()" +
-                        vd_name<std::map<std::string, int>>() + ") at /type: int is not constructible from JSON string";
-    expect_invalid(VdTaggedMap(VdUnionOrMap(VdUnionA{-1})), no_map, "");
-    expect_invalid(VdTaggedMap(VdMapWrapped{VdUnionA{-1}}), no_map, "");
-    expect_invalid(VdTaggedMap(std::make_unique<VdUnionOrMap>(VdUnionA{-1})), no_map, "");
-    expect_invalid(VdTaggedMap(std::optional<VdUnionOrMap>(VdUnionA{-1})), no_map, "");
+    expect_invalid(
+        VdTaggedMap(VdUnionOrMap(VdUnionA{-1})),
+        std::format(
+            R"(no alternative accepts the value; reading {}: alternative 0 (VdUnionA) at /x: the number is less than the minimum 0 (reading the key "x" of VdUnionA); alternative 1 ({}) at /type: expected an integer, got a string (reading int))",
+            yyjson::detail::variant_name<std::variant<VdUnionA, std::map<std::string, int>>>(),
+            yyjson::detail::type_name<std::map<std::string, int>>()),
+        "");
+    expect_invalid(
+        VdTaggedMap(VdMapWrapped{VdUnionA{-1}}),
+        std::format(
+            R"(no alternative accepts the value; reading {}: alternative 0 (VdUnionA) at /x: the number is less than the minimum 0 (reading the key "x" of VdUnionA); alternative 1 ({}) at /type: expected an integer, got a string (reading int))",
+            yyjson::detail::variant_name<std::variant<VdUnionA, std::map<std::string, int>>>(),
+            yyjson::detail::type_name<std::map<std::string, int>>()),
+        "");
+    expect_invalid(
+        VdTaggedMap(std::make_unique<VdUnionOrMap>(VdUnionA{-1})),
+        std::format(
+            R"(no alternative accepts the value; reading {}: alternative 0 (VdUnionA) at /x: the number is less than the minimum 0 (reading the key "x" of VdUnionA); alternative 1 ({}) at /type: expected an integer, got a string (reading int))",
+            yyjson::detail::variant_name<std::variant<VdUnionA, std::map<std::string, int>>>(),
+            yyjson::detail::type_name<std::map<std::string, int>>()),
+        "");
+    expect_invalid(
+        VdTaggedMap(std::optional<VdUnionOrMap>(VdUnionA{-1})),
+        std::format(
+            R"(no alternative accepts the value; reading {}: alternative 0 (VdUnionA) at /x: the number is less than the minimum 0 (reading the key "x" of VdUnionA); alternative 1 ({}) at /type: expected an integer, got a string (reading int))",
+            yyjson::detail::variant_name<std::variant<VdUnionA, std::map<std::string, int>>>(),
+            yyjson::detail::type_name<std::map<std::string, int>>()),
+        "");
     expect_valid(VdTaggedMap(VdUnionOrMap(VdUnionA{1})));
     expect_valid(VdTaggedMap(VdMapWrapped{VdUnionA{1}}));
 
     // a tagged variant reads only the alternative of its tag
-    const auto low = std::string(R"(the value of the key "x" of VdUnionA is less than the minimum 0)");
-    expect_invalid(VdTaggedAD(VdUnionA{-1}), low, "/x");
-    expect_invalid(VdAdjacentAB{"a", VdUnionA{-1}}, low, "/data/x");
+    expect_invalid(VdTaggedAD(VdUnionA{-1}),
+                   R"(the number is less than the minimum 0 at /x; reading the key "x" of VdUnionA)", "/x");
+    expect_invalid(VdAdjacentAB{"a", VdUnionA{-1}},
+                   R"(the number is less than the minimum 0 at /data/x; reading the key "x" of VdUnionA)", "/data/x");
     expect_valid(VdAdjacentAB{"b", VdUnionB{-1}});
 }
 
@@ -1854,20 +2022,17 @@ TEST(Validate, UnionWrittenForms)
     using yyjson::with_validation, yyjson::WriteFlag;
     // the other alternative does not read the key twice either, as a strict read
     const auto repeated = VdRepeatedOrMap(std::multimap<std::string, int>{{"a", 1}, {"a", 2}});
-    const auto twice = [](auto t) {
-        return std::format(R"(alternative {} ({}) at /a: the object read into {} has the key "a" twice)", t.first,
-                           t.second, t.second);
+    const auto twice = [](int i, std::string_view type) {
+        return std::format("alternative {} ({}) at /a: the object has a duplicate key (reading {})", i, type, type);
     };
-    const auto multi = std::string(yyjson::detail::type_name<std::multimap<std::string, int>>());
-    const auto single = std::string(yyjson::detail::type_name<std::map<std::string, int>>());
-    const auto message = vd_name<VdRepeatedOrMap>() + " is not constructible from JSON: " + twice(std::pair(0, multi)) +
-                         "; " + twice(std::pair(1, single));
+    const auto message = std::format("no alternative accepts the value; reading {}: {}; {}", vd_name<VdRepeatedOrMap>(),
+                                     twice(0, yyjson::detail::type_name<std::multimap<std::string, int>>()),
+                                     twice(1, yyjson::detail::type_name<std::map<std::string, int>>()));
     expect_invalid(repeated, message, "", read_leg::skipped);
     EXPECT_NO_THROW((void)yyjson::read<VdRepeatedOrMap>(yyjson::write(repeated)));
-    EXPECT_TRUE(std::string_view(validation_error([&] {
-                                     (void)yyjson::read<VdRepeatedOrMap>(yyjson::write(repeated), yyjson::strict);
-                                 }).what())
-                    .starts_with(message));
+    EXPECT_EQ(what_without_position(validation_error(
+                  [&] { (void)yyjson::read<VdRepeatedOrMap>(yyjson::write(repeated), yyjson::strict); })),
+              message);
 
     // a NaN that write gives as null, which another alternative reads
     const auto nan = std::nan("");
@@ -1875,20 +2040,21 @@ TEST(Validate, UnionWrittenForms)
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(VdLowDouble(nan), WriteFlag::InfAndNanAsNull, with_validation);
                           }).what()),
-              vd_name<VdLowDouble>() + " is not constructible from JSON: alternative 0 (double): reads no JSON null; " +
-                  "alternative 1 (int): reads no JSON null");
+              "no alternative accepts the value; reading " + vd_name<VdLowDouble>() +
+                  ": alternative 0 (double): expected a number, got null; alternative 1 (int): expected an integer, "
+                  "got null");
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(VdLowDouble(nan), WriteFlag::AllowInfAndNan, with_validation);
                           }).what()),
-              vd_name<VdLowDouble>() + " is not constructible from JSON: alternative 0 (double): the value is less " +
-                  "than the minimum 0; alternative 1 (int): reads no JSON number");
+              "no alternative accepts the value; reading " + vd_name<VdLowDouble>() +
+                  ": alternative 0 (double): the number is less than the minimum 0; alternative 1 (int): expected an "
+                  "integer, got a number");
 
     // the depth of a walk and of the read of a failing union
-    expect_invalid(VdUnionTree{0, {VdUnionTree{-1, {}}}},
-                   vd_name<std::variant<VdUnionTree, int>>() +
-                       " is not constructible from JSON: alternative 0 (VdUnionTree) at /v: the value of the key " +
-                       R"("v" of VdUnionTree is less than the minimum 0; alternative 1 (int): reads no JSON object)",
-                   "/kids/0");
+    expect_invalid(
+        VdUnionTree{0, {VdUnionTree{-1, {}}}},
+        R"(no alternative accepts the value at /kids/0; reading std::variant<VdUnionTree, int>: alternative 0 (VdUnionTree) at /v: the number is less than the minimum 0 (reading the key "v" of VdUnionTree); alternative 1 (int): expected an integer, got an object)",
+        "/kids/0");
     auto tree = VdUnionTree();
     for (auto i = 0; i < 300; ++i) tree = VdUnionTree{0, {std::move(tree)}};
     const auto e = validation_error([&] { yyjson::validate(tree); });
@@ -2205,43 +2371,46 @@ TEST(Validate, CasterJson)
                        v = ok;
                        v.name = VdName("abc");
                    }),
-                   R"(the value of the key "name" of VdCasters is longer than the maximum length 2)", "/name");
+                   R"(the string is longer than the maximum length 2 at /name; reading the key "name" of VdCasters)",
+                   "/name");
     expect_invalid(with<VdCasters>([&](auto& v) {
                        v = ok;
                        v.xy = {-1, 0};
                    }),
-                   "VdXY has fewer properties than the minimum 2", "/xy");
+                   "the object has fewer properties than the minimum 2 at /xy; reading VdXY", "/xy");
     expect_invalid(with<VdCasters>([&](auto& v) {
                        v = ok;
                        v.em = {3};
                    }),
-                   "VdEmit has more properties than the maximum 2", "/em");
+                   "the object has more properties than the maximum 2 at /em; reading VdEmit", "/em");
     expect_invalid(with<VdCasters>([&](auto& v) {
                        v = ok;
                        v.w = yyjson::with_caster<int, VdDigits>{123};
                    }),
-                   R"(the value of the key "w" of VdCasters is longer than the maximum length 2)", "/w");
+                   R"(the string is longer than the maximum length 2 at /w; reading the key "w" of VdCasters)", "/w");
     expect_invalid(with<VdCasters>([&](auto& v) {
                        v = ok;
                        v.e = yyjson::with_caster<int, VdEmitInt>{2};
                    }),
-                   R"(the value of the key "e" of VdCasters has more properties than the maximum 1)", "/e");
+                   R"(the object has more properties than the maximum 1 at /e; reading the key "e" of VdCasters)",
+                   "/e");
     expect_invalid(with<VdCasters>([&](auto& v) {
                        v = ok;
                        v.fem = {0};
                    }),
-                   R"(the value of the key "fem" of VdCasters has fewer properties than the minimum 1)", "/fem");
+                   R"(the object has fewer properties than the minimum 1 at /fem; reading the key "fem" of VdCasters)",
+                   "/fem");
     // the type keywords first, then the field keywords, as read checks them
     expect_invalid(with<VdCasters>([&](auto& v) {
                        v = ok;
                        v.fem = {3};
                    }),
-                   "VdEmit has more properties than the maximum 2", "/fem");
+                   "the object has more properties than the maximum 2 at /fem; reading VdEmit", "/fem");
 
     // root caster types
     expect_valid(VdXY{1, 2});
-    expect_invalid(VdXY{-1, 0}, "VdXY has fewer properties than the minimum 2", "");
-    expect_invalid(VdEmit{3}, "VdEmit has more properties than the maximum 2", "");
+    expect_invalid(VdXY{-1, 0}, "the object has fewer properties than the minimum 2; reading VdXY", "");
+    expect_invalid(VdEmit{3}, "the object has more properties than the maximum 2; reading VdEmit", "");
     expect_valid(yyjson::with_caster<int, VdDigits>{5});
 
     // the positions in the containers, the alternatives and the pointers
@@ -2253,32 +2422,35 @@ TEST(Validate, CasterJson)
     };
     expect_valid(places([](auto&) {}));
     expect_invalid(places([](auto& v) { v.c = VdName("abc"); }),
-                   R"(the value of the key "c" of VdCasterPlaces is longer than the maximum length 2)", "/c");
-    expect_invalid(places([](auto& v) { v.ps = {{1, 1}, {-1, 0}}; }), "VdXY has fewer properties than the minimum 2",
-                   "/ps/1");
-    expect_invalid(places([](auto& v) { v.mp = {{"k", {-1, 0}}}; }), "VdXY has fewer properties than the minimum 2",
-                   "/mp/k");
-    expect_invalid(places([](auto& v) { v.t = {1, VdXY{-1, 0}}; }), "VdXY has fewer properties than the minimum 2",
-                   "/t/1");
+                   R"(the string is longer than the maximum length 2 at /c; reading the key "c" of VdCasterPlaces)",
+                   "/c");
+    expect_invalid(places([](auto& v) { v.ps = {{1, 1}, {-1, 0}}; }),
+                   "the object has fewer properties than the minimum 2 at /ps/1; reading VdXY", "/ps/1");
+    expect_invalid(places([](auto& v) { v.mp = {{"k", {-1, 0}}}; }),
+                   "the object has fewer properties than the minimum 2 at /mp/k; reading VdXY", "/mp/k");
+    expect_invalid(places([](auto& v) { v.t = {1, VdXY{-1, 0}}; }),
+                   "the object has fewer properties than the minimum 2 at /t/1; reading VdXY", "/t/1");
     expect_invalid(places([](auto& v) { v.p = std::make_unique<VdEmit>(VdEmit{3}); }),
-                   "VdEmit has more properties than the maximum 2", "/p");
+                   "the object has more properties than the maximum 2 at /p; reading VdEmit", "/p");
     expect_invalid(places([](auto& v) { v.v = VdXY{-1, 0}; }),
-                   vd_name<yyjson::any_of_variant<VdXY, int>>() +
-                       " is not constructible from JSON: alternative 0 (VdXY): VdXY has fewer properties than the "
-                       "minimum 2; alternative 1 (int): reads no JSON object",
+                   "no alternative accepts the value at /v; reading yyjson::any_of_variant<VdXY, int>: alternative 0 "
+                   "(VdXY): the object has fewer properties than the minimum 2 (reading VdXY); alternative 1 (int): "
+                   "expected an integer, got an object",
                    "/v");
     // `yyjson::as_array` positions, a transparent field and the values of `yyjson::extra_keys`
     expect_valid(VdCasterRow{1, VdName("ab")});
     expect_invalid(VdCasterRow{1, VdName("A")},
-                   R"(an element of the value of VdCasterRow does not match the pattern "^[a-z]+$")", "/1");
+                   R"(the string does not match the pattern "^[a-z]+$" at /1; reading an element of VdCasterRow)",
+                   "/1");
     expect_valid(VdCasterBox{VdName("a")});
-    expect_invalid(VdCasterBox{VdName("")}, "the value of VdCasterBox is shorter than the minimum length 1", "");
+    expect_invalid(VdCasterBox{VdName("")}, "the string is shorter than the minimum length 1; reading VdCasterBox", "");
     expect_valid(VdCasterRest{1, {{"k", {1, 2}}}});
-    expect_invalid(VdCasterRest{1, {{"k", {-1, 0}}}}, "VdXY has fewer properties than the minimum 2", "/k");
+    expect_invalid(VdCasterRest{1, {{"k", {-1, 0}}}},
+                   "the object has fewer properties than the minimum 2 at /k; reading VdXY", "/k");
 
     // the first violation in the order of the fields
     expect_invalid(VdNameAndList{VdName("b"), {VdName("a"), VdName("a")}},
-                   R"(the value of the key "c" of VdNameAndList does not match the pattern "^a")", "/c");
+                   R"(the string does not match the pattern "^a" at /c; reading the key "c" of VdNameAndList)", "/c");
 
     // to_json runs only for a position with keywords on its JSON: once for validate, twice for a checked write
     const auto unchecked = VdUncheckedName{VdName("abc"), 1};
@@ -2286,7 +2458,7 @@ TEST(Validate, CasterJson)
     yyjson::validate(unchecked);
     EXPECT_EQ(vd_to_json_calls, 0);
     expect_invalid(VdUncheckedName{VdName("abc"), -1},
-                   R"(the value of the key "n" of VdUncheckedName is less than the minimum 0)", "/n");
+                   R"(the number is less than the minimum 0 at /n; reading the key "n" of VdUncheckedName)", "/n");
     const auto checked = with<VdCasters>([&](auto& v) { v = ok; });
     vd_to_json_calls = 0;
     yyjson::validate(checked.name);
@@ -2304,24 +2476,24 @@ TEST(Validate, CasterJson)
                               (void)yyjson::write(VdTemperatures{{nan}, {1.5}}, WriteFlag::InfAndNanAsNull,
                                                   with_validation);
                           }).what()),
-              "double is not constructible from JSON null at /low");
+              "expected a number, got null at /low; reading double");
     // the read back fails before the enum, as for a field of `double`
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(VdTemperatures{{1}, {nan}}, WriteFlag::InfAndNanAsNull,
                                                   with_validation);
                           }).what()),
-              "double is not constructible from JSON null at /high");
+              "expected a number, got null at /high; reading double");
     const auto too_high =
-        std::string(R"(the value of the key "low" of VdTemperatures is greater than the maximum 100)");
-    EXPECT_EQ(std::string(validation_error([&] { yyjson::validate(VdTemperatures{{nan}, {1.5}}); }).what()),
-              too_high + " at /low");
+        std::string(R"(the number is greater than the maximum 100 at /low; reading the key "low" of VdTemperatures)");
+    EXPECT_EQ(std::string(validation_error([&] { yyjson::validate(VdTemperatures{{nan}, {1.5}}); }).what()), too_high);
     EXPECT_EQ(std::string(validation_error([&] {
                               (void)yyjson::write(VdTemperatures{{nan}, {1.5}}, WriteFlag::AllowInfAndNan,
                                                   with_validation);
                           }).what()),
-              too_high + " at /low");
+              too_high);
     expect_invalid(VdTemperatures{{200}, {1.5}},
-                   R"(the value of the key "low" of VdTemperatures is greater than the maximum 100)", "/low");
+                   R"(the number is greater than the maximum 100 at /low; reading the key "low" of VdTemperatures)",
+                   "/low");
 #if YYJSON_VERSION_HEX >= 0x000C00
     // the keywords check the real as the flags write it
     const auto fixed = static_cast<WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(1));
@@ -2333,45 +2505,61 @@ TEST(Validate, CasterJson)
 
     // the members of the caster count the key of the tag, also under a struct that checks its object
     expect_valid(VdTaggedCasters{VdLetters{1}});
-    expect_invalid(VdTaggedCasters{VdLetters{2}}, "VdLetters has more properties than the maximum 2", "");
-    expect_invalid(std::vector<VdTaggedCasters>{VdLetters{2}}, "VdLetters has more properties than the maximum 2",
-                   "/0");
+    expect_invalid(VdTaggedCasters{VdLetters{2}},
+                   "the object has more properties than the maximum 2; reading VdLetters", "");
+    expect_invalid(std::vector<VdTaggedCasters>{VdLetters{2}},
+                   "the object has more properties than the maximum 2 at /0; reading VdLetters", "/0");
     expect_valid(VdTaggedCasters{VdLettersBox{{1}}});
     expect_invalid(VdTaggedCasters{VdLettersBox{{0}}},
-                   "the value of VdLettersBox has fewer properties than the minimum 2", "");
+                   "the object has fewer properties than the minimum 2; reading VdLettersBox", "");
     expect_valid(std::vector<VdTaggedCasters>{VdLettersBox{{1}}});
 
     // the keys of the object of a caster: a closed type takes only the key of a tag, and yyjson::property_names
     // checks that key too
     const auto closed = R"(VdClosedKeys has the key "a", which yyjson::additional_properties(false) rejects)";
     expect_valid(VdClosedKeys{0});
-    expect_invalid(VdClosedKeys{1}, closed, "/a");
-    expect_invalid(std::vector<VdClosedKeys>{{0}, {2}}, closed, "/1/a");
+    expect_invalid(VdClosedKeys{1},
+                   "the object has a key that is not allowed at /a; reading VdClosedKeys, which "
+                   "yyjson::additional_properties(false) closes",
+                   "/a");
+    expect_invalid(std::vector<VdClosedKeys>{{0}, {2}},
+                   "the object has a key that is not allowed at /1/a; reading VdClosedKeys, which "
+                   "yyjson::additional_properties(false) closes",
+                   "/1/a");
     expect_valid(VdTaggedKeys{VdClosedKeys{0}});
-    expect_invalid(VdTaggedKeys{VdClosedKeys{1}}, closed, "/a");
-    const auto longer = "a key of VdNamedKey is longer than the maximum length 2";
+    expect_invalid(VdTaggedKeys{VdClosedKeys{1}},
+                   "the object has a key that is not allowed at /a; reading VdClosedKeys, which "
+                   "yyjson::additional_properties(false) closes",
+                   "/a");
     expect_valid(VdNamedKey{"ab"});
-    expect_invalid(VdNamedKey{"abc"}, longer, "/abc");
-    expect_invalid(std::vector<VdNamedKey>{{"ab"}, {"abc"}}, longer, "/1/abc");
-    expect_invalid(VdTaggedKeys{VdNamedKey{}}, longer, "/type");
+    expect_invalid(VdNamedKey{"abc"},
+                   "the key is longer than the maximum length 2 at /abc; reading a key of VdNamedKey", "/abc");
+    expect_invalid(std::vector<VdNamedKey>{{"ab"}, {"abc"}},
+                   "the key is longer than the maximum length 2 at /1/abc; reading a key of VdNamedKey", "/1/abc");
+    expect_invalid(VdTaggedKeys{VdNamedKey{}},
+                   "the key is longer than the maximum length 2 at /type; reading a key of VdNamedKey", "/type");
     // a closed type that write reflects takes the keys of its fields
     expect_valid(VdReadClosed{1});
     expect_valid(VdReadClosedHolder{{1}});
-    const auto other = R"(VdReadClosed has the key "y", which yyjson::additional_properties(false) rejects)";
     EXPECT_EQ(validation_error([] { (void)yyjson::read<VdReadClosed>(R"({"x":1,"y":2})"); }).path(), "/y");
     const auto nested = validation_error([] { (void)yyjson::read<VdReadClosedHolder>(R"({"s":{"x":1,"y":2}})"); });
-    EXPECT_TRUE(std::string_view(nested.what()).starts_with(other)) << nested.what();
+    EXPECT_EQ(std::string_view(nested.what()),
+              "the object has a key that is not allowed at /s/y (line 1, column 17, pos 16); reading VdReadClosed, "
+              "which yyjson::additional_properties(false) closes")
+        << nested.what();
     EXPECT_EQ(nested.path(), "/s/y");
 
     // translators to an integer and to a bool, also in an optional
     expect_valid(VdPanel{VdLevel{9}, VdSwitch{true}});
     expect_valid(VdPanel{std::nullopt, VdSwitch{true}});
     expect_invalid(VdPanel{VdLevel{10}, VdSwitch{true}},
-                   R"(the value of the key "level" of VdPanel is greater than the maximum 9)", "/level");
+                   R"(the number is greater than the maximum 9 at /level; reading the key "level" of VdPanel)",
+                   "/level");
     expect_invalid(VdPanel{VdLevel{-1}, VdSwitch{true}},
-                   R"(the value of the key "level" of VdPanel is less than the minimum 0)", "/level");
+                   R"(the number is less than the minimum 0 at /level; reading the key "level" of VdPanel)", "/level");
     expect_invalid(VdPanel{VdLevel{1}, VdSwitch{false}},
-                   R"(the value of the key "power" of VdPanel is not equal to the constant true)", "/power");
+                   R"(the value is not equal to the constant true at /power; reading the key "power" of VdPanel)",
+                   "/power");
 }
 
 // translators to a struct whose keywords check the value that `to_json` returns
@@ -2469,13 +2657,15 @@ struct VdReadWire
 TEST(Validate, TranslatedValue)
 {
     using yyjson::with_validation, yyjson::WriteFlag;
-    const auto low = R"(the value of the key "n" of VdWire is less than the minimum 1)";
     expect_valid(VdWraps{{1}, {{1}, {2}}});
-    expect_invalid(VdWraps{{0}, {}}, low, "/w/n");
-    expect_invalid(VdWraps{{1}, {{1}, {0}}}, low, "/ws/1/n");
-    expect_invalid(VdWrap{0}, low, "/n");
+    expect_invalid(VdWraps{{0}, {}}, R"(the number is less than the minimum 1 at /w/n; reading the key "n" of VdWire)",
+                   "/w/n");
+    expect_invalid(VdWraps{{1}, {{1}, {0}}},
+                   R"(the number is less than the minimum 1 at /ws/1/n; reading the key "n" of VdWire)", "/ws/1/n");
+    expect_invalid(VdWrap{0}, R"(the number is less than the minimum 1 at /n; reading the key "n" of VdWire)", "/n");
     // the object of the translation holds the key of the tag
-    expect_invalid(VdTaggedWrap{VdWrapTwo{1}}, "VdWireTwo has more properties than the maximum 2", "");
+    expect_invalid(VdTaggedWrap{VdWrapTwo{1}}, "the object has more properties than the maximum 2; reading VdWireTwo",
+                   "");
     expect_valid(VdTaggedWrap{VdOtherK{1}});
 
     // a non-finite number written as null is checked only if `from_json` reads the translation
@@ -2483,18 +2673,19 @@ TEST(Validate, TranslatedValue)
     EXPECT_EQ(std::string(validation_error([] {
                               (void)yyjson::write(VdWrapReal{std::nan(""), 0}, as_null, with_validation);
                           }).what()),
-              "double is not constructible from JSON null at /d");
+              "expected a number, got null at /d; reading double");
     EXPECT_EQ(std::string(yyjson::write(VdWrapLoose{std::nan(""), 0}, as_null, with_validation)),
               R"({"d":null,"k":0})");
     EXPECT_EQ(std::string(validation_error([] {
                               (void)yyjson::write(VdWrapLoose{std::nan(""), -1}, as_null, with_validation);
                           }).what()),
-              R"(the value of the key "k" of VdWireReal is less than the minimum 0 at /k)");
+              R"(the number is less than the minimum 0 at /k; reading the key "k" of VdWireReal)");
     EXPECT_EQ(std::string(validation_error([] {
                               (void)yyjson::write(VdScalarReal{std::nan("")}, as_null, with_validation);
                           }).what()),
-              "double is not constructible from JSON null");
-    expect_invalid(yyjson::with_caster<VdWire, VdReadWire>{VdWire{0}}, low, "/n");
+              "expected a number, got null; reading double");
+    expect_invalid(yyjson::with_caster<VdWire, VdReadWire>{VdWire{0}},
+                   R"(the number is less than the minimum 1 at /n; reading the key "n" of VdWire)", "/n");
 }
 
 // a type without keywords is checked by nothing
@@ -2604,12 +2795,6 @@ inline constexpr auto yyjson::annotations<VdKjEvent> =
 
 TEST(Validate, JsonKinds)
 {
-    const auto value = [](std::string_view key, std::string_view what) {
-        return std::format(R"(the value of the key "{}" of VdKjValues {})", key, what);
-    };
-    const auto element = [](std::string_view key, std::string_view what) {
-        return std::format(R"(an element of the value of the key "{}" of VdKjValues {})", key, what);
-    };
     expect_valid(VdKjValues{});
     expect_valid(VdKjValues{{1, 2},
                             VdKjCircle{1},
@@ -2619,38 +2804,50 @@ TEST(Validate, JsonKinds)
                             {1, 2.0, "x"},
                             {VdKjName("ab")},
                             {{"k", VdKjName("ab")}}});
-    expect_invalid(with<VdKjValues>([](auto& t) { t.r.h = -1; }),
-                   value("r", "has a value that does not satisfy the constraints of yyjson::additional_properties"),
-                   "/r");
+    expect_invalid(
+        with<VdKjValues>([](auto& t) { t.r.h = -1; }),
+        R"(the object has a value that does not satisfy additionalProperties at /r; reading the key "r" of VdKjValues)",
+        "/r");
     expect_invalid(with<VdKjValues>([](auto& t) { t.s = VdKjRect{1, 2}; }),
-                   value("s", "has more properties than the maximum 2"), "/s");
+                   R"(the object has more properties than the maximum 2 at /s; reading the key "s" of VdKjValues)",
+                   "/s");
     expect_invalid(with<VdKjValues>([](auto& t) { t.v = VdKjColor::green; }),
-                   value("v", "is longer than the maximum length 3"), "/v");
+                   R"(the string is longer than the maximum length 3 at /v; reading the key "v" of VdKjValues)", "/v");
     expect_invalid(with<VdKjValues>([](auto& t) { t.c = VdKjColor::green; }),
-                   value("c", "is longer than the maximum length 3"), "/c");
-    expect_invalid(with<VdKjValues>([](auto& t) { t.w = 1; }), value("w", "satisfies the settings of yyjson::not_"),
-                   "/w");
-    expect_invalid(with<VdKjValues>([](auto& t) { std::get<0>(t.t) = -1; }), element("t", "is less than the minimum 0"),
-                   "/t/0");
-    expect_invalid(with<VdKjValues>([](auto& t) { std::get<0>(t.t) = 1; }),
-                   element("t", "is equal to an earlier element"), "/t/1");
-    expect_invalid(with<VdKjValues>([](auto& t) { t.names = {VdKjName("a"), VdKjName("abc")}; }),
-                   element("names", "is longer than the maximum length 2"), "/names/1");
-    expect_invalid(with<VdKjValues>([](auto& t) { t.map = {{"k", VdKjName("abc")}}; }),
-                   element("map", "is longer than the maximum length 2"), "/map/k");
+                   R"(the string is longer than the maximum length 3 at /c; reading the key "c" of VdKjValues)", "/c");
+    expect_invalid(with<VdKjValues>([](auto& t) { t.w = 1; }),
+                   R"(the value satisfies the subschema of not at /w; reading the key "w" of VdKjValues)", "/w");
+    expect_invalid(
+        with<VdKjValues>([](auto& t) { std::get<0>(t.t) = -1; }),
+        R"(the number is less than the minimum 0 at /t/0; reading an element of the value at the key "t" of VdKjValues)",
+        "/t/0");
+    expect_invalid(
+        with<VdKjValues>([](auto& t) { std::get<0>(t.t) = 1; }),
+        R"(the item is equal to an earlier item at /t/1; reading an element of the value at the key "t" of VdKjValues)",
+        "/t/1");
+    expect_invalid(
+        with<VdKjValues>([](auto& t) { t.names = {VdKjName("a"), VdKjName("abc")}; }),
+        R"(the string is longer than the maximum length 2 at /names/1; reading an element of the value at the key "names" of VdKjValues)",
+        "/names/1");
+    expect_invalid(
+        with<VdKjValues>([](auto& t) { t.map = {{"k", VdKjName("abc")}}; }),
+        R"(the string is longer than the maximum length 2 at /map/k; reading an element of the value at the key "map" of VdKjValues)",
+        "/map/k");
 
     // the read takes the object of the field, and the check the string that `to_json` returns
     EXPECT_NO_THROW(yyjson::validate(VdKjText1{{"a"}}));
-    expect_invalid(VdKjText1{{"ab"}}, R"(the value of the key "text" of VdKjText1 is longer than the maximum length 1)",
+    expect_invalid(VdKjText1{{"ab"}},
+                   R"(the string is longer than the maximum length 1 at /text; reading the key "text" of VdKjText1)",
                    "/text", read_leg::skipped);
 
     // the struct writes any key with the map of `yyjson::extra_keys`, and the key of an adjacent tag
     expect_valid(VdKjExtra{1, {{"b", 0}}});
-    expect_invalid(VdKjExtra{1, {{"b", -1}}}, R"(the value of the key "b" of VdKjExtra is less than the minimum 0)",
-                   "/b");
+    expect_invalid(VdKjExtra{1, {{"b", -1}}},
+                   R"(the number is less than the minimum 0 at /b; reading the key "b" of VdKjExtra)", "/b");
     expect_valid(VdKjEvent{1, 5});
     expect_invalid(VdKjEvent{1, VdKjRect{}},
-                   R"(the value of the key "kind" of VdKjEvent is not equal to the constant "count")", "/kind");
+                   R"(the value is not equal to the constant "count" at /kind; reading the key "kind" of VdKjEvent)",
+                   "/kind");
 }
 
 // a cast inside a callback of validate reads its JSON as read does, though write gave that JSON
@@ -2702,8 +2899,7 @@ inline constexpr auto yyjson::annotations<VdCastHolder> =
 TEST(Validate, CastInsideCallback)
 {
     EXPECT_THROW((void)yyjson::read<VdCastHolder>(R"({"data":{"v":["long","a"]}})"), yyjson::bad_cast);
-    expect_invalid(VdCastHolder{},
-                   "VdCastHolder does not have the keys and the values that yyjson::property and required give", "");
+    expect_invalid(VdCastHolder{}, "the object does not satisfy properties; reading VdCastHolder", "");
 }
 
 // NOLINTEND

@@ -73,9 +73,7 @@ TEST(Reader, RealToIntegers)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_STREQ(e.what(),
-                     "overflow detected: unsigned char is not constructible from JSON number 300 "
-                     "(line 1, column 1, pos 0)");
+        EXPECT_STREQ(e.what(), "the number is out of range, got 300 (line 1, column 1, pos 0); reading unsigned char");
     }
     try
     {
@@ -84,9 +82,7 @@ TEST(Reader, RealToIntegers)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_STREQ(e.what(),
-                     "int is not constructible from JSON number 1.5, which is not an integer "
-                     "(line 1, column 1, pos 0)");
+        EXPECT_STREQ(e.what(), "expected an integer, got a number (line 1, column 1, pos 0); reading int");
     }
 
     // a number is not the size of a container
@@ -449,8 +445,8 @@ TEST(Reader, FixedSizeRangesOfPairs)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_TRUE(std::string_view(e.what()).starts_with("the size of JSON object differs from the size of"))
-            << e.what();
+        EXPECT_EQ(std::string_view(e.what()),
+                  std::format("expected an object of 2 members; reading {}", yyjson::detail::type_name<pairs>()));
     }
 
     // a repeated key is kept, as in a `std::vector` of pairs, unless `yyjson::reject_duplicates` is given
@@ -548,8 +544,8 @@ TEST(Reader, CArraysOfPairs)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_TRUE(std::string_view(e.what()).starts_with("the size of JSON object differs from the size of"))
-            << e.what();
+        EXPECT_EQ(std::string_view(e.what()), std::format("expected an object of 2 members at /kv; reading {}",
+                                                          yyjson::detail::type_name<std::pair<std::string, int>[2]>()));
     }
 
     // a repeated key is kept unless `yyjson::reject_duplicates` is given, which validate gives as well

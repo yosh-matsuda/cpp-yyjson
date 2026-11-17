@@ -328,21 +328,22 @@ TEST(Transparent, Validate)
     expect_valid(CheckedAccount());
     auto bad = CheckedAccount();
     bad.ids = {{1}, {0}};
-    expect_invalid(bad, "the value of CheckedId is less than the minimum 1", "/ids/1");
+    expect_invalid(bad, "the number is less than the minimum 1 at /ids/1; reading CheckedId", "/ids/1");
     bad = CheckedAccount();
     bad.tags.v.clear();
-    expect_invalid(bad, "the value of CheckedTags has fewer items than the minimum 1", "/tags");
+    expect_invalid(bad, "the array has fewer items than the minimum 1 at /tags; reading CheckedTags", "/tags");
     bad = CheckedAccount();
     bad.tags.v = {"a", "long"};
-    expect_invalid(bad, "an element of the value of CheckedTags is longer than the maximum length 3", "/tags/1");
+    expect_invalid(bad, "the string is longer than the maximum length 3 at /tags/1; reading an element of CheckedTags",
+                   "/tags/1");
     bad = CheckedAccount();
     bad.limit.o = 11;
-    expect_invalid(bad, "the value of CheckedLimit is greater than the maximum 10", "/limit");
+    expect_invalid(bad, "the number is greater than the maximum 10 at /limit; reading CheckedLimit", "/limit");
     bad = CheckedAccount();
     bad.by_name = {{"k", {0}}};
-    expect_invalid(bad, "the value of CheckedId is less than the minimum 1", "/by_name/k");
-    expect_invalid(CheckedId{0}, "the value of CheckedId is less than the minimum 1", "");
-    expect_invalid(std::vector{CheckedId{0}}, "the value of CheckedId is less than the minimum 1", "/0");
+    expect_invalid(bad, "the number is less than the minimum 1 at /by_name/k; reading CheckedId", "/by_name/k");
+    expect_invalid(CheckedId{0}, "the number is less than the minimum 1; reading CheckedId", "");
+    expect_invalid(std::vector{CheckedId{0}}, "the number is less than the minimum 1 at /0; reading CheckedId", "/0");
 }
 
 #if FIELD_RFL_ANNOTATIONS

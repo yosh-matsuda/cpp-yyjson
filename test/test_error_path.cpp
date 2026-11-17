@@ -137,6 +137,15 @@ inline constexpr auto yyjson::annotations<KindLimits> = yyjson::annotate(
     yyjson::field("flag", yyjson::matches<bool>),
     yyjson::field("m", yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)),
                                             yyjson::else_(yyjson::minimum(0)))));
+// bounds that are not integers
+struct KindFraction
+{
+    double lo = 1;
+    double hi = 1;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindFraction> =
+    yyjson::annotate(yyjson::field("lo", yyjson::minimum(0.5)), yyjson::field("hi", yyjson::maximum(1.5)));
 struct KindRequired
 {
     std::vector<int> s;
@@ -354,17 +363,17 @@ TEST(ErrorPath, What)
 {
     const auto json = std::string_view(R"({"items":[{"x":"a"}]})");
     auto e = bad_cast_of([&] { (void)yyjson::read<PathDoc>(json); });
-    EXPECT_STREQ(e.what(), "int is not constructible from JSON string at /items/0/x (line 1, column 16, pos 15)");
+    EXPECT_STREQ(e.what(), "expected an integer, got a string at /items/0/x (line 1, column 16, pos 15); reading int");
     e = bad_cast_of([&] { (void)yyjson::read(json).cast<PathDoc>(); });
-    EXPECT_STREQ(e.what(), "int is not constructible from JSON string at /items/0/x");
+    EXPECT_STREQ(e.what(), "expected an integer, got a string at /items/0/x; reading int");
     e = bad_cast_of([&] { (void)yyjson::read<int>(R"("a")"); });
-    EXPECT_STREQ(e.what(), "int is not constructible from JSON string (line 1, column 1, pos 0)");
+    EXPECT_STREQ(e.what(), "expected an integer, got a string (line 1, column 1, pos 0); reading int");
     EXPECT_EQ(e.path(), "");
 
     // a null character ends the C string of `what()`, so control characters are written escaped there
     e = bad_cast_of([&] { (void)yyjson::read(R"({"a\u0000\nb":"x"})").cast<std::map<std::string, int>>(); });
     EXPECT_EQ(e.path(), std::string_view("/a\0\nb", 5));
-    EXPECT_STREQ(e.what(), R"(int is not constructible from JSON string at /a\u0000\u000ab)");
+    EXPECT_STREQ(e.what(), R"(expected an integer, got a string at /a\u0000\u000ab; reading int)");
 
     // a copy shares the path
     const auto copy = e;
@@ -507,6 +516,81 @@ TEST(ErrorPath, Kind)
     const auto e = bad_cast_of([] { (void)yyjson::read<std::uint8_t>("300"); });
     const auto copy = e;
     EXPECT_EQ(copy.kind(), out_of_range);
+}
+
+TEST(ErrorPath, Message)
+{
+    // each way of reading gives the same text, which names no C++ type and no text of the input
+    const auto expect_message = [&]<typename T>(std::type_identity<T>, std::string_view json, std::string_view message,
+                                                std::vector<std::string_view> input, auto... policies) {
+        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<T>(json, policies...); }),
+                              bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(policies...); })})
+        {
+            const auto text = e.message();
+            EXPECT_EQ(text, message) << json;
+            EXPECT_TRUE(std::string_view(e.what()).starts_with(text)) << e.what();
+            EXPECT_EQ(text.find(yyjson::detail::type_name<T>()), std::string::npos) << text;
+            for (const auto i : input) EXPECT_EQ(text.find(i), std::string::npos) << text;
+            EXPECT_EQ(text.find(" at /"), std::string::npos) << text;
+            EXPECT_EQ(text.find("(line"), std::string::npos) << text;
+            EXPECT_EQ(text.find("; "), std::string::npos) << text;
+        }
+    };
+    using std::type_identity;
+    expect_message(type_identity<std::int64_t>(), R"("abc")", "expected an integer, got a string", {"abc"});
+    expect_message(type_identity<std::vector<int>>(), "{}", "expected an array, got an object", {});
+    expect_message(type_identity<std::uint8_t>(), "3000", "the number is out of range", {"3000"});
+    expect_message(type_identity<std::array<int, 2>>(), "[1]", "expected an array of 2 elements", {});
+    expect_message(type_identity<KindPoint>(), R"({"x":1,"secret":2})", "the object has a key that is not allowed",
+                   {"secret", "KindPoint"}, yyjson::reject_unknown_keys);
+    expect_message(type_identity<KindPoint>(), R"({"y":1})", "a required key is missing", {"\"x\""},
+                   yyjson::reject_missing_keys);
+    expect_message(type_identity<KindPoint>(), R"({"x":1,"x":2})", "the object has a duplicate key", {"\"x\""},
+                   yyjson::reject_duplicates);
+    expect_message(type_identity<KindPoint>(), R"({"x":1,"y":null})", "the value must not be null", {"\"y\""},
+                   yyjson::reject_null_as_missing);
+    expect_message(type_identity<Color>(), R"("pink")", "the value is not one of the allowed values",
+                   {"pink", "Color"});
+    // the key of the tag is a part of the schema, and the value of the tag is input
+    expect_message(type_identity<PathShape>(), R"({"type":"oval"})", R"(the tag "type" names no alternative)",
+                   {"oval", "PathCircle"});
+    expect_message(type_identity<std::variant<int, std::string>>(), "[]", "no alternative accepts the value",
+                   {"std::string", "alternative 0"});
+    expect_message(type_identity<KindOneOf>(), "5", "the value matches more than one alternative", {"alternative 0"});
+    // a limit of the schema is no input
+    expect_message(type_identity<KindLimits>(), R"({"n":-7})", "the number is less than the minimum 0", {"-7"});
+    expect_message(type_identity<KindLimits>(), R"({"s":"secret"})", "the string is longer than the maximum length 2",
+                   {"secret"});
+    expect_message(type_identity<KindFraction>(), R"({"lo":0.25})", "the number is less than the minimum 0.5",
+                   {"0.25"});
+    expect_message(type_identity<KindFraction>(), R"({"hi":2.75})", "the number is greater than the maximum 1.5",
+                   {"2.75"});
+    for (const auto& [json, keyword, what] :
+         {std::tuple{R"({"lo":0.25})", "minimum",
+                     R"(the number is less than the minimum 0.5 at /lo; reading the key "lo" of KindFraction)"},
+          std::tuple{R"({"hi":2.75})", "maximum",
+                     R"(the number is greater than the maximum 1.5 at /hi; reading the key "hi" of KindFraction)"}})
+    {
+        const auto e = bad_cast_of([&] { (void)yyjson::read<KindFraction>(json); });
+        EXPECT_EQ(e.keyword(), keyword) << json;
+        EXPECT_EQ(what_without_position(e), what) << json;
+    }
+    auto deep = std::string();
+    for (auto i = 0; i < 300; ++i) deep += R"({"v":[)";
+    for (auto i = 0; i < 300; ++i) deep += "]}";
+    expect_message(type_identity<KindNested>(), deep, "the value is nested too deeply", {});
+
+    // the text of an exception that a user caster constructs can hold anything, so it is left out
+    for (const auto& e : {bad_cast_of([] { (void)yyjson::read<Foreign>("-1"); }),
+                          bad_cast_of([] { (void)yyjson::read("-1").cast<Foreign>(); })})
+        EXPECT_EQ(e.message(), "the value is not valid");
+    EXPECT_EQ(yyjson::bad_cast("x").message(), "the value is not valid");
+    const auto e = bad_cast_of([] { (void)yyjson::read<std::vector<Foreign>>("[5, -1]"); });
+    EXPECT_STREQ(e.what(), "negative at /1 (line 1, column 5, pos 4)");
+    // a copy gives the same text
+    const auto copy = bad_cast_of([] { (void)yyjson::read<std::uint8_t>("3000"); });
+    EXPECT_EQ(yyjson::bad_cast(copy).message(), "the number is out of range");
+    EXPECT_STREQ(copy.what(), "the number is out of range, got 3000 (line 1, column 1, pos 0); reading unsigned char");
 }
 
 TEST(ErrorPath, Keyword)

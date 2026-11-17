@@ -65,9 +65,9 @@ The structs need no macro, base class or registration, because compile-time refl
 
 ```cpp
 yyjson::read<Project>(R"({"name":"cpp-yyjson","status":"retired"})");
-// bad_cast: JSON string is not the name of an enumerator of Status at /status (line 1, column 31, pos 30)
+// bad_cast: the value is not one of the allowed values at /status (line 1, column 31, pos 30); reading Status
 yyjson::read<Project>(R"({"name":"cpp-yyjson","downloads":{"linux":"120"}})");
-// bad_cast: int is not constructible from JSON string at /downloads/linux (line 1, column 43, pos 42)
+// bad_cast: expected an integer, got a string at /downloads/linux (line 1, column 43, pos 42); reading int
 ```
 
 **JSON of any shape, with standard C++.** The DOM API reads any JSON into a document. Its objects work with range-for, structured bindings, `std::views` and `std::format`, and `cast<T>` converts a value to a C++ type:

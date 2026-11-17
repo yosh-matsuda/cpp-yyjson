@@ -465,7 +465,7 @@ TEST(WithCaster, Presence)
     EXPECT_EQ(read_or_error([] { return yyjson::read<WcPresence>(R"({"n":null})", yyjson::strict); }),
               read_or_error([] { return yyjson::read(R"({"n":null})").cast<WcPresence>(yyjson::strict); }));
     EXPECT_EQ(read_or_error([] { return yyjson::read<WcPresence>(R"({"n":null})", yyjson::strict); }),
-              "bad cast: WcPresence is not constructible from JSON without the key \"z\"");
+              "bad cast: a required key is missing; reading the key \"z\" of WcPresence");
     EXPECT_EQ(written(WcPresence()), R"({"n":null,"z":null})");
     // the converter decides whether a field is left out
     EXPECT_EQ(expect_with_caster<WcOmit>(R"({"z":0,"a":2})"), R"({"a":2})");
@@ -513,7 +513,7 @@ TEST(WithCaster, Errors)
     EXPECT_THROW(static_cast<void>(yyjson::read<WcFields>(R"({"id":"zz"})")), std::invalid_argument);
     // read policies apply as to any field
     EXPECT_EQ(read_or_error([] { return yyjson::read<WcOmit>(R"({"a":1})", yyjson::strict); }),
-              "bad cast: WcOmit is not constructible from JSON without the key \"z\"");
+              "bad cast: a required key is missing; reading the key \"z\" of WcOmit");
 }
 
 TEST(WithCaster, Defaults)

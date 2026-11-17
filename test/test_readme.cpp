@@ -69,10 +69,10 @@ TEST(Readme, QuickLook)
         R"({"name":"cpp-yyjson","status":"active","releases":[{"version":"2.0.0","notes":"new API"},{"version":"2.1.0"}],"downloads":{"linux":120,"macos":40}})");
 
     EXPECT_EQ(bad_cast_message([] { (void)yyjson::read<Project>(R"({"name":"cpp-yyjson","status":"retired"})"); }),
-              "JSON string is not the name of an enumerator of Status at /status (line 1, column 31, pos 30)");
-    EXPECT_EQ(bad_cast_message(
-                  [] { (void)yyjson::read<Project>(R"({"name":"cpp-yyjson","downloads":{"linux":"120"}})"); }),
-              "int is not constructible from JSON string at /downloads/linux (line 1, column 43, pos 42)");
+              "the value is not one of the allowed values at /status (line 1, column 31, pos 30); reading Status");
+    EXPECT_EQ(
+        bad_cast_message([] { (void)yyjson::read<Project>(R"({"name":"cpp-yyjson","downloads":{"linux":"120"}})"); }),
+        "expected an integer, got a string at /downloads/linux (line 1, column 43, pos 42); reading int");
 
     auto doc = yyjson::read(R"({"USD":1.17,"JPY":172.4,"GBP":0.87})");
     auto rates = *doc.as_object();

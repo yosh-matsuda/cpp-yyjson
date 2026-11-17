@@ -464,7 +464,7 @@ The dialect decides `$schema` and the `format` of number types:
 
 `json_schema` and `build()` throw `std::invalid_argument` in these cases:
 
-*   The read rejects an example. The message is like `json_schema: the example "x" of Bad::a is not read: int is not constructible from JSON string (line 1, column 1, pos 0)`.
+*   The read rejects an example. The message is like `json_schema: the example "x" of Bad::a is not read: expected an integer, got a string; reading int`.
 *   A declared schema is not a JSON object or a boolean. The message is like `json_schema: the yyjson::schema of Bad2::a is not an object or a boolean`.
 *   The text of `yyjson::schema_extend` is not a JSON object. The message is like `json_schema: the yyjson::schema_extend of X1::a is not an object`.
 *   The text of a declared schema is not JSON. The message is like `json_schema: the yyjson::schema of X3::a is not JSON: Read JSON error: unexpected end of data at line 1, column 2, pos 1`.

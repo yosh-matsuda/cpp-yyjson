@@ -929,19 +929,25 @@ TEST(RecursiveTypes, Validate)
     auto tree = RecLimited{{{}, {{{}, {}, {}}}}};
     expect_valid(tree);
     tree.kids[1].kids[0].kids.resize(4);
-    expect_invalid(tree, "the value of RecLimited has more items than the maximum 3", "/1/0");
+    expect_invalid(tree, "the array has more items than the maximum 3 at /1/0; reading RecLimited", "/1/0");
 
     auto settings = RecIndLimits();
     expect_valid(settings);
     settings.limit.emplace(std::in_place, 11);
-    expect_invalid(settings, "the value of the key \"limit\" of RecIndLimits is greater than the maximum 10", "/limit");
+    expect_invalid(settings,
+                   R"(the number is greater than the maximum 10 at /limit; reading the key "limit" of RecIndLimits)",
+                   "/limit");
     settings.limit.reset();
     *settings.scores = {1, -1};
-    expect_invalid(settings, "an element of the value of the key \"scores\" of RecIndLimits is less than the minimum 0",
-                   "/scores/1");
+    expect_invalid(
+        settings,
+        R"(the number is less than the minimum 0 at /scores/1; reading an element of the value at the key "scores" of RecIndLimits)",
+        "/scores/1");
     *settings.scores = {};
     *settings.level = -1;
-    expect_invalid(settings, "the value of the key \"level\" of RecIndLimits is less than the minimum 0", "/level");
+    expect_invalid(settings,
+                   R"(the number is less than the minimum 0 at /level; reading the key "level" of RecIndLimits)",
+                   "/level");
 }
 
 // NOLINTEND

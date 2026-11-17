@@ -48,7 +48,7 @@ template <>
 inline constexpr auto yyjson::annotations<Request> = yyjson::annotate(yyjson::additional_properties(false));
 
 yyjson::read<Request>(R"({"method":"get","verbose":true})");
-// throws: Request has the key "verbose", which yyjson::additional_properties(false) rejects at /verbose (line 1, column 27, pos 26)
+// throws: the object has a key that is not allowed at /verbose (line 1, column 27, pos 26); reading Request, which yyjson::additional_properties(false) closes
 ```
 
 *   The setting is a part of the type, not a read policy. `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>` apply it, with or without the read policies.
@@ -82,7 +82,7 @@ auto item = yyjson::read<Item>(R"({"name":"pen","red":2,"blue":5})");
 auto json = yyjson::write(item);
 // -> {"name":"pen","blue":5,"red":2}
 yyjson::read<Item>(R"({"name":"pen","red":-1})");
-// throws: the value of the key "red" of Item is less than the minimum 0 at /red (line 1, column 21, pos 20)
+// throws: the number is less than the minimum 0 at /red (line 1, column 21, pos 20); reading a member value of Item
 ```
 
 *   The keys of the map must be strings, as in `std::map` and `std::unordered_map`. A map of `yyjson::value` takes a value of each kind. Another type of the field is a compile error.
@@ -119,7 +119,7 @@ auto sensor = yyjson::read<Sensor>(R"({"name":"s1","t_in":21.5,"l_room":"lab","x
 auto json = yyjson::write(sensor);
 // -> {"name":"s1","t_in":21.5,"l_room":"lab"}
 yyjson::read<Sensor>(R"({"name":"s1","t_out":-60})");
-// throws: the value of the key "t_out" of Sensor is less than the minimum -50 at /t_out (line 1, column 22, pos 21)
+// throws: the number is less than the minimum -50 at /t_out (line 1, column 22, pos 21); reading a member value of Sensor
 ```
 
 *   A key that no field and no tag names goes into the map of the first field whose pattern matches it. The fields are in the order of the members. The field of `yyjson::extra_keys` receives a key that no pattern matches. Without that field, the key is unknown.
@@ -151,7 +151,7 @@ template <>
 inline constexpr auto yyjson::annotations<Patch> = yyjson::annotate(yyjson::min_properties(1));
 
 yyjson::read<Patch>("{}");
-// throws: Patch has fewer properties than the minimum 1 (line 1, column 1, pos 0)
+// throws: the object has fewer properties than the minimum 1 (line 1, column 1, pos 0); reading Patch
 ```
 
 *   The settings are a part of the type, as `yyjson::additional_properties(false)` is. `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>` apply them, with or without the read policies.
@@ -177,7 +177,7 @@ template <>
 inline constexpr auto yyjson::annotations<Server> = yyjson::annotate(yyjson::property_names(yyjson::max_length(4)));
 
 yyjson::read<Server>(R"({"host":"a","port":80,"timeout":5})");
-// throws: a key of Server is longer than the maximum length 4 at /timeout (line 1, column 33, pos 32)
+// throws: the key is longer than the maximum length 4 at /timeout (line 1, column 33, pos 32); reading a key of Server
 ```
 
 *   The setting is a part of the type, as `yyjson::additional_properties(false)` is. `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>` apply it, with or without the read policies.
@@ -228,7 +228,7 @@ yyjson::write(b);  // {"limit":null}
 
 Without `std::optional`, a field of type `yyjson::nullable<V>`, `std::shared_ptr<V>` or `std::variant<std::monostate, V>` cannot tell `null` from a missing key. Both leave it empty or give it `std::monostate`, unless a default member initializer gives it another value. A missing key of a `yyjson::nullable<V>` field keeps its value in `T()`, as for a field of `V`, and `yyjson::reject_missing_keys` rejects the missing key.
 
-`yyjson::read<T>`, `read_into` and `cast<T>` throw `yyjson::bad_cast` for `null` in a field that is not a `std::optional` and does not read `null`. For example, `int retries = 3;` with `{"retries":null}` gives `int is not constructible from JSON null at /retries (line 1, column 12, pos 11)`.
+`yyjson::read<T>`, `read_into` and `cast<T>` throw `yyjson::bad_cast` for `null` in a field that is not a `std::optional` and does not read `null`. For example, `int retries = 3;` with `{"retries":null}` gives `expected an integer, got null at /retries (line 1, column 12, pos 11); reading int`.
 
 `merge_into` keeps the current value of a field whose key is missing. `null` gives a field its default, whatever the type of the field is: the value of its `yyjson::default_from<f>`, or else its value in `T()`. `null` for a key that the struct requires throws `yyjson::bad_cast`, because the [merged object](#how-constraints-are-checked) does not have the key. `null` as the whole text throws `yyjson::bad_cast` when `T` is a struct.
 
@@ -264,7 +264,7 @@ struct Point
 auto p = yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::strict);
 auto q = yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::ReadFlag::AllowComments, yyjson::strict, yyjson::reject_unknown_keys);
 yyjson::read<Point>(R"({"x":1})", yyjson::strict);
-// throws: Point is not constructible from JSON without the key "y" (line 1, column 1, pos 0)
+// throws: a required key is missing (line 1, column 1, pos 0); reading the key "y" of Point
 ```
 
 `read<T>`, `read_into`, `merge_into`, `cast<T>` and the member function `cast<T>` of a JSON value take the policies.
@@ -282,7 +282,7 @@ template <>
 inline constexpr auto yyjson::annotations<Request> = yyjson::annotate(yyjson::reject_unknown_keys);
 
 yyjson::read<Request>(R"({"method":"get","verbose":true})");
-// throws: Request has no field of the key "verbose" at /verbose (line 1, column 27, pos 26)
+// throws: the object has a key that is not allowed at /verbose (line 1, column 27, pos 26); reading Request
 ```
 
 The policies of a struct apply only to the objects read into that struct. They do not apply to the types of its fields. A read uses the policies of the call together with the policies of the struct. A policy can only add a check, so neither one can turn off a check of the other.
@@ -336,32 +336,32 @@ int main()
     }
     catch (const yyjson::bad_cast& e)
     {
-        std::cerr << e.what() << '\n';  // the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
+        std::cerr << e.what() << '\n';  // the number is less than the minimum 0 at /age (line 1, column 21, pos 20); reading the key "age" of User
     }
 }
 ```
 
-The constraints have the names of the keywords of [JSON Schema](https://json-schema.org/draft/2020-12), and they accept the values that the keywords accept. [JSON Schema keywords](#json-schema-keywords) gives the differences. The table below gives the constraints of one value. A value that a constraint rejects throws `yyjson::bad_cast`. The message is `the value of the key "k" of T`, and then the text in the last column:
+The constraints have the names of the keywords of [JSON Schema](https://json-schema.org/draft/2020-12), and they accept the values that the keywords accept. [JSON Schema keywords](#json-schema-keywords) gives the differences. The table below gives the constraints of one value. A value that a constraint rejects throws `yyjson::bad_cast`. The message is the text in the last column. The note at the end of `what()` names the field, as in `reading the key "k" of T`:
 
 | Constraint | The field | Rejects a value | Message |
 | --- | --- | --- | --- |
-| `yyjson::const_(v)` | a string, a number, a `bool` or an enumeration written by name; any type with `yyjson::json_text` | not equal to `v` | `is not equal to the constant v` |
-| `yyjson::enum_(v...)` | as `yyjson::const_` | equal to none of `v...` | `is not one of v...` |
-| `yyjson::minimum(m)` | a number | less than `m` | `is less than the minimum m` |
-| `yyjson::maximum(m)` | a number | greater than `m` | `is greater than the maximum m` |
-| `yyjson::exclusive_minimum(m)` | a number | `m` or less | `is not greater than the exclusive minimum m` |
-| `yyjson::exclusive_maximum(m)` | a number | `m` or greater | `is not less than the exclusive maximum m` |
-| `yyjson::multiple_of(m)` | a number | not an integer multiple of `m` | `is not a multiple of m` |
-| `yyjson::min_length(n)` | a string | of fewer than `n` code points | `is shorter than the minimum length n` |
-| `yyjson::max_length(n)` | a string | of more than `n` code points | `is longer than the maximum length n` |
-| `yyjson::pattern("regex")` | a string | in which the regular expression matches nowhere | `does not match the pattern "regex"`. With more than one pattern: `does not match all of the patterns "a", "b"` |
-| `yyjson::format_assertion("name")` | a string | that does not have the [format](#formats) `name` | `does not have the format "name"` |
+| `yyjson::const_(v)` | a string, a number, a `bool` or an enumeration written by name; any type with `yyjson::json_text` | not equal to `v` | `the value is not equal to the constant v` |
+| `yyjson::enum_(v...)` | as `yyjson::const_` | equal to none of `v...` | `the value is not one of v...` |
+| `yyjson::minimum(m)` | a number | less than `m` | `the number is less than the minimum m` |
+| `yyjson::maximum(m)` | a number | greater than `m` | `the number is greater than the maximum m` |
+| `yyjson::exclusive_minimum(m)` | a number | `m` or less | `the number is not greater than the exclusive minimum m` |
+| `yyjson::exclusive_maximum(m)` | a number | `m` or greater | `the number is not less than the exclusive maximum m` |
+| `yyjson::multiple_of(m)` | a number | not an integer multiple of `m` | `the number is not a multiple of m` |
+| `yyjson::min_length(n)` | a string | of fewer than `n` code points | `the string is shorter than the minimum length n` |
+| `yyjson::max_length(n)` | a string | of more than `n` code points | `the string is longer than the maximum length n` |
+| `yyjson::pattern("regex")` | a string; needs a [pattern matcher](#pattern-matcher) | in which the regular expression matches nowhere | `the string does not match the pattern "regex"`. With more than one pattern: `the string does not match all of the patterns "a", "b"` |
+| `yyjson::format_assertion("name")` | a string | that does not have the [format](#formats) `name` | `the string does not have the format "name"` |
 | `yyjson::format("name")` | a string | none: it is an annotation only | |
-| `yyjson::min_items(n)` | a range, a tuple or a map written as an array | with fewer than `n` elements | `has fewer items than the minimum n` |
-| `yyjson::max_items(n)` | as `yyjson::min_items` | with more than `n` elements | `has more items than the maximum n` |
-| `yyjson::min_properties(n)` | a map written as an object | with fewer than `n` members | `has fewer properties than the minimum n` |
-| `yyjson::max_properties(n)` | a map written as an object | with more than `n` members | `has more properties than the maximum n` |
-| `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` | `is rejected by yyjson::satisfies` |
+| `yyjson::min_items(n)` | a range, a tuple or a map written as an array | with fewer than `n` elements | `the array has fewer items than the minimum n` |
+| `yyjson::max_items(n)` | as `yyjson::min_items` | with more than `n` elements | `the array has more items than the maximum n` |
+| `yyjson::min_properties(n)` | a map written as an object | with fewer than `n` members | `the object has fewer properties than the minimum n` |
+| `yyjson::max_properties(n)` | a map written as an object | with more than `n` members | `the object has more properties than the maximum n` |
+| `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` | `the value does not satisfy the predicate` |
 
 ```cpp
 struct Order
@@ -379,11 +379,11 @@ inline constexpr auto yyjson::annotations<Order> =
                      yyjson::field("contact", yyjson::format("email")));
 
 yyjson::read<Order>(R"({"version":3})");
-// throws: the value of the key "version" of Order is not equal to the constant 2 at /version (line 1, column 12, pos 11)
+// throws: the value is not equal to the constant 2 at /version (line 1, column 12, pos 11); reading the key "version" of Order
 yyjson::read<Order>(R"({"unit":"km"})");
-// throws: the value of the key "unit" of Order is not one of "mm", "cm", "m" at /unit (line 1, column 9, pos 8)
+// throws: the value is not one of "mm", "cm", "m" at /unit (line 1, column 9, pos 8); reading the key "unit" of Order
 yyjson::read<Order>(R"({"created":"2024-05-01"})");
-// throws: the value of the key "created" of Order does not have the format "date-time" at /created (line 1, column 12, pos 11)
+// throws: the string does not have the format "date-time" at /created (line 1, column 12, pos 11); reading the key "created" of Order
 yyjson::read<Order>(R"({"contact":"not an address"})");
 // -> Order{2, "", "", "not an address"}: yyjson::format does not check the value
 ```
@@ -408,12 +408,12 @@ inline constexpr auto yyjson::annotations<Survey> = yyjson::annotate(
     yyjson::field("groups", yyjson::items(yyjson::min_items(1), yyjson::items(yyjson::max_length(32)))));
 
 yyjson::read<Survey>(R"({"scores":[90,101]})");
-// throws: an element of the value of the key "scores" of Survey is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14)
+// throws: the number is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14); reading an element of the value at the key "scores" of Survey
 yyjson::read<Survey>(R"({"groups":[["a"],["b",""],[]]})");
-// throws: an element of the value of the key "groups" of Survey has fewer items than the minimum 1 at /groups/2 (line 1, column 27, pos 26)
+// throws: the array has fewer items than the minimum 1 at /groups/2 (line 1, column 27, pos 26); reading an element of the value at the key "groups" of Survey
 ```
 
-*   The message starts with `an element of the value of the key "k" of T` for an element at any level and for a value of a map. The path points to the element, such as `/limits/b` for the value of the key `b`.
+*   The note at the end of `what()` is `reading an element of the value at the key "k" of T` for an element at any level and for a value of a map. The path points to the element, such as `/limits/b` for the value of the key `b`.
 *   `yyjson::items` applies to a value that is written as a JSON array: a `std::vector`, a set, a `std::array`, a tuple and a map whose keys are not strings. Such a map is read from an array of `[key, value]` pairs. It also takes `yyjson::additional_properties`, which constrains the second element of each pair. The other settings of a JSON object on such a map are a compile error.
 *   `yyjson::additional_properties` applies to a value that is written as a JSON object: a map whose keys are strings or enumerations, a struct, and a `std::variant` that holds one of them. It checks each member whose key `yyjson::property` at the same position does not name. A field does not name its key in this way. The member of the tag of a `std::variant` is a member too.
 *   An element of a `std::optional`, a smart pointer or a `std::variant` of `std::monostate` and one type is checked through the value that it holds. An empty element satisfies the constraints, except `yyjson::const_` and `yyjson::enum_` without `nullptr`.
@@ -423,10 +423,10 @@ Four more settings constrain the elements together, the positions of an array an
 
 | Setting | The field | Rejects a value | Message | Path |
 | --- | --- | --- | --- | --- |
-| `yyjson::unique_items` | a range whose elements can be equal, such as `std::vector` | with an element that is written as the same JSON value as an earlier one | `an element of the value of the key "k" of T is equal to an earlier element` | the later element |
-| `yyjson::prefix_items(p...)` | a tuple, or a range that keeps the order of the JSON array | whose element `i` does not satisfy the settings `p` at the position `i` | `an element of the value of the key "k" of T`, and then the text of the constraint | the element |
-| `yyjson::contains(s...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(m)` | a range written as a JSON array | with fewer than `n`, or more than `m`, elements that satisfy `s` | `the value of the key "k" of T has no item that satisfies the constraints of yyjson::contains`, `has fewer than n items ...` or `has more than m items ...` | the field |
-| `yyjson::property_names(s...)` | a map written as a JSON object. For a struct, see [The names of the members of a struct](#the-names-of-the-members-of-a-struct) | with a key that does not satisfy `s` | `a key of the value of the key "k" of T`, and then the text of the constraint | the member of the key |
+| `yyjson::unique_items` | a range whose elements can be equal, such as `std::vector` | with an element that is written as the same JSON value as an earlier one | `the item is equal to an earlier item` | the later element |
+| `yyjson::prefix_items(p...)` | a tuple, or a range that keeps the order of the JSON array | whose element `i` does not satisfy the settings `p` at the position `i` | the text of the constraint | the element |
+| `yyjson::contains(s...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(m)` | a range written as a JSON array | with fewer than `n`, or more than `m`, elements that satisfy `s` | `the array has no item that satisfies contains`, `the array has fewer than n items that satisfy contains` or `the array has more than m items that satisfy contains` | the field |
+| `yyjson::property_names(s...)` | a map written as a JSON object. For a struct, see [The names of the members of a struct](#the-names-of-the-members-of-a-struct) | with a key that does not satisfy `s` | the text of the constraint, with the subject `the key` | the member of the key |
 
 ```cpp
 struct Job
@@ -444,19 +444,19 @@ inline constexpr auto yyjson::annotations<Job> = yyjson::annotate(
     yyjson::field("env", yyjson::property_names(yyjson::pattern("^[A-Z_]+$"))));
 
 yyjson::read<Job>(R"({"tags":["a","b","a"]})");
-// throws: an element of the value of the key "tags" of Job is equal to an earlier element at /tags/2 (line 1, column 18, pos 17)
+// throws: the item is equal to an earlier item at /tags/2 (line 1, column 18, pos 17); reading an element of the value at the key "tags" of Job
 yyjson::read<Job>(R"({"range":[0,101]})");
-// throws: an element of the value of the key "range" of Job is greater than the maximum 100 at /range/1 (line 1, column 13, pos 12)
+// throws: the number is greater than the maximum 100 at /range/1 (line 1, column 13, pos 12); reading an element of the value at the key "range" of Job
 yyjson::read<Job>(R"({"steps":[10,20,30]})");
-// throws: the value of the key "steps" of Job has more than 2 items that satisfy the constraints of yyjson::contains at /steps (line 1, column 10, pos 9)
+// throws: the array has more than 2 items that satisfy contains at /steps (line 1, column 10, pos 9); reading the key "steps" of Job
 yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
-// throws: a key of the value of the key "env" of Job does not match the pattern "^[A-Z_]+$" at /env/home (line 1, column 30, pos 29)
+// throws: the key does not match the pattern "^[A-Z_]+$" at /env/home (line 1, column 30, pos 29); reading a key of the value at the key "env" of Job
 ```
 
 *   `yyjson::unique_items` compares the elements as the JSON values that they are written as. Values of the DOM compare as JSON, so `1` and `1.0` are equal. `0.0` and `-0.0` are equal, and NaN is equal to nothing. Elements of different types are equal when their JSON values are equal. A set and a map hold no equal elements, but the JSON array that the read reads can. Thus `yyjson::unique_items` on a set or on a map read from pairs rejects such an array, such as `[1,1]`. Without the setting, the read accepts the array.
 *   `yyjson::prefix_items` takes one braced list of settings for each position. Give `{}` for a position without settings, or give a single setting without braces, as in `yyjson::prefix_items({yyjson::minimum(0)}, {}, yyjson::max_length(8))`. An array that a range reads can have fewer elements than positions, as in JSON Schema. A tuple reads only an array of as many elements as it has. With `yyjson::items` on the same field, `yyjson::items` constrains only the elements after the positions.
 *   Without `yyjson::min_contains`, `yyjson::contains` needs one element at least. `yyjson::min_contains(0)` accepts an array in which no element satisfies the settings. An empty element, such as `null` in a `std::vector<std::optional<int>>`, satisfies the settings, except `yyjson::const_` and `yyjson::enum_` without `nullptr`.
-*   `yyjson::property_names` takes the constraints of a string. It checks a key of an enumeration as the name of the enumerator. A key that the JSON does not give at a member fails at the map: a key of a map that is read from an array of pairs. The message is then `has a key that does not satisfy the constraints of yyjson::property_names`.
+*   `yyjson::property_names` takes the constraints of a string. It checks a key of an enumeration as the name of the enumerator. A key that the JSON does not give at a member fails at the map: a key of a map that is read from an array of pairs. The message is then `the object has a key that does not satisfy propertyNames`.
 *   `yyjson::format` in `yyjson::items` and the other settings of elements is an annotation too. It checks nothing.
 
 ### Values of several JSON kinds
@@ -480,12 +480,12 @@ inline constexpr auto yyjson::annotations<Sized> =
                      yyjson::field("tag", yyjson::enum_(1, "x", nullptr)));
 
 yyjson::read<Sized>(R"({"size":-1})");
-// throws: the value of the key "size" of Sized is less than the minimum 0 at /size (line 1, column 9, pos 8)
+// throws: the number is less than the minimum 0 at /size (line 1, column 9, pos 8); reading the key "size" of Sized
 yyjson::read<Sized>(R"({"size":"abc"})");
-// throws: the value of the key "size" of Sized is longer than the maximum length 2 at /size (line 1, column 9, pos 8)
+// throws: the string is longer than the maximum length 2 at /size (line 1, column 9, pos 8); reading the key "size" of Sized
 yyjson::read<Sized>(R"({"size":"ab","tag":1.0})");  // -> accepted: 1.0 is equal to 1
 yyjson::read<Sized>(R"({"tag":[]})");
-// throws: the value of the key "tag" of Sized is not one of 1, "x", null at /tag (line 1, column 8, pos 7)
+// throws: the value is not one of 1, "x", null at /tag (line 1, column 8, pos 7); reading the key "tag" of Sized
 ```
 
 *   `yyjson::const_` and `yyjson::enum_` take an alternative that is an enumeration written by name as a string. They compare the name of its enumerator. The lengths, `yyjson::pattern` and `yyjson::format_assertion` check that name too. On an enumeration written as an integer, and on a variant without an alternative written as a string, they are a compile error. On a variant, they check only a value that is written as a string.
@@ -526,9 +526,9 @@ inline constexpr auto yyjson::annotations<Post> =
     yyjson::annotate(yyjson::field("tags", yyjson::max_items(2), yyjson::max_length(4)));
 
 yyjson::read<Post>(R"({"tags":["a","b","c"]})");
-// throws: the value of the key "tags" of Post has more items than the maximum 2 at /tags (line 1, column 9, pos 8)
+// throws: the array has more items than the maximum 2 at /tags (line 1, column 9, pos 8); reading the key "tags" of Post
 yyjson::read<Post>(R"({"tags":"cpp20"})");
-// throws: the value of the key "tags" of Post is longer than the maximum length 4 at /tags (line 1, column 9, pos 8)
+// throws: the string is longer than the maximum length 4 at /tags (line 1, column 9, pos 8); reading the key "tags" of Post
 yyjson::read<Post>(R"({"tags":["cpp20"]})");  // -> accepted: the value is an array
 ```
 
@@ -574,11 +574,11 @@ inline constexpr auto yyjson::annotations<Server> = yyjson::annotate(
     yyjson::field("ratio", yyjson::any_of({yyjson::minimum(0), yyjson::maximum(1)}, yyjson::const_(-1))));
 
 yyjson::read<Server>(R"({"port":81})");
-// throws: the value of the key "port" of Server satisfies neither the settings of yyjson::if_ nor those of yyjson::else_ at /port (line 1, column 9, pos 8)
+// throws: the value satisfies neither if nor else at /port (line 1, column 9, pos 8); reading the key "port" of Server
 yyjson::read<Server>(R"({"workers":6})");
-// throws: the value of the key "workers" of Server satisfies more than one subschema of yyjson::one_of at /workers (line 1, column 12, pos 11)
+// throws: the value satisfies more than one subschema of oneOf at /workers (line 1, column 12, pos 11); reading the key "workers" of Server
 yyjson::read<Server>(R"({"ratio":2})");
-// throws: the value of the key "ratio" of Server satisfies none of the subschemas of yyjson::any_of at /ratio (line 1, column 10, pos 9)
+// throws: the value satisfies none of the subschemas of anyOf at /ratio (line 1, column 10, pos 9); reading the key "ratio" of Server
 ```
 
 *   `yyjson::if_then_else` can leave out `yyjson::then` or `yyjson::else_`. A part that it leaves out accepts every value.
@@ -609,7 +609,7 @@ inline constexpr auto yyjson::annotations<Scene> =
 
 yyjson::read<Scene>(R"({"shapes":[1,{"x":1,"y":2}]})");  // -> accepted
 yyjson::read<Scene>(R"({"shapes":[1,{"x":1}]})");
-// throws: the value of the key "shapes" of Scene has no item that satisfies the constraints of yyjson::contains at /shapes (line 1, column 11, pos 10)
+// throws: the array has no item that satisfies contains at /shapes (line 1, column 11, pos 10); reading the key "shapes" of Scene
 
 auto doc = yyjson::read(R"({"x":1,"y":2})");
 bool b = yyjson::matches<Point>(doc);  // -> true
@@ -651,19 +651,19 @@ inline constexpr auto yyjson::annotations<Shipment> = yyjson::annotate(yyjson::i
     yyjson::then(yyjson::required("address"), yyjson::property("address", yyjson::min_length(1)))));
 
 yyjson::read<Contact>(R"({"email":"a@example.com"})");
-// throws: Contact is not constructible from JSON without all the keys of one of ["name"], ["id"] (line 1, column 1, pos 0)
+// throws: the value satisfies none of the subschemas of anyOf (line 1, column 1, pos 0); reading Contact without all the keys of one of ["name"], ["id"]
 yyjson::read<Contact>(R"({"id":1,"email":"a","phone":"1"})");
-// throws: Contact is not constructible from JSON with all the keys of more than one of ["email"], ["phone"] (line 1, column 1, pos 0)
+// throws: the value satisfies more than one subschema of oneOf (line 1, column 1, pos 0); reading Contact with all the keys of more than one of ["email"], ["phone"]
 yyjson::read<Shipment>(R"({"method":"post"})");
-// throws: Shipment is not constructible from JSON without the key "address", which yyjson::if_then_else requires (line 1, column 1, pos 0)
+// throws: a required key is missing (line 1, column 1, pos 0); reading the key "address" of Shipment, which yyjson::if_then_else requires
 yyjson::read<Shipment>(R"({"method":"post","address":""})");
-// throws: the value of the key "address" of Shipment is shorter than the minimum length 1 at /address (line 1, column 28, pos 27)
+// throws: the value satisfies if and not then at /address (line 1, column 28, pos 27); reading the key "address" of Shipment
 ```
 
 *   The key is the JSON key of the member, after a [`yyjson::rename`](conversions.md#json-keys).
 *   The object has a key when the read gets the key from the JSON. A value that a field has in `T()` does not count. A key with `null` counts when the type of the field can hold `null`, such as a `yyjson::nullable`, a pointer or a `std::variant` of `std::monostate`. Its empty value then satisfies the constraints, except `yyjson::const_` and `yyjson::enum_` without `nullptr`. A key with `null` that the read reads as a missing key counts as missing, as in [`null` in a `std::optional`](#null-in-a-stdoptional).
 *   `yyjson::property` without `yyjson::required` accepts an object without the key. Thus `yyjson::not_(yyjson::property("a", yyjson::minimum(5)))` rejects `{}`. Add `yyjson::required("a")` to the subschema to reject only an object that has the key with such a value.
-*   Each subschema of a `yyjson::one_of` or a `yyjson::any_of` can be one `yyjson::required("key", ...)`. Then the message gives the keys of the subschemas in their order, as in the example above.
+*   Each subschema of a `yyjson::one_of` or a `yyjson::any_of` can be one `yyjson::required("key", ...)`. Then the note gives the keys of the subschemas in their order, as in the example above.
 *   `read_into` checks the keys of the text that it reads.
 *   `merge_into` checks the conditions on the [merged object](#how-constraints-are-checked). Thus the merged object keeps each field that the patch leaves out and that `yyjson::write` gives. It does not have a member with `null` in the patch. A keyword in a condition checks such a kept field on its value, as `yyjson::write` writes it. Thus `yyjson::min_items` counts the elements of a kept `std::set`.
 *   The error of a condition is at the struct, with an empty path. The error of the value of a member is at the member.
@@ -700,16 +700,16 @@ inline constexpr auto yyjson::annotations<Billing> =
     yyjson::annotate(yyjson::dependent_required("card", {"address", "postal"}));
 
 yyjson::read<Measure>(R"({"value":1})");
-// throws: Measure is not constructible from JSON without all the keys of one of ["env"], ["value", "unit"] (line 1, column 1, pos 0)
+// throws: the value satisfies none of the subschemas of oneOf (line 1, column 1, pos 0); reading Measure without all the keys of one of ["env"], ["value", "unit"]
 yyjson::read<Measure>(R"({"env":"a","value":1,"unit":"m"})");
-// throws: Measure is not constructible from JSON with all the keys of more than one of ["env"], ["value", "unit"] (line 1, column 1, pos 0)
+// throws: the value satisfies more than one subschema of oneOf (line 1, column 1, pos 0); reading Measure with all the keys of more than one of ["env"], ["value", "unit"]
 yyjson::read<Billing>(R"({"card":"c","postal":"1"})");
-// throws: Billing is not constructible from JSON without the key "address", which yyjson::dependent_required requires (line 1, column 1, pos 0)
+// throws: the object does not have all the keys that dependentRequired requires (line 1, column 1, pos 0); reading the key "address" of Billing, which yyjson::dependent_required requires
 ```
 
 *   The strings are the keys that the struct can write, as for [`yyjson::property`](#keywords-of-an-object-at-a-field). These are the JSON keys of the fields, after [`yyjson::rename`](conversions.md#json-keys), and the keys of the tags. A struct with a field of `yyjson::extra_keys` or `yyjson::pattern_properties` can write any key. Another string is a compile error. A [skipped field](conversions.md#skipped-fields) has no key.
 *   The object has a key as in the conditions above. Thus `null` in a `std::optional` field is a missing key, and `null` in a `yyjson::nullable` field is a key. `read_into` and `merge_into` check the keys as the conditions do.
-*   `yyjson::any_of` of `yyjson::required` has the same message as `yyjson::one_of` without the keys of a group. The message gives the groups in their order.
+*   For `yyjson::any_of` of `yyjson::required` without the keys of a group, the note is the same as for `yyjson::one_of`. The note gives the groups in their order.
 *   A struct can have more than one of these settings and the other conditions. The object must satisfy all of them. The read checks them in the order of `yyjson::annotate`, after the keys, the number of members and the values of the fields.
 *   An empty list of keys is a compile error. So is a key given twice in one list or in one `yyjson::required`, and `yyjson::dependent_required` that lists its own key. Two groups can share a key.
 *   `yyjson::required("key", ...)` on the struct, or in its `yyjson::all_of`, on the key of a field with a default is a compile error, as `yyjson::field("member", yyjson::required, yyjson::default_)` is.
@@ -734,9 +734,9 @@ inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(yyjson::if_t
     yyjson::else_(yyjson::max_properties(2))));
 
 yyjson::read<Shape>(R"({"kind":"circle","r":1,"w":2})");
-// throws: Shape has the key "w", which yyjson::additional_properties(false) of yyjson::if_then_else rejects at /w (line 1, column 28, pos 27)
+// throws: the value satisfies if and not then at /w (line 1, column 28, pos 27); reading Shape in yyjson::if_then_else
 yyjson::read<Shape>(R"({"kind":"square","r":1,"w":2})");
-// throws: Shape has more properties than the maximum 2 of yyjson::if_then_else (line 1, column 1, pos 0)
+// throws: the value satisfies neither if nor else (line 1, column 1, pos 0); reading Shape in yyjson::if_then_else
 ```
 
 *   `yyjson::additional_properties(false)` in a subschema accepts only the keys that `yyjson::property` names in the same subschema, and the keys of the [tags](conversions.md#tagged-variants). `yyjson::property("key")` without settings names a key and puts no other condition on it. `yyjson::required("key")` does not name a key for `yyjson::additional_properties(false)`, as in JSON Schema. Thus the example gives `yyjson::property("r")` together with `yyjson::required("r")`.
@@ -744,7 +744,7 @@ yyjson::read<Shape>(R"({"kind":"square","r":1,"w":2})");
 *   The count keywords count the members of the JSON object, as on the [struct](#the-number-of-members-of-a-struct). `yyjson::property_names` checks each key of the object, as on the [struct](#the-names-of-the-members-of-a-struct).
 *   `merge_into` takes the members of the [merged object](#how-constraints-are-checked), as for the other conditions.
 *   A subschema checks the keys first: `yyjson::additional_properties(false)`, then `yyjson::property_names`, then the number of the members. It then checks the fields and its other conditions.
-*   The message names the combinator of the struct. The error of a key has the path of the member of the key. The other errors have the path of the object.
+*   The message names the keyword of the combinator, and the note names the combinator of the struct. The error of a key has the path of the member of the key. The other errors have the path of the object.
 
 #### Keywords of an object at a field
 
@@ -767,9 +767,9 @@ inline constexpr auto yyjson::annotations<Path> = yyjson::annotate(
     yyjson::field("points", yyjson::items(yyjson::min_properties(1))));
 
 yyjson::read<Path>(R"({"start":{"x":1,"y":2}})");
-// throws: the value of the key "start" of Path has a key that yyjson::additional_properties(false) rejects at /start (line 1, column 10, pos 9)
+// throws: the object has a key that additionalProperties does not allow at /start (line 1, column 10, pos 9); reading the key "start" of Path
 yyjson::read<Path>(R"({"points":[{"x":1},{}]})");
-// throws: an element of the value of the key "points" of Path has fewer properties than the minimum 1 at /points/1 (line 1, column 20, pos 19)
+// throws: the object has fewer properties than the minimum 1 at /points/1 (line 1, column 20, pos 19); reading an element of the value at the key "points" of Path
 ```
 
 *   `yyjson::property`, `yyjson::required("key", ...)` and `yyjson::dependent_required` name a key that the struct at the position can write. This is the JSON key of a field or the key of a [`yyjson::adjacent_tag`](conversions.md#tagged-variants). A struct with a field of [`yyjson::extra_keys`](#keys-that-no-field-names) or [`yyjson::pattern_properties`](#keys-that-a-pattern-matches) can write any key. At the position of a `std::variant` with a [`yyjson::internal_tag`](conversions.md#internal-tag), the key of the tag is such a key too. Another key is a compile error. For a `std::variant`, each struct alternative must write the key. The `yyjson::annotate` of a struct does not know the variant that holds the struct, so it does not take the key of that tag. The read checks the key in the JSON object that it reads, and `yyjson::validate` checks it in the written object.
@@ -902,11 +902,11 @@ The check follows these rules:
     *   For `yyjson::additional_properties(false)`, `yyjson::property_names`, `yyjson::min_properties`, `yyjson::max_properties`, the conditions of a struct and the maps of keys, the check needs the written object. It writes the outermost such struct one time, and reads the JSON into a document. The structs in it use the same document. Thus the check allocates memory for these structs.
 *   A key that the write leaves out is a missing key for these constraints. An example is a field with `yyjson::default_` that has its default value. If a `yyjson::dependent_required` of the struct names the key, the check rejects the struct, as a read of the written JSON does. To write the key, give `yyjson::emit_defaults` on the field or in the call. No write gives a field that is equal to a [sentinel](conversions.md#default-values-and-required-keys), so its key is always missing.
 *   It checks each value of a map of `yyjson::extra_keys` against the constraints in `yyjson::additional_properties` of the field. It checks each value of a map of `yyjson::pattern_properties` against the constraints of each pattern that matches its key.
-*   A read puts a key into the map of the first pattern that matches it. It puts the other keys into the map of `yyjson::extra_keys`. If a read puts a key into a field other than the map that writes the key, the check rejects the key. Its message is like `the key "abc" of the field "a" of S is read into the field "ab"`. If no field takes the key, the message ends in `is read into no field`.
+*   A read puts a key into the map of the first pattern that matches it. It puts the other keys into the map of `yyjson::extra_keys`. If a read puts a key into a field other than the map that writes the key, the check rejects the key. Its message is `the value is not valid`, and `what()` is like `the value is not valid at /abc; validating S: a read gives this key of the field "a" to the field "ab"`. If no field takes the key, `what()` ends in `to no field`.
 *   It checks the settings of the whole array of a struct with `yyjson::as_array`. These are `yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, the settings of `yyjson::contains`, and the combinators of the struct that hold them. The check counts the elements of the written array: the fields that the write writes, and then the elements of the field of `yyjson::extra_items`. The message and the path are those of a read. For `yyjson::unique_items`, the path is the later of the two equal elements.
     *   An empty `std::optional` field before a written value makes the write throw `yyjson::write_error`. For such a struct, the check does not check the settings of the whole array. A `write` with `yyjson::with_validation` then throws the `yyjson::write_error`.
     *   If a subschema of `yyjson::contains` holds a keyword of an object, such as `yyjson::max_properties`, the check needs the written array. If no struct around it gives that array, the check writes the struct one time. Thus the check allocates memory for this struct.
-*   It rejects a key that the write writes twice in one object. A `std::multimap`, a `std::unordered_multimap`, a range of pairs such as `std::vector<std::pair<std::string, int>>`, and a tuple of pairs can write a key twice. The message is like `the object read into std::multimap<std::string, int> has the key "a" twice`, and the path is the second member with that key.
+*   It rejects a key that the write writes twice in one object. A `std::multimap`, a `std::unordered_multimap`, a range of pairs such as `std::vector<std::pair<std::string, int>>`, and a tuple of pairs can write a key twice. `what()` is like `the object has a duplicate key at /a; reading std::multimap<std::string, int>`, and the path is the second member with that key.
     *   The check rejects the key in every call, but a read without `yyjson::reject_duplicates` accepts it. RFC 8259 says that the names in an object should be unique, and a read with `yyjson::strict` rejects the key.
     *   The check compares the written text of the keys. A `std::multimap` or a `std::unordered_multimap` with keys of `std::string`, `std::string_view` or an enumeration and the default comparison keeps equal keys next to each other. The check needs no memory for such a map. For a range of pairs and for the other maps, the check needs no memory for 16 keys or fewer, and allocates memory for more keys.
     *   A `std::map` or a `std::unordered_map` with keys of `std::string`, `std::string_view` or an enumeration cannot write a key twice, so the check does nothing for it. With other keys, two keys that are not equal can have the same text, so the check checks the map. An example is `std::map<const char*, int>`, which compares the pointers.
@@ -925,7 +925,7 @@ The check follows these rules:
 *   For a `std::variant`, the check checks the alternative that the variant holds. For a `yyjson::any_of_variant` and a `yyjson::one_of_variant`, it also checks the settings of the `yyjson::alt` of that alternative.
     *   A variant with an internal tag or an adjacent tag checks only the alternative that the tag names. The message is that of the alternative.
     *   If the read of the written JSON gives an alternative, an untagged variant accepts the value, as `anyOf` and `oneOf` of JSON Schema do. This read rejects a missing key, as a read with `yyjson::reject_missing_keys` does, because the JSON Schema of the write makes each such key [required](conversions.md#default-values-and-required-keys). Thus, if another alternative reads the JSON with all of its required keys, the check accepts a value whose alternative fails its check. Then `yyjson::read<T>(yyjson::write(t))` holds the other alternative. Its JSON can differ from the written JSON, because the other alternative can ignore some keys. For example, a `std::variant<std::multimap<std::string, int>, yyjson::value>` that holds a repeated key passes, because `yyjson::value` reads the JSON. If no alternative reads the JSON, the message is the message of the read.
-    *   For a `yyjson::one_of_variant`, the check also rejects the value when another alternative reads the written JSON. The message is like `the value matches the alternatives 0 and 1 of V`.
+    *   For a `yyjson::one_of_variant`, the check also rejects the value when another alternative reads the written JSON. `what()` is like `the value matches more than one alternative; reading V: the alternatives 0 and 1 match`.
     *   When all of these conditions are true, the check of a variant allocates no memory:
         *   The alternative that the variant holds passes its check.
         *   The settings of the alternative do not count the written JSON, as `yyjson::max_properties` does.
@@ -1010,7 +1010,7 @@ inline constexpr auto yyjson::annotations<Product> =
     yyjson::annotate(yyjson::field("code", yyjson::pattern("^[A-Z]{3}-[0-9]{4}$")));
 
 yyjson::read<Product>(R"({"code":"abc"})");
-// throws: the value of the key "code" of Product does not match the pattern "^[A-Z]{3}-[0-9]{4}$" at /code (line 1, column 9, pos 8)
+// throws: the string does not match the pattern "^[A-Z]{3}-[0-9]{4}$" at /code (line 1, column 9, pos 8); reading the key "code" of Product
 ```
 
 *   Each pattern constructs its matcher once, on its first check. Every read on every thread then uses that matcher. Thus the call operator must be safe to call at the same time from more than one thread, as `std::regex_search` on a `const std::regex` is.
@@ -1065,7 +1065,7 @@ inline constexpr auto yyjson::annotations<Item> =
     yyjson::annotate(yyjson::field("sku", yyjson::format_assertion("sku")));
 
 yyjson::read<Item>(R"({"sku":"abc"})");
-// throws: the value of the key "sku" of Item does not have the format "sku" at /sku (line 1, column 8, pos 7)
+// throws: the string does not have the format "sku" at /sku (line 1, column 8, pos 7); reading the key "sku" of Item
 ```
 
 A `yyjson::format_assertion` without the specialization that it needs is a compile error: a `pattern` or the format `regex` without `yyjson::pattern_matcher<>`, and another format without `yyjson::format_checker<>`.
@@ -1164,7 +1164,14 @@ catch (const yyjson::read_error& e)
 
 ### Conversion errors
 
-A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the JSON value, such as `int is not constructible from JSON string`, followed by the path of the value from the value being cast, and by its position in the text when the text was read by `read<T>`, `read_into` or `merge_into`. The C++ type is spelled as the compiler spells it, such as `std::__cxx11::basic_string<char>`.
+`what()` of a `yyjson::bad_cast` has four parts:
+
+1.  The message, in the words of JSON, such as `expected an integer, got a string`. `message()` returns this part alone. For a number out of range, `what()` adds the number, as in `the number is out of range, got 3000`.
+2.  The path of the value from the value being cast, after ` at `.
+3.  The position in the text, in parentheses, when `read<T>`, `read_into` or `merge_into` read the text.
+4.  A note for the developer, after `; `. It names the C++ type, such as `reading int` or `reading the key "age" of User`. The compiler spells the type, such as `std::__cxx11::basic_string<char>`.
+
+`what()` leaves out each part that is not known. `message()` names no C++ type and holds no text of the input, so a program can show it to a user. A `bad_cast` that a [user-defined caster](conversions.md#user-defined-casters) constructs keeps its own text in `what()`, and `message()` is `the value is not valid`.
 
 ```cpp
 struct Item { int x; };
@@ -1176,7 +1183,9 @@ try
 }
 catch (const yyjson::bad_cast& e)
 {
-    e.what();      // "int is not constructible from JSON string at /items/1/x (line 1, column 24, pos 23)"
+    e.what();      // "expected an integer, got a string at /items/1/x (line 1, column 24, pos 23); reading int"
+    e.message();   // "expected an integer, got a string"
+    e.kind();      // yyjson::error_kind::type
     e.path();      // "/items/1/x"
     e.position();  // yyjson::text_position{.line = 1, .column = 24, .pos = 23}
 }
@@ -1200,13 +1209,16 @@ namespace yyjson
         const char* what() const noexcept override;
         std::string_view path() const noexcept;
         std::optional<text_position> position() const noexcept;
+        error_kind kind() const noexcept;
+        std::string message() const;
+        std::string_view keyword() const noexcept;
     };
 }
 ```
 
 *   `path()` is a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) from the value that `cast`, `read<T>`, `read_into` or `merge_into` was called on: an index for an element of an array, a key for a member of an object, with `~` written as `~0` and `/` as `~1`. It is empty for that value itself. A key that an object has more than once is named by the same path for each of its members, while the position tells which one failed.
 *   `position()` is where the value starts in the text: the line and the column, counted as `yyjson_locate_pos` counts them, with a character for each UTF-8 sequence and without the byte order mark, and the offset `pos` in bytes from the start of the string. A document cast by `cast` has no text and gives no position, nor does a text read with `ReadFlag::AllowExtWhitespace` or `ReadFlag::Json5`, whose whitespace could not be told from a value, or one with a comment or a single-quoted string before the value.
-*   `what()` writes the path after ` at ` and the position in parentheses, leaving out what is not known. The control characters of a key are written as `\u0000` to `\u001f` there, since a C string ends at a null character. The path of each alternative in the message of a variant uses the same form. `path()` holds the key as it is.
+*   In `what()`, the control characters of a key are written as `\u0000` to `\u001f`, since a C string ends at a null character. The path of each alternative in the note of a variant uses the same form. `path()` holds the key as it is.
 *   A `bad_cast` that a [user-defined caster](conversions.md#user-defined-casters) throws gets the path of the value given to the caster, and that of the values its `from_json` casts in turn.
 *   The `bad_cast` of the [recursion limit](conversions.md#recursive-types) has no path, which would be as long as the values are deep, and no position. Neither has a `bad_cast` thrown while writing.
 

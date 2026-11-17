@@ -145,12 +145,13 @@ namespace
         catch (const yyjson::bad_cast& e)
         {
             // a document cast knows no text, so the position that `yyjson::read<T>` adds is left out
-            auto what = std::string_view(e.what());
+            auto what = std::string(e.what());
             if (const auto pos = e.position())
             {
-                const auto suffix = std::format(" (line {}, column {}, pos {})", pos->line, pos->column, pos->pos);
-                EXPECT_TRUE(what.ends_with(suffix)) << what;
-                what.remove_suffix(std::min(suffix.size(), what.size()));
+                const auto text = std::format(" (line {}, column {}, pos {})", pos->line, pos->column, pos->pos);
+                const auto at = what.find(text);
+                EXPECT_NE(at, std::string::npos) << what;
+                if (at != std::string::npos) what.erase(at, text.size());
             }
             return std::format("bad cast: {}", what);
         }

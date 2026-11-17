@@ -93,7 +93,7 @@ Output:
 
 ```text
 read_error: Read JSON error: unexpected end of data at line 1, column 34, pos 33
-bad_cast: int is not constructible from JSON string at /port (line 1, column 30, pos 29)
+bad_cast: expected an integer, got a string at /port (line 1, column 30, pos 29); reading int
 ```
 
 ## Read JSON of unknown shape

@@ -937,38 +937,47 @@ namespace
     }
 
     std::string error(std::string_view what) { return std::format("bad cast: {}", what); }
-    std::string unknown(std::string_view type, std::string_view key)
+    // `message` with the path after its first sentence, which the developer note follows
+    std::string at(std::string_view message, std::string_view path)
     {
-        return error(std::format("{} has no field of the key \"{}\"", type, key));
+        auto s = std::string(message);
+        const auto i = s.find("; ");
+        s.insert(i == std::string::npos ? s.size() : i, std::format(" at {}", path));
+        return s;
     }
-    std::string repeated(std::string_view type, std::string_view key)
+    std::string unknown(std::string_view type)
     {
-        return error(std::format("the object read into {} has the key \"{}\" twice", type, key));
+        return error(std::format("the object has a key that is not allowed; reading {}", type));
+    }
+    std::string repeated(std::string_view type)
+    {
+        return error(std::format("the object has a duplicate key; reading {}", type));
     }
     std::string missing(std::string_view type, std::string_view key)
     {
-        return error(std::format("{} is not constructible from JSON without the key \"{}\"", type, key));
+        return error(std::format("a required key is missing; reading the key \"{}\" of {}", key, type));
     }
-    std::string closed(std::string_view type, std::string_view key)
+    std::string closed(std::string_view type)
     {
-        return error(
-            std::format("{} has the key \"{}\", which yyjson::additional_properties(false) rejects", type, key));
+        return error(std::format(
+            "the object has a key that is not allowed; reading {}, which yyjson::additional_properties(false) closes",
+            type));
     }
     std::string fewer(std::string_view type, int n)
     {
-        return error(std::format("{} has fewer properties than the minimum {}", type, n));
+        return error(std::format("the object has fewer properties than the minimum {}; reading {}", n, type));
     }
     std::string more(std::string_view type, int n)
     {
-        return error(std::format("{} has more properties than the maximum {}", type, n));
+        return error(std::format("the object has more properties than the maximum {}; reading {}", n, type));
     }
     std::string key_of(std::string_view type, std::string_view what)
     {
-        return error(std::format("a key of {} {}", type, what));
+        return error(std::format("the key {}; reading a key of {}", what, type));
     }
-    std::string extra_value(std::string_view type, std::string_view key, std::string_view what)
+    std::string extra_value(std::string_view type, std::string_view what)
     {
-        return error(std::format("the value of the key \"{}\" of {} {}", key, type, what));
+        return error(std::format("the number {}; reading a member value of {}", what, type));
     }
     std::string extra_conflict(std::string_view type, std::string_view key)
     {
@@ -992,29 +1001,35 @@ namespace
     }
     std::string null_as_missing(std::string_view type)
     {
-        return error(std::format("{} is not constructible from JSON null under yyjson::reject_null_as_missing", type));
+        return error(std::format("the value must not be null; reading {} under yyjson::reject_null_as_missing", type));
     }
     std::string dependent(std::string_view type, std::string_view key)
     {
-        return error(std::format(
-            "{} is not constructible from JSON without the key \"{}\", which yyjson::dependent_required requires", type,
-            key));
+        return error(
+            std::format("the object does not have all the keys that dependentRequired requires; reading the "
+                        "key \"{}\" of {}, which yyjson::dependent_required requires",
+                        key, type));
     }
-    std::string none_of(std::string_view type, std::string_view groups)
+    // `keyword` names the combinator that holds the groups
+    std::string none_of(std::string_view type, std::string_view groups, std::string_view keyword = "oneOf")
     {
-        return error(std::format("{} is not constructible from JSON without all the keys of one of {}", type, groups));
+        return error(
+            std::format("the value satisfies none of the subschemas of {}; reading {} without all the keys "
+                        "of one of {}",
+                        keyword, type, groups));
     }
     std::string many_of(std::string_view type, std::string_view groups)
     {
         return error(
-            std::format("{} is not constructible from JSON with all the keys of more than one of {}", type, groups));
+            std::format("the value satisfies more than one subschema of oneOf; reading {} with all the keys "
+                        "of more than one of {}",
+                        type, groups));
     }
 
     // the cases of the objects of `{"x":..,"y":..}` for a struct of <= 8 fields, both kinds of struct
     template <typename T>
     void expect_small(std::string_view name)
     {
-        const auto at = [](std::string_view s, std::string_view path) { return std::format("{} at {}", s, path); };
         // keys in order and out of order
         for (const auto json : {R"({"x":1,"y":2})", R"({"y":2,"x":1})"})
         {
@@ -1027,7 +1042,7 @@ namespace
         {
             EXPECT_EQ(read_with<T>(json), R"({"x":1,"y":2})");
             EXPECT_EQ(read_with<T>(json, yyjson::strict), R"({"x":1,"y":2})");
-            EXPECT_EQ(read_with<T>(json, yyjson::reject_unknown_keys), at(unknown(name, "z"), "/z"));
+            EXPECT_EQ(read_with<T>(json, yyjson::reject_unknown_keys), at(unknown(name), "/z"));
             EXPECT_EQ(error_path<T>(json, yyjson::reject_unknown_keys), "/z");
         }
         // a key twice, inside the keys in order and after them
@@ -1037,7 +1052,7 @@ namespace
             const auto plain = read_with<T>(json);
             EXPECT_TRUE(plain.starts_with("{")) << json;
             EXPECT_EQ(read_with<T>(json, yyjson::reject_unknown_keys, yyjson::reject_missing_keys), plain);
-            EXPECT_EQ(read_with<T>(json, yyjson::reject_duplicates), at(repeated(name, key), std::format("/{}", key)));
+            EXPECT_EQ(read_with<T>(json, yyjson::reject_duplicates), at(repeated(name), std::format("/{}", key)));
             EXPECT_EQ(read_with<T>(json, yyjson::strict), read_with<T>(json, yyjson::reject_duplicates));
         }
         // a field left out, which may be left out only when it is optional
@@ -1074,13 +1089,12 @@ namespace
         EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10})"), all);
         EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10})",
                                yyjson::reject_duplicates),
-                  repeated(name, "b") + " at /b");
+                  at(repeated(name), "/b"));
         EXPECT_EQ(read_with<T>(all.substr(0, all.size() - 1) + R"(,"a":1})"), all);
-        EXPECT_EQ(read_with<T>(all.substr(0, all.size() - 1) + R"(,"a":1})", yyjson::strict),
-                  repeated(name, "a") + " at /a");
-        EXPECT_EQ(read_with<T>(R"({"j":1,"i":9,"j":10,"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8})",
-                               yyjson::strict),
-                  repeated(name, "j") + " at /j");
+        EXPECT_EQ(read_with<T>(all.substr(0, all.size() - 1) + R"(,"a":1})", yyjson::strict), at(repeated(name), "/a"));
+        EXPECT_EQ(
+            read_with<T>(R"({"j":1,"i":9,"j":10,"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8})", yyjson::strict),
+            at(repeated(name), "/j"));
         // a key left out in the middle and at the end
         const auto no_e = std::string(R"({"a":1,"b":2,"c":3,"d":4,"f":6,"g":7,"h":8,"i":9,"j":10})");
         EXPECT_EQ(read_with<T>(no_e), R"({"a":1,"b":2,"c":3,"d":4,"e":0,"f":6,"g":7,"h":8,"i":9,"j":10})");
@@ -1093,10 +1107,10 @@ namespace
         // an unknown key
         const auto with_z = std::string(R"({"a":1,"b":2,"c":3,"d":4,"z":0,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10})");
         EXPECT_EQ(read_with<T>(with_z, yyjson::strict), all);
-        EXPECT_EQ(read_with<T>(with_z, yyjson::reject_unknown_keys), unknown(name, "z") + " at /z");
+        EXPECT_EQ(read_with<T>(with_z, yyjson::reject_unknown_keys), at(unknown(name), "/z"));
         // null as an optional field
         EXPECT_EQ(read_with<T>(all.substr(0, all.size() - 3) + "null}", yyjson::reject_null_as_missing),
-                  null_as_missing("std::optional<int>") + " at /j");
+                  at(null_as_missing("std::optional<int>"), "/j"));
     }
 }  // namespace
 
@@ -1117,19 +1131,19 @@ TEST(ReadPolicies, Nested)
     // a policy of the read applies to every struct in it
     const auto json = R"({"p":{"y":1},"v":[{"x":1},{"y":2}],"m":{"k":{"x":3}}})";
     EXPECT_EQ(read_with<PolOuter>(json), R"({"p":{"x":0,"y":1},"v":[{"x":1},{"x":0,"y":2}],"m":{"k":{"x":3}}})");
-    EXPECT_EQ(read_with<PolOuter>(json, yyjson::reject_missing_keys), missing("PolPt", "x") + " at /p");
+    EXPECT_EQ(read_with<PolOuter>(json, yyjson::reject_missing_keys), at(missing("PolPt", "x"), "/p"));
     EXPECT_EQ(error_path<PolOuter>(json, yyjson::reject_missing_keys), "/p");
     EXPECT_EQ(read_with<PolOuter>(R"({"p":{"x":1},"v":[{"x":1},{"y":2}],"m":{}})", yyjson::strict),
-              missing("PolPt", "x") + " at /v/1");
+              at(missing("PolPt", "x"), "/v/1"));
     EXPECT_EQ(read_with<PolOuter>(R"({"p":{"x":1},"v":[],"m":{"k":{"x":1,"z":1}}})", yyjson::reject_unknown_keys),
-              unknown("PolPt", "z") + " at /m/k/z");
+              at(unknown("PolPt"), "/m/k/z"));
     EXPECT_TRUE(read_with<PolOuter>(R"({"p":{"x":1},"v":[],"m":{"k":{"x":1},"k":{"x":2}}})", yyjson::strict)
-                    .ends_with(R"(has the key "k" twice at /m/k)"));
+                    .starts_with("bad cast: the object has a duplicate key at /m/k; reading std::map<"));
     EXPECT_EQ(read_with<PolOuter>(R"({"p":{"x":1},"v":[],"m":{},"q":1})", yyjson::strict),
               R"({"p":{"x":1},"v":[],"m":{}})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<PolOuter>(R"({"p":{"x":1},"v":[],"m":{},"q":1})", yyjson::reject_unknown_keys),
-              unknown("PolOuter", "q") + " at /q");
+              at(unknown("PolOuter"), "/q"));
 }
 
 TEST(ReadPolicies, TypeLevel)
@@ -1138,28 +1152,28 @@ TEST(ReadPolicies, TypeLevel)
     EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"inner":{}})"), R"({"x":1,"inner":{"x":0}})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<PolStrictPt>(R"({"inner":{}})"), missing("PolStrictPt", "x"));
-    EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"x":1,"inner":{}})"), repeated("PolStrictPt", "x") + " at /x");
-    EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"y":null,"inner":{}})"), null_as_missing("std::optional<int>") + " at /y");
+    EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"x":1,"inner":{}})"), at(repeated("PolStrictPt"), "/x"));
+    EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"y":null,"inner":{}})"),
+              at(null_as_missing("std::optional<int>"), "/y"));
     EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"z":1,"inner":{"y":1,"y":2,"w":1}})"),
               R"({"x":1,"inner":{"x":0,"y":2}})");
     EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"inner":{}})", yyjson::reject_missing_keys),
-              missing("PolPt", "x") + " at /inner");
+              at(missing("PolPt", "x"), "/inner"));
     EXPECT_EQ(read_with<PolStrictPt>(R"({"x":1,"z":1,"inner":{"x":1}})", yyjson::reject_unknown_keys),
-              unknown("PolStrictPt", "z") + " at /z");
+              at(unknown("PolStrictPt"), "/z"));
     EXPECT_EQ(read_with<PolHoldsStrict>(R"({"s":{"x":1,"inner":{}}})"), R"({"s":{"x":1,"inner":{"x":0}},"p":{"x":0}})");
-    EXPECT_EQ(read_with<PolHoldsStrict>(R"({"s":{"inner":{}},"p":{}})"), missing("PolStrictPt", "x") + " at /s");
+    EXPECT_EQ(read_with<PolHoldsStrict>(R"({"s":{"inner":{}},"p":{}})"), at(missing("PolStrictPt", "x"), "/s"));
     EXPECT_EQ(read_with<PolClosedPt>(R"({"x":1,"inner":{"x":1,"w":1}})"), R"({"x":1,"inner":{"x":1}})");
-    EXPECT_EQ(read_with<PolClosedPt>(R"({"x":1,"w":1,"inner":{}})"), unknown("PolClosedPt", "w") + " at /w");
+    EXPECT_EQ(read_with<PolClosedPt>(R"({"x":1,"w":1,"inner":{}})"), at(unknown("PolClosedPt"), "/w"));
     EXPECT_EQ(read_with<PolClosedPt>(R"({"inner":{}})"), R"({"x":0,"inner":{"x":0}})");
     EXPECT_EQ(read_with<PolClosedV>(R"({"x":1})"), R"({"x":1})");
     EXPECT_EQ(read_with<PolClosedV>(R"({})"), missing("PolClosedV", "x"));
-    EXPECT_EQ(read_with<PolClosedV>(R"({"x":1,"y":1})"), unknown("PolClosedV", "y") + " at /y");
-    EXPECT_EQ(read_with<std::vector<PolClosedV>>(R"([{"x":1},{"x":1,"x":2}])"),
-              repeated("PolClosedV", "x") + " at /1/x");
+    EXPECT_EQ(read_with<PolClosedV>(R"({"x":1,"y":1})"), at(unknown("PolClosedV"), "/y"));
+    EXPECT_EQ(read_with<std::vector<PolClosedV>>(R"([{"x":1},{"x":1,"x":2}])"), at(repeated("PolClosedV"), "/1/x"));
 #if FIELD_RFL_ANNOTATIONS
     EXPECT_EQ(read_with<PolAnnotatedPt>(R"({"x":1})"), R"({"x":1})");
     EXPECT_EQ(read_with<PolAnnotatedPt>(R"({"y":1})"), missing("PolAnnotatedPt", "x"));
-    EXPECT_EQ(read_with<PolAnnotatedClosed>(R"({"x":1,"y":1})"), unknown("PolAnnotatedClosed", "y") + " at /y");
+    EXPECT_EQ(read_with<PolAnnotatedClosed>(R"({"x":1,"y":1})"), at(unknown("PolAnnotatedClosed"), "/y"));
     EXPECT_EQ(read_with<PolAnnotatedClosed>(R"({})"), R"({"x":0})");
 #endif
 }
@@ -1169,7 +1183,7 @@ TEST(ReadPolicies, Null)
     const auto json = R"({"plain":null,"ptr":null,"var":null,"opt":null})";
     EXPECT_EQ(read_with<PolNulls>(json), R"({"ptr":null,"var":null,"opt":null})");
     EXPECT_EQ(read_with<PolNulls>(json, yyjson::reject_null_as_missing),
-              null_as_missing("std::optional<double>") + " at /plain");
+              at(null_as_missing("std::optional<double>"), "/plain"));
     // only an optional whose value does not read null takes null as a missing key
     EXPECT_EQ(read_with<PolNulls>(R"({"ptr":null,"var":null,"opt":null})", yyjson::strict),
               R"({"ptr":null,"var":null,"opt":null})");
@@ -1183,7 +1197,7 @@ TEST(ReadPolicies, Null)
     // a transparent struct over such an optional follows the rule of the field
     EXPECT_EQ(read_with<PolHoldsTransparent>(R"({"maybe":null,"id":1})"), R"({"id":1})");
     EXPECT_EQ(read_with<PolHoldsTransparent>(R"({"maybe":null,"id":1})", yyjson::reject_null_as_missing),
-              null_as_missing("std::optional<int>") + " at /maybe");
+              at(null_as_missing("std::optional<int>"), "/maybe"));
 }
 
 TEST(ReadPolicies, Missing)
@@ -1201,7 +1215,7 @@ TEST(ReadPolicies, Missing)
     EXPECT_EQ(read_with<PolHoldsTransparent>(R"({"id":1})", yyjson::strict), R"({"id":1})");
     EXPECT_EQ(read_with<PolHoldsTransparent>(R"({"maybe":2})", yyjson::strict), missing("PolHoldsTransparent", "id"));
     EXPECT_EQ(read_with<PolHoldsTransparent>(R"({"maybe":2,"id":1,"id":1})", yyjson::strict),
-              repeated("PolHoldsTransparent", "id") + " at /id");
+              at(repeated("PolHoldsTransparent"), "/id"));
     // a field of `yyjson::indirect`
     EXPECT_EQ(read_or_error([] { return yyjson::read<PolHoldsIndirect>(R"({"p":{"x":1}})", yyjson::strict).p->x; }),
               "1");
@@ -1209,11 +1223,11 @@ TEST(ReadPolicies, Missing)
               missing("PolHoldsIndirect", "p"));
     EXPECT_EQ(
         read_or_error([] { return yyjson::read<PolHoldsIndirect>(R"({"p":{"x":1},"q":{}})", yyjson::strict).p->x; }),
-        missing("PolPt", "x") + " at /q");
+        at(missing("PolPt", "x"), "/q"));
     // a skipped field is not read, so its key is unknown and never missing
     EXPECT_EQ(read_with<PolSkipped>(R"({"a":1})", yyjson::strict), R"({"a":1})");
     EXPECT_EQ(read_with<PolSkipped>(R"({"a":1,"s":2})", yyjson::strict), R"({"a":1})");
-    EXPECT_EQ(read_with<PolSkipped>(R"({"a":1,"s":2})", yyjson::reject_unknown_keys), unknown("PolSkipped", "s") + " at /s");
+    EXPECT_EQ(read_with<PolSkipped>(R"({"a":1,"s":2})", yyjson::reject_unknown_keys), at(unknown("PolSkipped"), "/s"));
 }
 
 TEST(ReadPolicies, Tags)
@@ -1225,14 +1239,14 @@ TEST(ReadPolicies, Tags)
     EXPECT_EQ(read_with<PolShape>(R"({"w":1,"type":"rect","h":2})", yyjson::reject_unknown_keys, yyjson::strict),
               R"({"type":"rect","w":1,"h":2})");
     EXPECT_EQ(read_with<PolShape>(R"({"type":"rect","w":1,"h":2,"r":1})", yyjson::reject_unknown_keys),
-              unknown("PolRect", "r") + " at /r");
+              at(unknown("PolRect"), "/r"));
     EXPECT_EQ(read_with<PolShape>(R"({"type":"rect","w":1})", yyjson::reject_missing_keys),
               missing("PolRect", "h"));
     EXPECT_EQ(read_with<PolShape>(R"({"type":"rect","w":1,"h":2,"type":"rect"})"), R"({"type":"rect","w":1,"h":2})");
     EXPECT_EQ(read_with<PolShape>(R"({"type":"rect","w":1,"h":2,"type":"rect"})", yyjson::reject_duplicates),
-              repeated("PolRect", "type") + " at /type");
+              at(repeated("PolRect"), "/type"));
     EXPECT_EQ(read_with<PolCircle>(R"({"type":"circle","r":1})", yyjson::reject_unknown_keys),
-              unknown("PolCircle", "type") + " at /type");
+              at(unknown("PolCircle"), "/type"));
 
     // the keys of an adjacent tag are keys of the struct that holds the variant
     const auto expect_adjacent = [](auto t, std::string_view name) {
@@ -1245,12 +1259,12 @@ TEST(ReadPolicies, Tags)
                                yyjson::strict),
                   R"({"id":1,"kind":"circle","data":{"r":3}})");
         EXPECT_EQ(read_with<T>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2},"z":1})", yyjson::reject_unknown_keys),
-                  unknown(name, "z") + " at /z");
+                  at(unknown(name), "/z"));
         EXPECT_EQ(read_with<T>(R"({"id":1,"kind":"rect","kind":"rect","data":{"w":1,"h":2}})"),
                   R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})");
-        EXPECT_EQ(read_with<T>(R"({"id":1,"kind":"rect","kind":"rect","data":{"w":1,"h":2}})",
-                               yyjson::reject_duplicates),
-                  repeated(name, "kind") + " at /kind");
+        EXPECT_EQ(
+            read_with<T>(R"({"id":1,"kind":"rect","kind":"rect","data":{"w":1,"h":2}})", yyjson::reject_duplicates),
+            at(repeated(name), "/kind"));
         // the value of the variant left out with or without its tag
         EXPECT_EQ(read_with<T>(R"({"id":1,"kind":"circle"})"), R"({"id":1,"kind":"circle","data":{"r":0}})");
         EXPECT_EQ(read_with<T>(R"({"id":1,"kind":"circle"})", yyjson::reject_missing_keys), missing(name, "data"));
@@ -1268,15 +1282,14 @@ TEST(ReadPolicies, Containers)
     EXPECT_EQ(read_with<IntMap>(R"({"a":1,"b":2})", yyjson::strict), R"({"a":1,"b":2})");
     EXPECT_TRUE(direct_read);
     const auto map_text = read_with<IntMap>(R"({"a":1,"b":2,"a":3})", yyjson::reject_duplicates);
-    EXPECT_TRUE(map_text.starts_with("bad cast: the object read into std::map<")) << map_text;
-    EXPECT_TRUE(map_text.ends_with(R"(has the key "a" twice at /a)")) << map_text;
-    EXPECT_EQ(read_with<IntHashMap>(R"({"a":1,"a":3})", yyjson::strict).substr(0, 37),
-              "bad cast: the object read into std::u");
+    EXPECT_TRUE(map_text.starts_with("bad cast: the object has a duplicate key at /a; reading std::map<")) << map_text;
+    EXPECT_TRUE(read_with<IntHashMap>(R"({"a":1,"a":3})", yyjson::strict)
+                    .starts_with("bad cast: the object has a duplicate key at /a; reading std::unordered_map<"));
     EXPECT_EQ(read_with<IntMultimap>(R"({"a":1,"a":3})"), R"({"a":1,"a":3})");
     EXPECT_TRUE(read_with<IntMultimap>(R"({"a":1,"a":3})", yyjson::strict)
-                    .ends_with(R"(has the key "a" twice at /a)"));
+                    .starts_with("bad cast: the object has a duplicate key at /a; reading std::multimap<"));
     EXPECT_TRUE(read_with<IntHashMultimap>(R"({"a":1,"b":2,"a":3})", yyjson::strict)
-                    .ends_with(R"(has the key "a" twice at /a)"));
+                    .starts_with("bad cast: the object has a duplicate key at /a; reading std::unordered_multimap<"));
     // a map takes every key
     EXPECT_EQ(read_with<IntMap>(R"({"a":1})", yyjson::reject_unknown_keys), R"({"a":1})");
     // a key twice in a tuple of key-value pairs, which takes the members in their order
@@ -1285,23 +1298,23 @@ TEST(ReadPolicies, Containers)
     EXPECT_EQ(read_with<KeyedTuple>(R"({"a":1,"b":2})", yyjson::strict), R"({"a":1,"b":2})");
     EXPECT_TRUE(direct_read);
     const auto tuple_text = read_with<KeyedTuple>(R"({"a":1,"a":2})", yyjson::reject_duplicates);
-    EXPECT_TRUE(tuple_text.starts_with("bad cast: the object read into std::tuple<")) << tuple_text;
-    EXPECT_TRUE(tuple_text.ends_with(R"(has the key "a" twice at /a)")) << tuple_text;
+    EXPECT_TRUE(tuple_text.starts_with("bad cast: the object has a duplicate key at /a; reading std::tuple<"))
+        << tuple_text;
     EXPECT_EQ(read_with<KeyedTuple>(R"({"a":1,"a":2})", yyjson::strict), tuple_text);
 
     // an element twice in a set, which would drop it
     EXPECT_EQ(read_with<std::set<int>>("[1,2,1]"), "[1,2]");
     EXPECT_EQ(read_with<std::set<int>>("[1,2,1]", yyjson::strict),
-              error("the array read into std::set<int> has an element twice at /2"));
+              error("the array has a duplicate element at /2; reading std::set<int>"));
     EXPECT_EQ(read_with<std::set<int>>("[1,2,3]", yyjson::strict), "[1,2,3]");
     EXPECT_TRUE(direct_read);
     EXPECT_TRUE(read_with<std::unordered_set<int>>("[1,1]", yyjson::reject_duplicates)
-                    .ends_with("has an element twice at /1"));
+                    .starts_with("bad cast: the array has a duplicate element at /1; reading std::unordered_set<"));
     EXPECT_EQ(read_with<std::multiset<int>>("[1,1]", yyjson::strict), "[1,1]");
     EXPECT_EQ(read_with<std::unordered_multiset<int>>("[1,1]", yyjson::strict), "[1,1]");
     EXPECT_EQ(read_with<std::vector<int>>("[1,1]", yyjson::strict), "[1,1]");
     EXPECT_EQ(read_with<std::vector<std::set<int>>>("[[1],[2,2]]", yyjson::strict),
-              error("the array read into std::set<int> has an element twice at /1/1"));
+              error("the array has a duplicate element at /1/1; reading std::set<int>"));
 }
 
 TEST(ReadPolicies, UntaggedVariant)
@@ -1325,17 +1338,17 @@ TEST(ReadPolicies, Casters)
     // the casts of a caster read under the policies of the read that calls it
     const auto json = R"({"view":{"y":1},"dom":{"y":2}})";
     EXPECT_EQ(read_with<PolBoxes>(json), R"({"view":{"p":{"x":0,"y":1}},"dom":{"p":{"x":0,"y":2}}})");
-    EXPECT_EQ(read_with<PolBoxes>(json, yyjson::reject_missing_keys), missing("PolPt", "x") + " at /view");
+    EXPECT_EQ(read_with<PolBoxes>(json, yyjson::reject_missing_keys), at(missing("PolPt", "x"), "/view"));
     EXPECT_EQ(read_with<PolBoxes>(R"({"view":{"x":0},"dom":{"y":2}})", yyjson::reject_missing_keys),
-              missing("PolPt", "x") + " at /dom");
+              at(missing("PolPt", "x"), "/dom"));
     EXPECT_EQ(read_with<PolBoxes>(R"({"view":{"x":0},"dom":{"x":0,"x":1}})", yyjson::strict),
-              repeated("PolPt", "x") + " at /dom/x");
+              at(repeated("PolPt"), "/dom/x"));
     // a cast in a caster adds policies, which end with it
-    EXPECT_EQ(read_with<PolClosedViewBox>(R"({"x":1,"z":1})"), unknown("PolPt", "z") + " at /z");
+    EXPECT_EQ(read_with<PolClosedViewBox>(R"({"x":1,"z":1})"), at(unknown("PolPt"), "/z"));
     EXPECT_EQ(read_with<PolClosedViewBox>(R"({"y":1})"), R"({"p":{"x":0,"y":1}})");
     EXPECT_EQ(read_with<PolClosedViewBox>(R"({"y":1})", yyjson::reject_missing_keys), missing("PolPt", "x"));
     EXPECT_EQ(read_with<std::vector<PolClosedViewBox>>(R"([{"x":1},{"x":1,"z":1}])", yyjson::reject_missing_keys),
-              unknown("PolPt", "z") + " at /1/z");
+              at(unknown("PolPt"), "/1/z"));
     // the policies end with the read
     EXPECT_EQ(read_with<PolPt>(R"({"y":1})"), R"({"x":0,"y":1})");
 }
@@ -1349,48 +1362,50 @@ TEST(ReadPolicies, MergeInto)
     EXPECT_EQ(merge_with(t, R"({})", yyjson::strict, yyjson::reject_unknown_keys), R"({"x":1,"y":2})");
     // null removes a key, which only an optional field may lack
     EXPECT_EQ(merge_with(t, R"({"x":null})"), R"({"x":0,"y":2})");
-    EXPECT_EQ(merge_with(t, R"({"x":null})", yyjson::strict),
-              error(R"(PolPt is not constructible from JSON null for the key "x" under yyjson::reject_missing_keys at /x)"));
+    EXPECT_EQ(
+        merge_with(t, R"({"x":null})", yyjson::strict),
+        error(R"(the value must not be null at /x; reading the key "x" of PolPt under yyjson::reject_missing_keys)"));
     EXPECT_EQ(merge_with(t, R"({"y":null})", yyjson::strict), R"({"x":1})");
     EXPECT_EQ(merge_with(t, R"({"y":null})", yyjson::reject_null_as_missing), R"({"x":1})");
     // unknown keys and keys twice in the patch
     EXPECT_EQ(merge_with(t, R"({"z":1})"), R"({"x":1,"y":2})");
-    EXPECT_EQ(merge_with(t, R"({"z":1})", yyjson::reject_unknown_keys), unknown("PolPt", "z") + " at /z");
+    EXPECT_EQ(merge_with(t, R"({"z":1})", yyjson::reject_unknown_keys), at(unknown("PolPt"), "/z"));
     EXPECT_EQ(merge_with(t, R"({"x":3,"x":4})"), R"({"x":4,"y":2})");
-    EXPECT_EQ(merge_with(t, R"({"x":3,"x":4})", yyjson::reject_duplicates), repeated("PolPt", "x") + " at /x");
-    EXPECT_EQ(merge_with(PolWide(), R"({"j":1,"a":1,"j":1})", yyjson::strict), repeated("PolWide", "j") + " at /j");
+    EXPECT_EQ(merge_with(t, R"({"x":3,"x":4})", yyjson::reject_duplicates), at(repeated("PolPt"), "/x"));
+    EXPECT_EQ(merge_with(PolWide(), R"({"j":1,"a":1,"j":1})", yyjson::strict), at(repeated("PolWide"), "/j"));
     EXPECT_EQ(merge_with(PolWideV(), R"({"j":1,"b":1})", yyjson::strict),
               R"({"a":0,"b":1,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
     EXPECT_EQ(merge_with(PolClosedPt(), R"({"inner":{"y":1}})"), R"({"x":0,"inner":{"x":0,"y":1}})");
-    EXPECT_EQ(merge_with(PolClosedPt(), R"({"w":1})"), unknown("PolClosedPt", "w") + " at /w");
+    EXPECT_EQ(merge_with(PolClosedPt(), R"({"w":1})"), at(unknown("PolClosedPt"), "/w"));
 
     // a struct merged in place is a patch too, while a value read whole is read under every policy
     const auto outer = PolOuter{{1, 2}, {{1, {}}}, {{"k", {1, {}}}}};
     EXPECT_EQ(merge_with(outer, R"({"p":{"y":3}})", yyjson::strict),
               R"({"p":{"x":1,"y":3},"v":[{"x":1}],"m":{"k":{"x":1}}})");
     EXPECT_EQ(merge_with(outer, R"({"v":[{"y":3}]})"), R"({"p":{"x":1,"y":2},"v":[{"x":0,"y":3}],"m":{"k":{"x":1}}})");
-    EXPECT_EQ(merge_with(outer, R"({"v":[{"y":3}]})", yyjson::strict), missing("PolPt", "x") + " at /v/0");
+    EXPECT_EQ(merge_with(outer, R"({"v":[{"y":3}]})", yyjson::strict), at(missing("PolPt", "x"), "/v/0"));
     EXPECT_EQ(merge_with(outer, R"({"m":{"n":{"y":3}}})"),
               R"({"p":{"x":1,"y":2},"v":[{"x":1}],"m":{"k":{"x":1},"n":{"x":0,"y":3}}})");
-    EXPECT_EQ(merge_with(outer, R"({"m":{"n":{"y":3}}})", yyjson::strict), missing("PolPt", "x") + " at /m/n");
+    EXPECT_EQ(merge_with(outer, R"({"m":{"n":{"y":3}}})", yyjson::strict), at(missing("PolPt", "x"), "/m/n"));
     EXPECT_EQ(merge_with(outer, R"({"m":{"k":{"y":3}}})", yyjson::strict),
               R"({"p":{"x":1,"y":2},"v":[{"x":1}],"m":{"k":{"x":1,"y":3}}})");
-    EXPECT_EQ(merge_with(outer, R"({"m":{"k":{"y":3},"k":{"y":4}}})", yyjson::strict).substr(0, 31),
-              "bad cast: the object read into ");
+    EXPECT_TRUE(merge_with(outer, R"({"m":{"k":{"y":3},"k":{"y":4}}})", yyjson::strict)
+                    .starts_with("bad cast: the object has a duplicate key at /m/k; reading std::map<"));
 
     // the tags of a variant in the patch
     const auto env = PolEnvelope{1, PolRect{1, 2}};
     EXPECT_EQ(merge_with(env, R"({"kind":"rect","data":{"h":3}})", yyjson::strict, yyjson::reject_unknown_keys),
               R"({"id":1,"kind":"rect","data":{"w":1,"h":3}})");
     EXPECT_EQ(merge_with(env, R"({"kind":"circle","data":{}})"), R"({"id":1,"kind":"circle","data":{"r":0}})");
-    EXPECT_EQ(merge_with(env, R"({"kind":"circle","data":{}})", yyjson::strict), missing("PolCircle", "r") + " at /data");
+    EXPECT_EQ(merge_with(env, R"({"kind":"circle","data":{}})", yyjson::strict),
+              at(missing("PolCircle", "r"), "/data"));
     // a new alternative is read whole, and a failure leaves the variant as it was
     EXPECT_EQ(merge_with(PolShape(PolRect{1, 2}), R"({"type":"circle"})"), R"({"type":"circle","r":0})");
     EXPECT_EQ(merge_with(PolShape(PolRect{1, 2}), R"({"type":"circle"})", yyjson::strict), missing("PolCircle", "r"));
     EXPECT_EQ(merge_with(PolShape(PolRect{1, 2}), R"({"type":"rect","h":3})", yyjson::strict),
               R"({"type":"rect","w":1,"h":3})");
     EXPECT_EQ(merge_with(env, R"({"kind":"rect","kind":"rect"})", yyjson::strict),
-              repeated("PolEnvelope", "kind") + " at /kind");
+              at(repeated("PolEnvelope"), "/kind"));
 }
 
 TEST(ClosedTypes, Read)
@@ -1404,11 +1419,11 @@ TEST(ClosedTypes, Read)
         for (const auto json : {R"({"z":0,"x":1,"y":2})", R"({"x":1,"z":0,"y":2})", R"({"x":1,"y":2,"z":0})",
                                 R"({"x":1,"z":null})", R"({"z":{}})"})
         {
-            EXPECT_EQ(read_with<T>(json), closed(name, "z") + " at /z") << json;
+            EXPECT_EQ(read_with<T>(json), at(closed(name), "/z")) << json;
             EXPECT_EQ(error_path<T>(json), "/z") << json;
             // the closed type reports the key also under the policy that rejects it
-            EXPECT_EQ(read_with<T>(json, yyjson::reject_unknown_keys), closed(name, "z") + " at /z") << json;
-            EXPECT_EQ(read_with<T>(json, yyjson::strict), closed(name, "z") + " at /z") << json;
+            EXPECT_EQ(read_with<T>(json, yyjson::reject_unknown_keys), at(closed(name), "/z")) << json;
+            EXPECT_EQ(read_with<T>(json, yyjson::strict), at(closed(name), "/z")) << json;
         }
         EXPECT_EQ(read_with<T>(R"({"y":1})", yyjson::reject_missing_keys), missing(name, "x"));
     };
@@ -1416,15 +1431,15 @@ TEST(ClosedTypes, Read)
     expect(std::type_identity<ClosedPtV>(), "ClosedPtV");
     EXPECT_EQ(read_with<ClosedWide>(R"({"j":1,"a":1})"),
               R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
-    EXPECT_EQ(read_with<ClosedWide>(R"({"j":1,"a":1,"k":1})"), closed("ClosedWide", "k") + " at /k");
+    EXPECT_EQ(read_with<ClosedWide>(R"({"j":1,"a":1,"k":1})"), at(closed("ClosedWide"), "/k"));
     // the key of a renamed field is its new key, and a skipped field has no key
     EXPECT_EQ(read_with<ClosedRenamed>(R"({"A":1})"), R"({"A":1})");
-    EXPECT_EQ(read_with<ClosedRenamed>(R"({"a":1})"), closed("ClosedRenamed", "a") + " at /a");
-    EXPECT_EQ(read_with<ClosedRenamed>(R"({"A":1,"s":2})"), closed("ClosedRenamed", "s") + " at /s");
+    EXPECT_EQ(read_with<ClosedRenamed>(R"({"a":1})"), at(closed("ClosedRenamed"), "/a"));
+    EXPECT_EQ(read_with<ClosedRenamed>(R"({"A":1,"s":2})"), at(closed("ClosedRenamed"), "/s"));
     // the struct that holds a closed type is not closed
     EXPECT_EQ(read_with<ClosedHolder>(R"({"p":{"x":1},"q":1})"), R"({"p":{"x":1},"v":[]})");
-    EXPECT_EQ(read_with<ClosedHolder>(R"({"p":{"x":1,"q":1}})"), closed("ClosedPt", "q") + " at /p/q");
-    EXPECT_EQ(read_with<ClosedHolder>(R"({"v":[{},{"q":1}]})"), closed("ClosedPt", "q") + " at /v/1/q");
+    EXPECT_EQ(read_with<ClosedHolder>(R"({"p":{"x":1,"q":1}})"), at(closed("ClosedPt"), "/p/q"));
+    EXPECT_EQ(read_with<ClosedHolder>(R"({"v":[{},{"q":1}]})"), at(closed("ClosedPt"), "/v/1/q"));
 }
 
 TEST(ClosedTypes, Tags)
@@ -1433,17 +1448,17 @@ TEST(ClosedTypes, Tags)
     EXPECT_EQ(read_with<ClosedShape>(R"({"type":"rect","w":1,"h":2})"), R"({"type":"rect","w":1,"h":2})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<ClosedShape>(R"({"w":1,"type":"rect","h":2})"), R"({"type":"rect","w":1,"h":2})");
-    EXPECT_EQ(read_with<ClosedShape>(R"({"type":"rect","w":1,"h":2,"r":1})"), closed("ClosedRect", "r") + " at /r");
-    EXPECT_EQ(read_with<ClosedCircle>(R"({"type":"circle","r":1})"), closed("ClosedCircle", "type") + " at /type");
+    EXPECT_EQ(read_with<ClosedShape>(R"({"type":"rect","w":1,"h":2,"r":1})"), at(closed("ClosedRect"), "/r"));
+    EXPECT_EQ(read_with<ClosedCircle>(R"({"type":"circle","r":1})"), at(closed("ClosedCircle"), "/type"));
     // the keys of an adjacent tag are keys of the struct that holds the variant
     EXPECT_EQ(read_with<ClosedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
               R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})");
     EXPECT_EQ(read_with<ClosedEnvelope>(R"({"data":{"r":3},"kind":"circle","id":1})"),
               R"({"id":1,"kind":"circle","data":{"r":3}})");
     EXPECT_EQ(read_with<ClosedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2},"z":1})"),
-              closed("ClosedEnvelope", "z") + " at /z");
+              at(closed("ClosedEnvelope"), "/z"));
     EXPECT_EQ(read_with<ClosedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2,"z":1}})"),
-              closed("ClosedRect", "z") + " at /data/z");
+              at(closed("ClosedRect"), "/data/z"));
 }
 
 TEST(ClosedTypes, MergeInto)
@@ -1452,25 +1467,24 @@ TEST(ClosedTypes, MergeInto)
     const auto t = ClosedPt{1, 2};
     EXPECT_EQ(merge_with(t, R"({"y":3})"), R"({"x":1,"y":3})");
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(merge_with(t, R"({"z":1})"), closed("ClosedPt", "z") + " at /z");
-    EXPECT_EQ(merge_with(t, R"({"y":3,"z":{}})", yyjson::reject_unknown_keys), closed("ClosedPt", "z") + " at /z");
+    EXPECT_EQ(merge_with(t, R"({"z":1})"), at(closed("ClosedPt"), "/z"));
+    EXPECT_EQ(merge_with(t, R"({"y":3,"z":{}})", yyjson::reject_unknown_keys), at(closed("ClosedPt"), "/z"));
     EXPECT_EQ(merge_with(t, R"({"z":null})"), R"({"x":1,"y":2})");
     EXPECT_EQ(merge_with(t, R"({"y":null,"z":null})"), R"({"x":1})");
     EXPECT_EQ(merge_with(ClosedWide(), R"({"j":1,"k":null,"a":1})"),
               R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
-    EXPECT_EQ(merge_with(ClosedWide(), R"({"j":1,"k":1})"), closed("ClosedWide", "k") + " at /k");
-    EXPECT_EQ(merge_with(ClosedHolder(), R"({"p":{"q":1}})"), closed("ClosedPt", "q") + " at /p/q");
+    EXPECT_EQ(merge_with(ClosedWide(), R"({"j":1,"k":1})"), at(closed("ClosedWide"), "/k"));
+    EXPECT_EQ(merge_with(ClosedHolder(), R"({"p":{"q":1}})"), at(closed("ClosedPt"), "/p/q"));
     EXPECT_EQ(merge_with(ClosedHolder(), R"({"p":{"q":null}})"), R"({"p":{"x":0},"v":[]})");
     // the alternatives of a variant in the patch
     EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"rect","h":3})"), R"({"type":"rect","w":1,"h":3})");
-    EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"rect","r":3})"),
-              closed("ClosedRect", "r") + " at /r");
+    EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"rect","r":3})"), at(closed("ClosedRect"), "/r"));
     EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"circle","w":3})"),
-              closed("ClosedCircle", "w") + " at /w");
+              at(closed("ClosedCircle"), "/w"));
     EXPECT_EQ(merge_with(ClosedEnvelope{1, ClosedRect{1, 2}}, R"({"kind":"rect","data":{"h":3}})"),
               R"({"id":1,"kind":"rect","data":{"w":1,"h":3}})");
     EXPECT_EQ(merge_with(ClosedEnvelope{1, ClosedRect{1, 2}}, R"({"kind":"rect","z":1})"),
-              closed("ClosedEnvelope", "z") + " at /z");
+              at(closed("ClosedEnvelope"), "/z"));
 }
 
 TEST(ClosedTypes, Write)
@@ -1499,8 +1513,8 @@ TEST(PropertyCounts, Read)
             EXPECT_EQ(read_with<T>(json), more(name, 2)) << json;
         }
         // the policies check the keys first
-        EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"z":3})", yyjson::reject_unknown_keys), unknown(name, "z") + " at /z");
-        EXPECT_EQ(read_with<T>(R"({"a":1,"a":2,"a":3})", yyjson::reject_duplicates), repeated(name, "a") + " at /a");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"z":3})", yyjson::reject_unknown_keys), at(unknown(name), "/z"));
+        EXPECT_EQ(read_with<T>(R"({"a":1,"a":2,"a":3})", yyjson::reject_duplicates), at(repeated(name), "/a"));
         EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"c":3})", yyjson::reject_unknown_keys), more(name, 2));
         EXPECT_EQ(read_with<T>(R"({"a":1,"b":2})", yyjson::strict), R"({"a":1,"b":2})");
     };
@@ -1513,14 +1527,14 @@ TEST(PropertyCounts, Read)
     EXPECT_EQ(read_with<CountedWide>(R"({"j":1,"a":1,"k":null})"), more("CountedWide", 2));
     // the count of a struct in a field or an element has its path
     EXPECT_EQ(read_with<CountedHolder>(R"({"p":{"a":1},"v":[{"b":1}]})"), R"({"p":{"a":1,"b":0},"v":[{"a":0,"b":1}]})");
-    EXPECT_EQ(read_with<CountedHolder>(R"({"p":{}})"), fewer("CountedPt", 1) + " at /p");
+    EXPECT_EQ(read_with<CountedHolder>(R"({"p":{}})"), at(fewer("CountedPt", 1), "/p"));
     EXPECT_EQ(error_path<CountedHolder>(R"({"p":{}})"), "/p");
-    EXPECT_EQ(read_with<CountedHolder>(R"({"v":[{"a":1},{"a":1,"b":1,"z":1}]})"), more("CountedPt", 2) + " at /v/1");
+    EXPECT_EQ(read_with<CountedHolder>(R"({"v":[{"a":1},{"a":1,"b":1,"z":1}]})"), at(more("CountedPt", 2), "/v/1"));
     EXPECT_EQ(error_path<CountedHolder>(R"({"v":[{"a":1},{"a":1,"b":1,"z":1}]})"), "/v/1");
     // a key that a closed type rejects comes before the count
     EXPECT_EQ(read_with<CountedClosed>(R"({"x":1})"), R"({"x":1})");
     EXPECT_EQ(read_with<CountedClosed>(R"({"x":1,"x":2})"), more("CountedClosed", 1));
-    EXPECT_EQ(read_with<CountedClosed>(R"({"x":1,"z":2})"), closed("CountedClosed", "z") + " at /z");
+    EXPECT_EQ(read_with<CountedClosed>(R"({"x":1,"z":2})"), at(closed("CountedClosed"), "/z"));
 }
 
 TEST(PropertyCounts, Tags)
@@ -1563,7 +1577,7 @@ TEST(PropertyCounts, MergeInto)
                                         R"("j":1})"),
               more("CountedWide", 2));
     EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":null}})"), R"({"p":{"a":0,"b":0},"v":[]})");
-    EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":1}})"), more("CountedPt", 2) + " at /p");
+    EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":1}})"), at(more("CountedPt", 2), "/p"));
     EXPECT_EQ(merge_with(CountedShape(CountedRect{1, 2}), R"({"type":"rect","h":3,"w":null})"),
               fewer("CountedRect", 3));
 }
@@ -1593,26 +1607,26 @@ TEST(PropertyNames, Read)
         EXPECT_EQ(read_with<T>(R"({})"), R"({"a":0,"bb":0})");
         EXPECT_EQ(read_with<T>(R"({"z":1})"), R"({"a":0,"bb":0})");
         EXPECT_TRUE(direct_read);
-        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":3})"), longer + " at /bad");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":3})"), at(longer, "/bad"));
         EXPECT_EQ(error_path<T>(R"({"a":1,"bad":3})"), "/bad");
-        EXPECT_EQ(read_with<T>(R"({"bad":null})"), longer + " at /bad");
+        EXPECT_EQ(read_with<T>(R"({"bad":null})"), at(longer, "/bad"));
         for (const auto json :
              {R"({"zzz":0,"a":1})", R"({"a":1,"zzz":0,"bb":2})", R"({"a":1,"bb":2,"zzz":0})", R"({"zzz":{"a":1}})"})
         {
-            EXPECT_EQ(read_with<T>(json), longer + " at /zzz") << json;
+            EXPECT_EQ(read_with<T>(json), at(longer, "/zzz")) << json;
             EXPECT_EQ(error_path<T>(json), "/zzz") << json;
         }
         // the first key that it rejects, and each key that comes twice
-        EXPECT_EQ(read_with<T>(R"({"a":1,"zzz":0,"bad":1})"), longer + " at /zzz");
-        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":0,"zzz":1})"), longer + " at /bad");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"zzz":0,"bad":1})"), at(longer, "/zzz"));
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":0,"zzz":1})"), at(longer, "/bad"));
         EXPECT_EQ(read_with<T>(R"({"a":1,"a":2})"), R"({"a":2,"bb":0})");
         EXPECT_TRUE(direct_read);
-        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":1,"bad":2})"), longer + " at /bad");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":1,"bad":2})"), at(longer, "/bad"));
         // the policies check the keys first
-        EXPECT_EQ(read_with<T>(R"({"z":1,"zzz":1})", yyjson::reject_unknown_keys), unknown(name, "z") + " at /z");
-        EXPECT_EQ(read_with<T>(R"({"zzz":1,"z":1})", yyjson::reject_unknown_keys), unknown(name, "zzz") + " at /zzz");
-        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":1,"a":2})", yyjson::reject_duplicates), repeated(name, "a") + " at /a");
-        EXPECT_EQ(read_with<T>(R"({"a":1,"bb":2,"bad":3})", yyjson::strict), longer + " at /bad");
+        EXPECT_EQ(read_with<T>(R"({"z":1,"zzz":1})", yyjson::reject_unknown_keys), at(unknown(name), "/z"));
+        EXPECT_EQ(read_with<T>(R"({"zzz":1,"z":1})", yyjson::reject_unknown_keys), at(unknown(name), "/zzz"));
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":1,"a":2})", yyjson::reject_duplicates), at(repeated(name), "/a"));
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bb":2,"bad":3})", yyjson::strict), at(longer, "/bad"));
     };
     expect(std::type_identity<NamedPt>(), "NamedPt");
     expect(std::type_identity<NamedPtV>(), "NamedPtV");
@@ -1620,51 +1634,50 @@ TEST(PropertyNames, Read)
     EXPECT_EQ(read_with<NamedWide>(all), all);
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedWide>(R"({"i":9,"jjj":1})"),
-              key_of("NamedWide", "is longer than the maximum length 2") + " at /jjj");
+              at(key_of("NamedWide", "is longer than the maximum length 2"), "/jjj"));
     EXPECT_EQ(read_with<NamedWide>(R"({"i":9,"kkk":null,"a":1})"),
-              key_of("NamedWide", "is longer than the maximum length 2") + " at /kkk");
+              at(key_of("NamedWide", "is longer than the maximum length 2"), "/kkk"));
     // a struct in a field or an element checks the keys of its own object
     EXPECT_EQ(read_with<NamedHolder>(R"({"p":{"a":1},"v":[{},{"bb":1}],"zzz":1})"),
               R"({"p":{"a":1,"bb":0},"v":[{"a":0,"bb":0},{"a":0,"bb":1}]})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedHolder>(R"({"p":{"bad":1}})"),
-              key_of("NamedPt", "is longer than the maximum length 2") + " at /p/bad");
+              at(key_of("NamedPt", "is longer than the maximum length 2"), "/p/bad"));
     EXPECT_EQ(error_path<NamedHolder>(R"({"p":{"bad":1}})"), "/p/bad");
     EXPECT_EQ(read_with<NamedHolder>(R"({"v":[{},{"xyz":1}]})"),
-              key_of("NamedPt", "is longer than the maximum length 2") + " at /v/1/xyz");
+              at(key_of("NamedPt", "is longer than the maximum length 2"), "/v/1/xyz"));
     // the key of a renamed field is its new key
     EXPECT_EQ(read_with<NamedRenamed>(R"({"b":1,"a":2})"), R"({"A":0,"b":1})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedRenamed>(R"({"A":1})"),
-              key_of("NamedRenamed", "is rejected by yyjson::satisfies") + " at /A");
+              at(key_of("NamedRenamed", "does not satisfy the predicate"), "/A"));
     // the keywords of a string, the combinators and a predicate
     EXPECT_EQ(read_with<NamedListed>(R"({"x":1,"w":2})"), R"({"x":1})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedListed>(R"({"x":1,"v":2})"),
-              key_of("NamedListed", R"(is not one of "x", "y", "w")") + " at /v");
+              at(key_of("NamedListed", R"(is not one of "x", "y", "w")"), "/v"));
     EXPECT_EQ(read_with<NamedNot>(R"({"x":1,"z":2})"), R"({"x":1})");
-    EXPECT_EQ(read_with<NamedNot>(R"({"x":1,"y":2})"),
-              key_of("NamedNot", "satisfies the settings of yyjson::not_") + " at /y");
+    EXPECT_EQ(read_with<NamedNot>(R"({"x":1,"y":2})"), at(key_of("NamedNot", "satisfies the subschema of not"), "/y"));
     EXPECT_EQ(read_with<NamedChecked>(R"({"x":1,"y":2,"z":3})"), R"({"x":1,"y":2})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedChecked>(R"({"x":1,"Z":3})"),
-              key_of("NamedChecked", "is rejected by yyjson::satisfies") + " at /Z");
+              at(key_of("NamedChecked", "does not satisfy the predicate"), "/Z"));
     EXPECT_EQ(read_with<NamedShort>(R"({"yyy":1,"zzz":3})"), R"({"x":0,"yyy":1})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedShort>(R"({"yyy":1,"x":1})"),
-              key_of("NamedShort", "satisfies the settings of yyjson::not_") + " at /x");
+              at(key_of("NamedShort", "satisfies the subschema of not"), "/x"));
     // a key that a closed type rejects comes first, and the count after the keys
     EXPECT_EQ(read_with<NamedClosed>(R"({"x":1})"), R"({"x":1})");
-    EXPECT_EQ(read_with<NamedClosed>(R"({"x":1,"zz":1})"), closed("NamedClosed", "zz") + " at /zz");
-    EXPECT_EQ(read_with<NamedClosed>(R"({"zz":1,"x":1})"), closed("NamedClosed", "zz") + " at /zz");
+    EXPECT_EQ(read_with<NamedClosed>(R"({"x":1,"zz":1})"), at(closed("NamedClosed"), "/zz"));
+    EXPECT_EQ(read_with<NamedClosed>(R"({"zz":1,"x":1})"), at(closed("NamedClosed"), "/zz"));
     EXPECT_EQ(read_with<NamedCounted>(R"({"x":1,"zz":1})"),
-              key_of("NamedCounted", "is longer than the maximum length 1") + " at /zz");
+              at(key_of("NamedCounted", "is longer than the maximum length 1"), "/zz"));
     EXPECT_EQ(read_with<NamedCounted>(R"({"x":1,"z":1})"), more("NamedCounted", 1));
 #if FIELD_RFL_ANNOTATIONS
     EXPECT_EQ(read_with<NamedAnnotated>(R"({"a":1,"B":2})"), R"({"a":1,"B":2})");
     EXPECT_EQ(read_with<NamedAnnotated>(R"({"a":1,"b":2})"), R"({"a":1,"B":0})");
     EXPECT_EQ(read_with<NamedAnnotated>(R"({"cc":1})"),
-              key_of("NamedAnnotated", "is longer than the maximum length 1") + " at /cc");
+              at(key_of("NamedAnnotated", "is longer than the maximum length 1"), "/cc"));
 #endif
 }
 
@@ -1674,18 +1687,18 @@ TEST(PropertyNames, Tags)
     EXPECT_EQ(read_with<NamedShape>(R"({"kind":"c","r":1})"), R"({"kind":"c","r":1})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedShape>(R"({"r":1,"kind":"c","z":1})"),
-              key_of("NamedCircle", R"(is not one of "r", "kind")") + " at /z");
+              at(key_of("NamedCircle", R"(is not one of "r", "kind")"), "/z"));
     EXPECT_EQ(read_with<NamedShape>(R"({"kind":"r","w":1,"h":2})"),
-              key_of("NamedRect", "is longer than the maximum length 1") + " at /kind");
+              at(key_of("NamedRect", "is longer than the maximum length 1"), "/kind"));
     EXPECT_EQ(read_with<NamedRect>(R"({"w":1,"h":2})"), R"({"w":1,"h":2})");
     // the keys of an adjacent tag are keys of the struct that holds the variant
     EXPECT_EQ(read_with<NamedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
               R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<NamedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2},"extra":1})"),
-              key_of("NamedEnvelope", "is longer than the maximum length 4") + " at /extra");
+              at(key_of("NamedEnvelope", "is longer than the maximum length 4"), "/extra"));
     EXPECT_EQ(read_with<NamedTagless>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
-              key_of("NamedTagless", R"(is not one of "id", "data")") + " at /kind");
+              at(key_of("NamedTagless", R"(is not one of "id", "data")"), "/kind"));
 }
 
 TEST(PropertyNames, MergeInto)
@@ -1693,27 +1706,27 @@ TEST(PropertyNames, MergeInto)
     // the keys of the merged object are checked, as read checks them: the field "bad" that `t` writes too
     const auto t = NamedPt{1, 2, 3};
     const auto longer = key_of("NamedPt", "is longer than the maximum length 2");
-    EXPECT_EQ(merge_with(t, R"({"a":4})"), longer + " at /bad");
+    EXPECT_EQ(merge_with(t, R"({"a":4})"), at(longer, "/bad"));
     EXPECT_EQ(merge_with(t, R"({"a":4,"bad":null})"), R"({"a":4,"bb":2})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(merge_with(t, R"({"bad":null})"), R"({"a":1,"bb":2})");
     EXPECT_EQ(merge_with(t, R"({ "bad" : null , "zzz" : null })"), R"({"a":1,"bb":2})");
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(merge_with(t, R"({"bad":4})"), longer + " at /bad");
-    EXPECT_EQ(merge_with(t, R"({"a":4,"zzz":1})"), longer + " at /bad");
-    EXPECT_EQ(merge_with(t, R"({"bad":null,"a":4,"zzz":1})"), longer + " at /zzz");
-    EXPECT_EQ(merge_with(t, R"({ "bad" : null , "zzz" : null , "zzz" : 1 })"), longer + " at /zzz");
+    EXPECT_EQ(merge_with(t, R"({"bad":4})"), at(longer, "/bad"));
+    EXPECT_EQ(merge_with(t, R"({"a":4,"zzz":1})"), at(longer, "/bad"));
+    EXPECT_EQ(merge_with(t, R"({"bad":null,"a":4,"zzz":1})"), at(longer, "/zzz"));
+    EXPECT_EQ(merge_with(t, R"({ "bad" : null , "zzz" : null , "zzz" : 1 })"), at(longer, "/zzz"));
     EXPECT_EQ(merge_with(NamedPtV{1, 2, 3}, R"({"bad":4})"),
-              key_of("NamedPtV", "is longer than the maximum length 2") + " at /bad");
+              at(key_of("NamedPtV", "is longer than the maximum length 2"), "/bad"));
     EXPECT_EQ(merge_with(NamedWide(), R"({"i":1,"jjj":null})"),
               R"({"a":0,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":1})");
     EXPECT_EQ(merge_with(NamedWide(), R"({"i":1,"jjj":1})"),
-              key_of("NamedWide", "is longer than the maximum length 2") + " at /jjj");
-    EXPECT_EQ(merge_with(NamedHolder(), R"({"p":{"zzz":1}})"), longer + " at /p/zzz");
+              at(key_of("NamedWide", "is longer than the maximum length 2"), "/jjj"));
+    EXPECT_EQ(merge_with(NamedHolder(), R"({"p":{"zzz":1}})"), at(longer, "/p/zzz"));
     EXPECT_EQ(merge_with(NamedHolder(), R"({"p":{"zzz":null}})"), R"({"p":{"a":0,"bb":0},"v":[]})");
     EXPECT_EQ(merge_with(NamedShape(NamedCircle{1}), R"({"kind":"c","r":2})"), R"({"kind":"c","r":2})");
     EXPECT_EQ(merge_with(NamedShape(NamedCircle{1}), R"({"kind":"c","z":2})"),
-              key_of("NamedCircle", R"(is not one of "r", "kind")") + " at /z");
+              at(key_of("NamedCircle", R"(is not one of "r", "kind")"), "/z"));
 }
 
 TEST(PropertyNames, Write)
@@ -1749,13 +1762,12 @@ TEST(DependentRequired, Read)
     EXPECT_TRUE(direct_read);
     // the policies check the keys first
     EXPECT_EQ(read_with<Billing>(R"({"card":"c"})", yyjson::reject_missing_keys), missing("Billing", "name"));
-    EXPECT_EQ(read_with<Billing>(R"({"card":"c","z":1})", yyjson::reject_unknown_keys),
-              unknown("Billing", "z") + " at /z");
+    EXPECT_EQ(read_with<Billing>(R"({"card":"c","z":1})", yyjson::reject_unknown_keys), at(unknown("Billing"), "/z"));
     EXPECT_EQ(read_with<Billing>(R"({"name":"a","card":"c"})", yyjson::strict), dependent("Billing", "address"));
     EXPECT_EQ(read_with<Billing>(R"({"name":"a","card":"c","address":"b","postal":1})", yyjson::strict),
               R"({"name":"a","card":"c","address":"b","postal":1})");
     // a struct in an element checks its own object
-    EXPECT_EQ(read_with<std::vector<Billing>>(R"([{},{"card":"c"}])"), dependent("Billing", "address") + " at /1");
+    EXPECT_EQ(read_with<std::vector<Billing>>(R"([{},{"card":"c"}])"), at(dependent("Billing", "address"), "/1"));
     EXPECT_EQ(error_path<std::vector<Billing>>(R"([{},{"card":"c"}])"), "/1");
 #if FIELD_RFL_ANNOTATIONS
     EXPECT_EQ(read_with<PresenceAnnotated>(R"({"a":1,"cc":2})"), R"({"a":1,"cc":2})");
@@ -1792,7 +1804,7 @@ TEST(RequiredGroups, Read)
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(read_with<Reachable>(R"({"phone":"p"})"), R"({"phone":"p"})");
     EXPECT_EQ(read_with<Reachable>(R"({"email":"a"})"), none_of("Reachable", R"(["phone"], ["fax"])"));
-    EXPECT_EQ(read_with<Reachable>(R"({"fax":"f"})"), none_of("Reachable", R"(["email"], ["phone"])"));
+    EXPECT_EQ(read_with<Reachable>(R"({"fax":"f"})"), none_of("Reachable", R"(["email"], ["phone"])", "anyOf"));
     EXPECT_EQ(read_with<Reachable>(R"({"email":"a","phone":"p","fax":"f"})"),
               many_of("Reachable", R"(["phone"], ["fax"])"));
     EXPECT_EQ(read_with<ExclusiveVisitable>(R"({"b":1})"), R"({"b":1})");
@@ -1807,15 +1819,15 @@ TEST(RequiredGroups, Read)
     // the keys of a closed type, the count and the values of the fields come before the settings
     EXPECT_EQ(read_with<PresenceChecked>(R"({"b":1})"), R"({"n":0,"b":1})");
     EXPECT_TRUE(direct_read);
-    EXPECT_EQ(read_with<PresenceChecked>(R"({"z":1})"), closed("PresenceChecked", "z") + " at /z");
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"z":1})"), at(closed("PresenceChecked"), "/z"));
     EXPECT_EQ(read_with<PresenceChecked>(R"({"n":1,"a":1,"b":1})"), more("PresenceChecked", 2));
     EXPECT_EQ(read_with<PresenceChecked>(R"({"n":-1})"),
-              error("the value of the key \"n\" of PresenceChecked is less than the minimum 0 at /n"));
-    EXPECT_EQ(read_with<PresenceChecked>(R"({"n":1})"), none_of("PresenceChecked", R"(["a"], ["b"])"));
+              error(R"(the number is less than the minimum 0 at /n; reading the key "n" of PresenceChecked)"));
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"n":1})"), none_of("PresenceChecked", R"(["a"], ["b"])", "anyOf"));
     EXPECT_EQ(read_with<PresenceChecked>(R"({"a":0})"),
-              error("PresenceChecked has the keys and the values that yyjson::not_ rejects"));
+              error("the value satisfies the subschema of not; reading PresenceChecked in yyjson::not_"));
     // a struct in an element checks its own object
-    EXPECT_EQ(read_with<std::vector<Measure>>(R"([{"env":"e"},{}])"), measure_none + " at /1");
+    EXPECT_EQ(read_with<std::vector<Measure>>(R"([{"env":"e"},{}])"), at(measure_none, "/1"));
     EXPECT_EQ(error_path<std::vector<Measure>>(R"([{"env":"e"},{}])"), "/1");
 #if FIELD_RFL_ANNOTATIONS
     EXPECT_EQ(read_with<PresenceAnnotated>(R"({"B":1})"), R"({"B":1})");
@@ -1888,30 +1900,31 @@ TEST(ExtraKeys, Read)
     // the name of the field is not a key of the object
     EXPECT_EQ(read_with<ExtraOpen>(R"({"more":1})"), R"({"a":0,"more":1})");
     EXPECT_EQ(read_with<ExtraOpen>(R"({"more":{"x":1}})"),
-              R"(bad cast: int is not constructible from JSON object at /more)");
+              "bad cast: expected an integer, got an object at /more; reading int");
     // the values are read and checked as the elements of a map
     EXPECT_EQ(read_with<ExtraOpen>(R"({"a":1,"x":"s"})"),
-              error("int is not constructible from JSON string") + " at /x");
+              at(error("expected an integer, got a string; reading int"), "/x"));
     EXPECT_EQ(read_with<ExtraOpen>(R"({"a":1,"x":-1})"),
-              extra_value("ExtraOpen", "x", "is less than the minimum 0") + " at /x");
+              at(extra_value("ExtraOpen", "is less than the minimum 0"), "/x"));
     EXPECT_EQ(error_path<ExtraOpen>(R"({"a":1,"x":-1})"), "/x");
     // null is not a missing key, and only a value that holds null takes it
-    EXPECT_EQ(read_with<ExtraOpen>(R"({"a":1,"x":null})"), error("int is not constructible from JSON null") + " at /x");
+    EXPECT_EQ(read_with<ExtraOpen>(R"({"a":1,"x":null})"),
+              at(error("expected an integer, got null; reading int"), "/x"));
     EXPECT_EQ(read_with<ExtraNullable>(R"({"x":null})"), R"({"a":0,"x":null})");
     EXPECT_EQ(read_or_error([] { return yyjson::read<ExtraAny>(R"({"x":[1,{"b":null}],"a":2,"n":null})"); }),
               R"({"a":2,"n":null,"x":[1,{"b":null}]})");
     // the key is checked before its value
     EXPECT_EQ(read_with<ExtraShort>(R"({"xyz":-1})"),
-              key_of("ExtraShort", "is longer than the maximum length 2") + " at /xyz");
+              at(key_of("ExtraShort", "is longer than the maximum length 2"), "/xyz"));
     EXPECT_EQ(read_with<ExtraShort>(R"({"xy":-1})"),
-              extra_value("ExtraShort", "xy", "is less than the minimum 0") + " at /xy");
+              at(extra_value("ExtraShort", "is less than the minimum 0"), "/xy"));
     EXPECT_EQ(read_with<ExtraShort>(R"({"long_name":1,"xy":1})"), R"({"long_name":1,"xy":1})");
     // a key twice
     EXPECT_EQ(read_with<ExtraOpen>(R"({"x":1,"a":1,"x":2})"), R"({"a":1,"x":2})");
     EXPECT_EQ(read_with<ExtraOpen>(R"({"x":1,"a":1,"x":2})", yyjson::reject_duplicates),
-              repeated("ExtraOpen", "x") + " at /x");
+              at(repeated("ExtraOpen"), "/x"));
     EXPECT_EQ(read_with<ExtraOpen>(R"({"x":1,"x":-1})"),
-              extra_value("ExtraOpen", "x", "is less than the minimum 0") + " at /x");
+              at(extra_value("ExtraOpen", "is less than the minimum 0"), "/x"));
     // the map starts from its value in `T()`
     EXPECT_EQ(read_with<ExtraSeeded>(R"({"a":1,"x":2})"), R"({"a":1,"seed":1,"x":2})");
     EXPECT_EQ(read_with<ExtraSeeded>(R"({"seed":2})"), R"({"a":0,"seed":2})");
@@ -1937,7 +1950,7 @@ TEST(ExtraKeys, ReadInto)
                                         flag);
                       return u;
                   }),
-                  error("int is not constructible from JSON null") + " at /y");
+                  at(error("expected an integer, got null; reading int"), "/y"));
     }
 }
 
@@ -1963,24 +1976,21 @@ TEST(ExtraKeys, StructSettings)
     EXPECT_EQ(read_with<ExtraCounted>(R"({"x":2})"), fewer("ExtraCounted", 2));
     EXPECT_EQ(read_with<ExtraCounted>(R"({"a":1,"x":2,"y":3,"z":4})"), more("ExtraCounted", 3));
     EXPECT_EQ(read_with<ExtraCounted>(R"({"a":1,"long":2})"),
-              key_of("ExtraCounted", "is longer than the maximum length 3") + " at /long");
+              at(key_of("ExtraCounted", "is longer than the maximum length 3"), "/long"));
     // a condition that closes the struct rejects the keys that the field would take
     EXPECT_EQ(read_with<ExtraConditional>(R"({"kind":"open","x":2})"), R"({"kind":"open","x":2})");
     EXPECT_EQ(read_with<ExtraConditional>(R"({"kind":"closed"})"), R"({"kind":"closed"})");
-    EXPECT_EQ(
-        read_with<ExtraConditional>(R"({"kind":"closed","x":2})"),
-        error(
-            R"(ExtraConditional has the key "x", which yyjson::additional_properties(false) of yyjson::if_then_else rejects)") +
-            " at /x");
+    EXPECT_EQ(read_with<ExtraConditional>(R"({"kind":"closed","x":2})"),
+              error("the value satisfies if and not then at /x; reading ExtraConditional in yyjson::if_then_else"));
     // the struct inside other types, and the keywords of an object at a field of the struct
     EXPECT_EQ(read_with<ExtraHolder>(R"({"p":{"a":1,"x":2},"v":[{"y":1}],"m":{"k":{"z":1}},"o":{"w":1}})"),
               R"({"p":{"a":1,"x":2},"v":[{"a":0,"y":1}],"m":{"k":{"a":0,"z":1}},"o":{"a":0,"w":1}})");
     EXPECT_EQ(read_with<ExtraHolder>(R"({"p":{"x":2}})"),
-              error(R"(the value of the key "p" of ExtraHolder has fewer properties than the minimum 2)") + " at /p");
+              error(R"(the object has fewer properties than the minimum 2 at /p; reading the key "p" of ExtraHolder)"));
     EXPECT_EQ(read_with<ExtraHolder>(R"({"p":{"a":1,"x":2},"v":[{},{"y":-1}]})"),
-              extra_value("ExtraOpen", "y", "is less than the minimum 0") + " at /v/1/y");
+              at(extra_value("ExtraOpen", "is less than the minimum 0"), "/v/1/y"));
     EXPECT_EQ(read_with<ExtraHolder>(R"({"p":{"a":1,"x":2},"o":{"y":-1}})"),
-              extra_value("ExtraOpen", "y", "is less than the minimum 0") + " at /o/y");
+              at(extra_value("ExtraOpen", "is less than the minimum 0"), "/o/y"));
 }
 
 TEST(ExtraKeys, MergeInto)
@@ -1990,16 +2000,16 @@ TEST(ExtraKeys, MergeInto)
     EXPECT_EQ(merge_with(t, R"({"x":5,"y":null,"z":3})"), R"({"a":1,"x":5,"z":3})");
     EXPECT_TRUE(direct_read);
     EXPECT_EQ(merge_with(t, R"({"q":null,"a":2})"), R"({"a":2,"x":1,"y":2})");
-    EXPECT_EQ(merge_with(t, R"({"x":-1})"), extra_value("ExtraOpen", "x", "is less than the minimum 0") + " at /x");
-    EXPECT_EQ(merge_with(t, R"({"x":"s"})"), error("int is not constructible from JSON string") + " at /x");
+    EXPECT_EQ(merge_with(t, R"({"x":-1})"), at(extra_value("ExtraOpen", "is less than the minimum 0"), "/x"));
+    EXPECT_EQ(merge_with(t, R"({"x":"s"})"), at(error("expected an integer, got a string; reading int"), "/x"));
     EXPECT_EQ(merge_with(ExtraSeeded{5, {{"old", 3}}}, R"({"x":2,"old":null})"), R"({"a":5,"x":2})");
     // the keys of the members that are not null are checked
     EXPECT_EQ(merge_with(ExtraShort(), R"({"xyz":1})"),
-              key_of("ExtraShort", "is longer than the maximum length 2") + " at /xyz");
+              at(key_of("ExtraShort", "is longer than the maximum length 2"), "/xyz"));
     EXPECT_EQ(merge_with(ExtraShort(), R"({"xyz":null,"y":2})"), R"({"long_name":0,"y":2})");
     // the merge checks the field "p" that the patch leaves out
     EXPECT_EQ(merge_with(ExtraHolder(), R"({"v":[{"x":1}],"o":{"y":2}})"),
-              error(R"(the value of the key "p" of ExtraHolder has fewer properties than the minimum 2)") + " at /p");
+              error(R"(the object has fewer properties than the minimum 2 at /p; reading the key "p" of ExtraHolder)"));
     EXPECT_EQ(merge_with(ExtraHolder(), R"({"p":{"x":2},"v":[{"x":1}],"o":{"y":2}})"),
               R"({"p":{"a":0,"x":2},"v":[{"a":0,"x":1}],"m":{},"o":{"a":0,"y":2}})");
     // null erases a key also from a map whose values hold null
@@ -2060,11 +2070,13 @@ TEST(ExtraKeys, Validate)
     expect_valid(ExtraShape(ExtraCircle{1, {{"x", 2}}}));
     expect_valid(ExtraShort{1, {{"xy", 2}}});
     // the keywords of the values and of the keys of the map
-    expect_invalid(ExtraOpen{1, {{"x", -1}}}, R"(the value of the key "x" of ExtraOpen is less than the minimum 0)",
-                   "/x");
+    expect_invalid(ExtraOpen{1, {{"x", -1}}},
+                   "the number is less than the minimum 0 at /x; reading a member value of ExtraOpen", "/x");
     expect_invalid(std::vector{ExtraOpen{1, {{"x", -1}}}},
-                   R"(the value of the key "x" of ExtraOpen is less than the minimum 0)", "/0/x");
-    expect_invalid(ExtraShort{1, {{"xyz", 1}}}, "a key of ExtraShort is longer than the maximum length 2", "/xyz");
+                   "the number is less than the minimum 0 at /0/x; reading a member value of ExtraOpen",
+                   "/0/x");
+    expect_invalid(ExtraShort{1, {{"xyz", 1}}},
+                   "the key is longer than the maximum length 2 at /xyz; reading a key of ExtraShort", "/xyz");
     // a key that the struct writes for a field or a tag is no keyword, but the checked write throws as the write
     EXPECT_THROW((void)yyjson::write(ExtraOpen{1, {{"a", 2}}}, yyjson::with_validation), std::invalid_argument);
     EXPECT_THROW((void)yyjson::write(ExtraShape(ExtraCircle{1, {{"type", 2}}}), yyjson::with_validation),
@@ -2076,9 +2088,9 @@ TEST(ExtraKeys, Annotations)
 {
     EXPECT_EQ(read_with<ExtraAnnotated>(R"({"x":2,"a":1})"), R"({"a":1,"x":2})");
     EXPECT_EQ(read_with<ExtraAnnotated>(R"({"xyz":2})"),
-              key_of("ExtraAnnotated", "is longer than the maximum length 2") + " at /xyz");
+              at(key_of("ExtraAnnotated", "is longer than the maximum length 2"), "/xyz"));
     EXPECT_EQ(read_with<ExtraAnnotated>(R"({"x":-2})"),
-              extra_value("ExtraAnnotated", "x", "is less than the minimum 0") + " at /x");
+              at(extra_value("ExtraAnnotated", "is less than the minimum 0"), "/x"));
     EXPECT_EQ(std::string(yyjson::write(ExtraAnnotated{1, {{"x", 2}}})), R"({"a":1,"x":2})");
 }
 #endif

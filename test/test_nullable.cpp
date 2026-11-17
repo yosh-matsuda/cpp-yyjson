@@ -121,7 +121,7 @@ TEST(Nullable, ThreeStates)
     EXPECT_EQ(read_or_error([] { return yyjson::read<NulFieldsV>(R"({"p":null})", yyjson::strict); }),
               read_or_error([] { return yyjson::read(R"({"p":null})").cast<NulFieldsV>(yyjson::strict); }));
     EXPECT_EQ(read_or_error([] { return yyjson::read<NulFieldsV>(R"({"p":null})", yyjson::strict); }),
-              "bad cast: NulFieldsV is not constructible from JSON without the key \"n\"");
+              "bad cast: a required key is missing; reading the key \"n\" of NulFieldsV");
     EXPECT_EQ(read_or_error([] { return yyjson::read<NulFieldsV>(R"({"n":null,"p":null})", yyjson::strict); }),
               R"({"n":null,"p":null})");
     EXPECT_EQ(read_or_error([] {

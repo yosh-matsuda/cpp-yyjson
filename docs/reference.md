@@ -358,7 +358,7 @@ void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t, with_v
 
 A `write` with `with_validation` calls `validate` first, and then writes as the same `write` without the tag does. It gives the same text.
 
-*   `validate` throws [`yyjson::bad_cast`](#yyjsonbad_cast) for the first value that a constraint rejects. `path()` gives the JSON Pointer to that value in the written JSON. `position()` gives no position. `what()` is the message that `read<T>` gives for that value, without the position. A key that a read puts into another field than the map that writes it has its own message.
+*   `validate` throws [`yyjson::bad_cast`](#yyjsonbad_cast) for the first value that a constraint rejects. `path()` gives the JSON Pointer to that value in the written JSON. `position()` gives no position. `what()` is the text that `read<T>` gives for that value, without the position. A key that a read puts into another field than the map that writes it has its own message.
 *   When the write rejects the same object, a `write` with `with_validation` throws the exception of the write instead of the `bad_cast`. Examples are `yyjson::write_error` for a NaN without `WriteFlag::AllowInfAndNan`, and `std::invalid_argument` for a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative. A field with the key of an internal tag that holds another name also gives `std::invalid_argument`.
 *   When `validate` throws, the forms with `out` leave `out` unchanged. This holds also when they throw the exception of the write in its place. When `validate` passes, `out` is as `yyjson::write` leaves it.
 
@@ -375,7 +375,7 @@ inline constexpr auto yyjson::annotations<Item> = yyjson::annotate(yyjson::field
 
 auto items = std::vector<Item>{{"a", 1}, {"b", -1}};
 yyjson::validate(items);
-// throws yyjson::bad_cast: the value of the key "count" of Item is less than the minimum 0 at /1/count
+// throws yyjson::bad_cast: the number is less than the minimum 0 at /1/count; reading the key "count" of Item
 
 auto out = std::string("previous");
 yyjson::write(items, out, yyjson::with_validation);
@@ -1579,7 +1579,7 @@ struct Point
 
 auto p = yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::strict);  // -> {1, 2}
 yyjson::read<Point>(R"({"x":1,"z":2})", yyjson::strict, yyjson::reject_unknown_keys);
-// throws yyjson::bad_cast: Point has no field of the key "z" at /z (line 1, column 12, pos 11)
+// throws yyjson::bad_cast: the object has a key that is not allowed at /z (line 1, column 12, pos 11); reading Point
 ```
 
 ## Annotations
@@ -1682,7 +1682,7 @@ inline constexpr auto yyjson::annotations<Customer> =
                      yyjson::field("address", yyjson::property("zip", yyjson::min_length(5), yyjson::max_length(5))));
 
 yyjson::read<Customer>(R"({"name":"Ann","address":{"city":"Oslo","zip":"123"}})");
-// throws yyjson::bad_cast: the value of the key "address" of Customer does not have the keys and the values that yyjson::property and required give at /address (line 1, column 25, pos 24)
+// throws yyjson::bad_cast: the object does not satisfy properties at /address (line 1, column 25, pos 24); reading the key "address" of Customer
 ```
 
 ### `yyjson::rename`
@@ -1789,8 +1789,8 @@ auto rule = yyjson::read<Rule>(R"([2,"always"])");  // -> Rule{2, "always", std:
 auto json = yyjson::write(rule);                     // -> [2,"always"]
 yyjson::write(Rule{1, std::nullopt, 80});
 // throws yyjson::write_error: Rule cannot be written as an array: the field "mode" at the element 1 has no value and a later element has one
-yyjson::read<Rule>("[1,null,80,4]");
-// throws yyjson::bad_cast: Rule has no field of the element 3 at /3 (line 1, column 12, pos 11)
+yyjson::read<Rule>(R"([1,"always",80,4])");
+// throws yyjson::bad_cast: the array has an element that is not allowed at /3 (line 1, column 16, pos 15); reading Rule
 ```
 
 ### `yyjson::extra_keys`
@@ -1940,7 +1940,7 @@ template <>
 inline constexpr auto yyjson::annotations<Account> = yyjson::annotate(yyjson::field("id", yyjson::required));
 
 yyjson::read<Account>(R"({"name":"Ann"})");
-// throws yyjson::bad_cast: Account is not constructible from JSON without the key "id" (line 1, column 1, pos 0)
+// throws yyjson::bad_cast: a required key is missing (line 1, column 1, pos 0); reading the key "id" of Account
 
 struct Contact
 {
@@ -1953,7 +1953,7 @@ inline constexpr auto yyjson::annotations<Contact> =
     yyjson::annotate(yyjson::any_of(yyjson::required("email"), yyjson::required("phone")));
 
 yyjson::read<Contact>(R"({})");
-// throws yyjson::bad_cast: Contact is not constructible from JSON without all the keys of one of ["email"], ["phone"] (line 1, column 1, pos 0)
+// throws yyjson::bad_cast: the value satisfies none of the subschemas of anyOf (line 1, column 1, pos 0); reading Contact without all the keys of one of ["email"], ["phone"]
 ```
 
 ### `yyjson::default_`, `yyjson::default_from`
@@ -2110,7 +2110,7 @@ inline constexpr auto yyjson::annotations<User> =
     yyjson::annotate(yyjson::field("name", yyjson::min_length(1)), yyjson::field("age", yyjson::minimum(0)));
 
 yyjson::read<User>(R"({"name":"Ann","age":-1})");
-// throws yyjson::bad_cast: the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
+// throws yyjson::bad_cast: the number is less than the minimum 0 at /age (line 1, column 21, pos 20); reading the key "age" of User
 ```
 
 ### Constraints of elements
@@ -2164,7 +2164,7 @@ inline constexpr auto yyjson::annotations<Survey> = yyjson::annotate(
     yyjson::field("env", yyjson::property_names(yyjson::min_length(1))));
 
 yyjson::read<Survey>(R"({"scores":[90,101]})");
-// throws yyjson::bad_cast: an element of the value of the key "scores" of Survey is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14)
+// throws yyjson::bad_cast: the number is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14); reading an element of the value at the key "scores" of Survey
 ```
 
 ### `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of`
@@ -2211,7 +2211,7 @@ inline constexpr auto yyjson::annotations<Contact> =
     yyjson::annotate(yyjson::one_of(yyjson::required("email"), yyjson::required("phone")));
 
 yyjson::read<Contact>(R"({})");
-// throws yyjson::bad_cast: Contact is not constructible from JSON without all the keys of one of ["email"], ["phone"] (line 1, column 1, pos 0)
+// throws yyjson::bad_cast: the value satisfies none of the subschemas of oneOf (line 1, column 1, pos 0); reading Contact without all the keys of one of ["email"], ["phone"]
 ```
 
 ### `yyjson::dependent_required`
@@ -2547,7 +2547,7 @@ yyjson_write_code code() const noexcept;
 Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API. It is also thrown in these cases:
 
 *   [`yyjson::validate`](#yyjsonvalidate-yyjsonwith_validation) finds a value that a constraint rejects. Then `position()` gives no position.
-*   The constructor of an array class or an object class gets a JSON value of another kind. Then `what()` is `Could not cast to JSON array` or `Could not cast to JSON object`, and it names no C++ type.
+*   The constructor of an array class or an object class gets a JSON value of another kind. Then `what()` is like `expected an array, got a number`, and it has no note.
 
 ```cpp
 class bad_cast : public std::runtime_error
@@ -2557,6 +2557,7 @@ public:
     std::string_view path() const noexcept;
     std::optional<text_position> position() const noexcept;
     error_kind kind() const noexcept;
+    std::string message() const;
     std::string_view keyword() const noexcept;
 };
 
@@ -2576,28 +2577,34 @@ struct text_position
 };
 ```
 
-*   `what()` names the C++ type and the kind of the JSON value, except for the constructors above.
+*   `message()` returns what the failure is, in the words of JSON, such as `expected an integer, got a string`. It names no C++ type and holds no text of the input, such as a string, a member name or a number. It holds no path and no position. The table below gives the message of each kind. For a `bad_cast` that a caster constructs with its own text, `message()` is `the value is not valid`. The two read-back failures of `yyjson::validate` in the row `other` give the same text.
+*   `what()` starts with the message. For `out_of_range`, it adds the number, as in `the number is out of range, got 3000`. The path follows after ` at `, and the position follows in parentheses. A note for the developer follows after `; `. The note names the C++ type, such as `reading int` or `reading the key "age" of User`. `what()` leaves out each part that is not known. A `bad_cast` that a caster constructs keeps its own text in place of the message.
+
+    ```text
+    expected an integer, got a string at /items/1/x (line 1, column 24, pos 23); reading int
+    ```
+
 *   `path()` returns the JSON Pointer (RFC 6901) to the value, from the value that the cast started at, such as `/users/3/name`.
 *   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document gives no position.
 *   `kind()` returns the category of the failure. A program can select its response by the category, and need not parse `what()`.
 *   `keyword()` returns the JSON Schema keyword that the value does not satisfy, such as `maxLength`. It is empty when `kind()` is not `error_kind::keyword`.
 
-| `kind()` | The failure |
-| --- | --- |
-| `type` | The JSON value is of a kind that the C++ type does not read, such as a string for an `int`, or a number that is not an integer for an `int`. |
-| `out_of_range` | The number does not fit in the C++ type. |
-| `size` | The array has another number of elements than a `std::array`, a C array, a `std::tuple` or a `std::pair`, or more elements than a range of fixed capacity holds. |
-| `unknown_key` | The object has a key that the struct does not take, under `yyjson::reject_unknown_keys` or in a [closed struct](validation.md#closed-structs). In a struct with `yyjson::as_array`, the array has an element after the fields. |
-| `missing_key` | The object does not have a key that the struct requires, under `yyjson::reject_missing_keys` or `yyjson::strict`. In a struct with `yyjson::as_array`, the array has no element for a required field. |
-| `duplicate` | The object has a key two times, or a set reads an element two times, under `yyjson::reject_duplicates` or `yyjson::strict`. |
-| `null` | The value is null for a field that does not read null, under `yyjson::reject_null_as_missing` or `yyjson::strict`. |
-| `unknown_enum` | The string or the number names no enumerator. |
-| `tag` | The tag of a tagged variant is not there or is not a string, or it names no alternative that the read can make. |
-| `no_alternative` | No alternative of a `std::variant`, a `yyjson::any_of_variant` or a `yyjson::one_of_variant` reads the value. |
-| `ambiguous_alternative` | Two or more alternatives of a `yyjson::one_of_variant` read the value. |
-| `keyword` | The value does not satisfy a [constraint](validation.md#constraints). `keyword()` tells which. |
-| `recursion_limit` | The value is nested deeper than the [recursion limit](conversions.md#recursive-types). |
-| `other` | A caster constructed the `bad_cast` with its own message. |
+| `kind()` | The failure | `message()` |
+| --- | --- | --- |
+| `type` | The JSON value is of a kind that the C++ type does not read, such as a string for an `int`, or a number that is not an integer for an `int`. | `expected an integer, got a string`. The accepted kinds come from the C++ type. |
+| `out_of_range` | The number does not fit in the C++ type. | `the number is out of range` |
+| `size` | The array has another number of elements than a `std::array`, a C array, a `std::tuple` or a `std::pair`, or more elements than a range of fixed capacity holds. The object has another number of members than a `std::array`, a C array or a `std::tuple` of key-value pairs. | `expected an array of 2 elements`, or `of at most 2 elements` for a range of fixed capacity. `expected an object of 2 members` for an object. |
+| `unknown_key` | The object has a key that the struct does not take, under `yyjson::reject_unknown_keys` or in a [closed struct](validation.md#closed-structs). In a struct with `yyjson::as_array`, the array has an element after the fields. | `the object has a key that is not allowed`, or `the array has an element that is not allowed` |
+| `missing_key` | The object does not have a key that the struct requires: the key of a field with [`yyjson::required`](#yyjsonrequired) in every read, or the key of a field without a default under `yyjson::reject_missing_keys` or `yyjson::strict`. In a struct with `yyjson::as_array`, the array has no element for a required field. | `a required key is missing`, or `a required element is missing` |
+| `duplicate` | The object has a key two times, or a set reads an element two times, under `yyjson::reject_duplicates` or `yyjson::strict`. | `the object has a duplicate key`, or `the array has a duplicate element` |
+| `null` | The value is null for a `std::optional` field, which reads null as a missing key, under `yyjson::reject_null_as_missing` or `yyjson::strict`. The value is null at an element of a `std::optional` field of a struct with `yyjson::as_array`, in every read. `merge_into` under `yyjson::reject_missing_keys` gets null for a key that the struct requires. A null for a type that does not read null, such as `int`, gives `type`. | `the value must not be null` |
+| `unknown_enum` | The string names no enumerator. A number for an enumeration that reads only names gives `type`. | `the value is not one of the allowed values` |
+| `tag` | The tag of a tagged variant is not there or is not a string, or it names no alternative that the read can make. | `the tag "type" names no alternative`, `the tag "type" is not a string`, `the object has no tag "type"` or `the object has no value for the tag "type"`. `"type"` is the key of the tag, which the type gives. |
+| `no_alternative` | No alternative of a `std::variant`, a `yyjson::any_of_variant` or a `yyjson::one_of_variant` reads the value. | `no alternative accepts the value` |
+| `ambiguous_alternative` | Two or more alternatives of a `yyjson::one_of_variant` read the value. | `the value matches more than one alternative` |
+| `keyword` | The value does not satisfy a [constraint](validation.md#constraints). `keyword()` tells which. | the text of the [constraint](validation.md#constraints), such as `the string is longer than the maximum length 8`. The limit comes from the setting. |
+| `recursion_limit` | The value is nested deeper than the [recursion limit](conversions.md#recursive-types). | `the value is nested too deeply` |
+| `other` | A caster constructed the `bad_cast` with its own text. Or `yyjson::validate` found a value that the read of the written JSON does not give back: an empty `std::optional` field that a read fills with its default, or a key of a map field that a read puts into another field or into no field. | `the value is not valid` |
 
 `keyword()` gives the name of the keyword in JSON Schema 2020-12, as the [table of keywords](validation.md#json-schema-keywords) relates them to the constraints. Two constraints are not keywords of JSON Schema: `yyjson::satisfies` gives `satisfies`, and `yyjson::matches<T>` gives `matches`. When a value does not satisfy a combinator, such as `yyjson::not_`, `yyjson::any_of` or `yyjson::one_of`, `keyword()` names the combinator, not a constraint in it. When a value does not satisfy `yyjson::if_then_else`, `keyword()` is `then` or `else`, as the condition selects. When a combinator holds another combinator, the outer one gives the name. `yyjson::required` in a combinator or in a condition gives `required`. The keys that `yyjson::dependent_required` requires give `dependentRequired`.
 
@@ -3055,7 +3062,7 @@ struct one_of_variant : std::variant</* T of each A */...>
 using Range = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
 
 yyjson::read<Range>("-1").index();  // -> 1
-yyjson::read<Range>("5");           // throws yyjson::bad_cast: alternatives 0 and 1 match
+yyjson::read<Range>("5");           // throws yyjson::bad_cast: the value matches more than one alternative
 ```
 
 ### `yyjson::overloaded`

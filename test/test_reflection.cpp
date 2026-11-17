@@ -1381,9 +1381,9 @@ TEST(Reflection, UniquePointers)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_TRUE(
-            std::string_view(e.what()).ends_with("> is not constructible from JSON integer (line 1, column 1, pos 0)"))
-            << e.what();
+        EXPECT_EQ(std::string_view(e.what()),
+                  std::format("expected null, got a number (line 1, column 1, pos 0); reading {}",
+                              yyjson::detail::type_name<std::unique_ptr<int[]>>()));
     }
 
     const auto* json = R"({"a":1,"p":2,"o":"s","v":[3,null],"m":{"x":1.5,"y":null}})";

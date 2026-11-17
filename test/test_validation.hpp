@@ -24,11 +24,6 @@ namespace
         return yyjson::bad_cast("no exception");
     }
 
-    inline std::string with_path(std::string_view message, std::string_view path)
-    {
-        return std::string(message) + (path.empty() ? "" : " at " + std::string(path));
-    }
-
     // Each form of the write with `yyjson::with_validation`, by the text that it writes.
     template <typename T>
     std::vector<std::string> checked_writes(const T& t)
@@ -70,11 +65,12 @@ namespace
     // `yyjson::validate(t)` throws `message` at `path`, each checked write throws the same and leaves `out` as it
     // was, and a read of the text of the plain write throws the same too, unless `leg` skips it.
     template <typename T>
-    void expect_invalid(const T& t, std::string_view message, std::string_view path, read_leg leg = read_leg::checked)
+    void expect_invalid(const T& t, const expected_text& message, std::string_view path,
+                        read_leg leg = read_leg::checked)
     {
         using yyjson::with_validation, yyjson::WriteFlag;
         const auto e = validation_error([&] { yyjson::validate(t); });
-        EXPECT_EQ(std::string_view(e.what()), with_path(message, path));
+        expect_text(e.what(), message);
         EXPECT_EQ(e.path(), path);
         EXPECT_FALSE(e.position().has_value());
 
@@ -97,7 +93,7 @@ namespace
             {
                 const auto json = std::string(yyjson::write(t));
                 const auto r = validation_error([&] { (void)yyjson::read<T>(json); });
-                EXPECT_TRUE(std::string_view(r.what()).starts_with(message)) << json << "\n" << r.what();
+                EXPECT_EQ(what_without_position(r), std::string_view(e.what())) << json;
                 EXPECT_EQ(r.path(), path) << json;
             }
         }
