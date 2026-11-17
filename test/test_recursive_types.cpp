@@ -889,8 +889,11 @@ TEST(Reader, IndirectFields)
 
     // a field without a value after a move is not written, but reported
     auto taken = std::move(bare.leaf);
-    EXPECT_THROW((void)yyjson::write(bare), yyjson::bad_cast);
-    EXPECT_THROW((void)yyjson::object(bare), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::write(bare), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::object(bare), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::write(bare, yyjson::with_validation), std::invalid_argument);
+    // the check rejects it as the write does
+    EXPECT_THROW(yyjson::validate(bare), std::invalid_argument);
     // and reading gives it one again
     yyjson::merge_into(R"({"leaf":{"v":2}})", bare);
     EXPECT_FALSE(bare.leaf.valueless_after_move());

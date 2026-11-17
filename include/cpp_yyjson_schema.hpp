@@ -1902,11 +1902,19 @@ namespace yyjson
                     return read_schema_takes(
                         json.template cast<E>(yyjson::reject_missing_keys, yyjson::reject_null_as_missing));
                 }
-                catch (const std::bad_alloc&)
+                catch (const yyjson::bad_cast&)
                 {
-                    throw;
+                    return false;
                 }
-                catch (const std::exception&)
+                catch (const yyjson::read_error&)
+                {
+                    return false;
+                }
+                catch (const yyjson::write_error&)
+                {
+                    return false;
+                }
+                catch (const std::invalid_argument&)
                 {
                     return false;
                 }
@@ -1956,11 +1964,19 @@ namespace yyjson
                     return read_schema_takes<S, User>(
                         json.template cast<S>(yyjson::reject_missing_keys, yyjson::reject_null_as_missing));
                 }
-                catch (const std::bad_alloc&)
+                catch (const yyjson::bad_cast&)
                 {
-                    throw;
+                    return false;
                 }
-                catch (const std::exception&)
+                catch (const yyjson::read_error&)
+                {
+                    return false;
+                }
+                catch (const yyjson::write_error&)
+                {
+                    return false;
+                }
+                catch (const std::invalid_argument&)
                 {
                     return false;
                 }
@@ -2133,7 +2149,19 @@ namespace yyjson
                         const auto scope = yd::emit_defaults_scope();
                         yd::validate_object_field<false, S, K>(*s, WriteFlag::NoFlag);
                     }
-                    catch (const std::exception&)
+                    catch (const yyjson::bad_cast&)
+                    {
+                        it->second.reset();
+                    }
+                    catch (const yyjson::read_error&)
+                    {
+                        it->second.reset();
+                    }
+                    catch (const yyjson::write_error&)
+                    {
+                        it->second.reset();
+                    }
+                    catch (const std::invalid_argument&)
                     {
                         it->second.reset();
                     }
@@ -2636,19 +2664,31 @@ namespace yyjson
                 auto list = out.emplace("examples", empty_array);
                 for (const auto text : m.examples)
                 {
+                    const auto rejected = [&](const std::exception& e) {
+                        return std::invalid_argument("json_schema: the example " + std::string(text) + " of " +
+                                                     m.owner + " is not read: " + e.what());
+                    };
+                    // only the errors of the library: an exception of a caster of the user passes unchanged
                     try
                     {
                         const auto written = m.read(text, read_policies_);
                         list.emplace_back(yyjson::read(writing_ ? std::string_view(written) : text));
                     }
-                    catch (const std::bad_alloc&)
+                    catch (const read_error& e)
                     {
-                        throw;
+                        throw rejected(e);
                     }
-                    catch (const std::exception& e)
+                    catch (const bad_cast& e)
                     {
-                        throw std::invalid_argument("json_schema: the example " + std::string(text) + " of " + m.owner +
-                                                    " is not read: " + e.what());
+                        throw rejected(e);
+                    }
+                    catch (const write_error& e)
+                    {
+                        throw rejected(e);
+                    }
+                    catch (const std::invalid_argument& e)
+                    {
+                        throw rejected(e);
                     }
                 }
             }
@@ -2851,11 +2891,16 @@ namespace yyjson
                             yyjson::write(yyjson::read<R>(text), written);
                             text = std::move(written);
                         }
-                        catch (const std::bad_alloc&)
+                        catch (const yyjson::bad_cast&)
                         {
-                            throw;
                         }
-                        catch (const std::exception&)
+                        catch (const yyjson::read_error&)
+                        {
+                        }
+                        catch (const yyjson::write_error&)
+                        {
+                        }
+                        catch (const std::invalid_argument&)
                         {
                         }
                     }

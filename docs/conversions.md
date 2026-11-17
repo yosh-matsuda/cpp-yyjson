@@ -206,7 +206,7 @@ A JSON array or object with more or fewer elements than the tuple throws `yyjson
 
 A `std::variant` is read by trying its alternatives, unless a member of the JSON object names the alternative, as in a [tagged variant](#tagged-variants).
 
-A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. If a JSON array has another number of elements than a tuple or a `std::array`, the variant skips that alternative in the same way. If the array is longer than the [fixed capacity](#values-that-do-not-convert) of a range, the variant skips the range too. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
+A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. If a JSON array has another number of elements than a tuple or a `std::array`, the variant skips that alternative in the same way. If the array is longer than the [fixed capacity](#values-that-do-not-convert) of a range, the variant skips the range too. Only a `yyjson::bad_cast` thrown while an alternative is tried passes the value to the next alternative. Another exception propagates out of the read, such as a `std::bad_alloc` or an exception that a user-defined caster throws for its own reasons.
 
 If no alternative reads the value, the read throws `yyjson::bad_cast`. The message gives the reason of each alternative, in the order of the template arguments. The path and the position of the variant follow once, at the end. For example, `yyjson::read<std::variant<int, Point>>(R"({"x":"a"})")` throws `std::variant<int, Point> is not constructible from JSON: alternative 0 (int): reads no JSON object; alternative 1 (Point) at /x: int is not constructible from JSON string (line 1, column 1, pos 0)`. A reason about a value within the alternative has a path. ` at ` and a JSON Pointer then follow the index and the type of the alternative. The pointer starts at the value of the alternative, so `/x` is the key `x` of the object. A variant within an alternative gives only `... is not constructible from JSON` as its reason.
 
@@ -871,7 +871,7 @@ auto json = write(logger);
 ```
 
 *   A JSON string that is not the name of an enumerator throws `yyjson::bad_cast`, and so does a JSON number. The names are case-sensitive. When two enumerators have the same value, the one declared first gives the name, and the name of the other is not read.
-*   A value that is not the value of an enumerator, such as a combination of flags, has no name, and writing it throws `yyjson::bad_cast` with a message that tells the type and the value. Give such an enumeration [another format](#formats-and-renamed-enumerators).
+*   A value that is not the value of an enumerator, such as a combination of flags, has no name, and writing it throws `yyjson::write_error` with a message that tells the type and the value. `yyjson::validate` throws the same exception. Give such an enumeration [another format](#formats-and-renamed-enumerators).
 *   With C++20, field-reflection finds the enumerators only in the range [-128, 128], and the others have no name either. C++26 static reflection finds all of them. To widen the range for an enumeration, at the cost of compile time, specialize `field_reflection::enum_range`:
 
     ```cpp
@@ -1502,7 +1502,7 @@ The rules:
 *   [`yyjson::default_`](#default-values-and-required-keys) compares the `T` values, not the JSON that `X` writes. With `Mask`, a password other than the default is written, though its JSON is the same `"***"`. `yyjson::default_from<&f>` takes a function that returns the wrapper type.
 *   To make the key optional, put the wrapper inside: `std::optional<yyjson::with_caster<T, X>>`, or `yyjson::nullable<...>` for `null`. In `yyjson::with_caster<std::optional<T>, X>`, `X` converts the whole `std::optional`, and the field has no default: its key is required, as for any other type.
 *   A map whose keys are wrappers is written as an array of `[key, value]` pairs, as maps whose keys have a user-defined caster are.
-*   An exception that `X` throws reaches the caller as it is. A `yyjson::bad_cast` gets the path of the field, such as `/id`, as in any caster.
+*   An exception that `X` throws reaches the caller as it is. A `yyjson::bad_cast` gets the path of the field, such as `/id`, as in any caster. In an untagged variant, only a `yyjson::bad_cast` makes the variant try the next alternative.
 *   The field takes the [constraints](validation.md#constraints). `yyjson::satisfies<f>` takes a function of the wrapper type or of `T`. A keyword of a JSON kind, such as `yyjson::max_length`, checks the JSON value that `X` reads, as in [Values that a caster reads](validation.md#values-that-a-caster-reads).
 
 ## Recursive types
@@ -1563,7 +1563,7 @@ auto json = write(expr);
 ```
 
 *   `indirect<T>` reads the JSON values that `T` reads, and not null. For a key that may be absent, wrap it in a `std::optional`, as any other value. For null, use `std::variant<std::monostate, indirect<T>>`.
-*   After a move, an `indirect` holds no value. Writing it throws `yyjson::bad_cast` with the message `yyjson::indirect<T> has been moved from and holds no value to write`. Reading into it gives it a new value.
+*   After a move, an `indirect` holds no value. Writing it throws `std::invalid_argument` with the message `yyjson::indirect<T> has been moved from and holds no value to write`. `yyjson::validate` throws the same exception. Reading into it gives it a new value.
 *   Its default constructor makes `T()` on the heap and is `explicit`, as that of `std::indirect` is. A struct with a field of `indirect<U>` is therefore value-initialized as `S()`, which `read<S>` does, but not as `S{}`, and `std::default_initializable<S>` is false. A field of `indirect<S>` in `S` itself makes `S()` construct without end. Put it in a `std::optional`, in a `std::variant` whose first alternative ends, or in a range.
 *   A class `T` is constructed from a `T` or a class derived from it. Other arguments go after `std::in_place`, as in `indirect<std::string>(std::in_place, "text")`. This is the one place where the interface differs from `std::indirect`, whose constructor takes any argument that `T` is constructible from. The reflection of C++20 counts the fields of a struct by asking whether the struct is constructible from such arguments. A member that holds the struct through `std::indirect` then asks the same question about the struct again, which fails to compile.
 

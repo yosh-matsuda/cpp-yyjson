@@ -2492,11 +2492,19 @@ The types that the `Allocator` parameters of the DOM API accept:
 
 ## Exceptions
 
-All exceptions of cpp-yyjson derive from `std::runtime_error`. The library also throws these standard exceptions:
+The exceptions of the library are in two groups:
 
-*   `std::invalid_argument`: `yyjson::read` gets a `len` or a `ReadInsitu` flag that the string does not agree with ([`yyjson::read`](#yyjsonread)). `read<T>`, `read_into` and `merge_into` get `ReadInsitu`. A variant with `yyjson::internal_tag` or `yyjson::adjacent_tag` is written, and the tag that the alternative writes does not agree with the annotation.
+*   An error of the input or of the environment derives from `std::runtime_error`. The library throws `yyjson::read_error`, `yyjson::write_error` and `yyjson::bad_cast` for such errors. A program that reads JSON from outside catches them.
+*   An error of the program derives from `std::logic_error`. A correct program does not cause such an error, so do not use it to examine the input.
+
+The library throws these exceptions of the `std::logic_error` group:
+
+*   `std::invalid_argument`: `yyjson::read` gets a `len` or a `ReadInsitu` flag that the string does not agree with ([`yyjson::read`](#yyjsonread)). `read<T>`, `read_into` and `merge_into` get `ReadInsitu`. A variant with `yyjson::internal_tag` or `yyjson::adjacent_tag` is written, and the tag that the alternative writes does not agree with the annotation. A `yyjson::indirect` that holds no value after a move is written or checked with `yyjson::validate`.
 *   `std::out_of_range`: `operator[]` of an object does not find the key, or an index of a `yyjson::json_view` is out of range.
 *   `std::logic_error`: a `to_json` uses an emitter in a wrong way while `yyjson::write` runs ([emitters](#yyjsonobject_emitter-yyjsonarray_emitter)).
+
+The library also throws these standard exceptions:
+
 *   `std::format_error`: `std::vformat` gets a format specification that the JSON classes do not accept ([`std::format` support](#stdformat-support)). With `std::format`, such a specification is a compile error.
 *   `std::bad_alloc`: the memory runs out in a case that `yyjson::read_error` and `yyjson::write_error` do not cover, for example while a value is converted.
 
@@ -2526,7 +2534,7 @@ With an external yyjson older than 0.10.0, the position is given as `at pos 3` o
 
 ### `yyjson::write_error`
 
-Thrown when a value cannot be written as JSON. NaN without `WriteFlag::AllowInfAndNan` is such a value, and so is a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) that has an empty `std::optional` before a value. It is also thrown when the allocator cannot supply the memory, or when the buffer given to `write(std::span<char>)` is too small.
+Thrown when a value cannot be written as JSON. NaN without `WriteFlag::AllowInfAndNan` is such a value, and so is a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) that has an empty `std::optional` before a value. An enumeration value that has no name and is not written as an integer is such a value too. `yyjson::validate` also throws `write_error` for it. Then `code()` returns `YYJSON_WRITE_ERROR_INVALID_VALUE_TYPE`, and `yyjson::value(t)` and `yyjson::object(t)` throw it as `yyjson::write` does. It is also thrown when the allocator cannot supply the memory, or when the buffer given to `write(std::span<char>)` is too small.
 
 ```cpp
 yyjson_write_code code() const noexcept;
@@ -2538,7 +2546,6 @@ yyjson_write_code code() const noexcept;
 
 Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API. It is also thrown in these cases:
 
-*   `yyjson::write`, `yyjson::value(t)` or `yyjson::object(t)` gets an enumeration value that has no name and is not written as an integer. Then `path()` is empty and `position()` gives no position.
 *   [`yyjson::validate`](#yyjsonvalidate-yyjsonwith_validation) finds a value that a constraint rejects. Then `position()` gives no position.
 *   The constructor of an array class or an object class gets a JSON value of another kind. Then `what()` is `Could not cast to JSON array` or `Could not cast to JSON object`, and it names no C++ type.
 
@@ -2549,6 +2556,14 @@ public:
     const char* what() const noexcept override;
     std::string_view path() const noexcept;
     std::optional<text_position> position() const noexcept;
+    error_kind kind() const noexcept;
+    std::string_view keyword() const noexcept;
+};
+
+enum class error_kind : std::uint8_t
+{
+    type, out_of_range, size, unknown_key, missing_key, duplicate, null, unknown_enum, tag,
+    no_alternative, ambiguous_alternative, keyword, recursion_limit, other
 };
 
 struct text_position
@@ -2556,12 +2571,35 @@ struct text_position
     std::size_t line = 0;
     std::size_t column = 0;
     std::size_t pos = 0;
+
+    bool operator==(const text_position&) const = default;
 };
 ```
 
 *   `what()` names the C++ type and the kind of the JSON value, except for the constructors above.
 *   `path()` returns the JSON Pointer (RFC 6901) to the value, from the value that the cast started at, such as `/users/3/name`.
 *   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document gives no position.
+*   `kind()` returns the category of the failure. A program can select its response by the category, and need not parse `what()`.
+*   `keyword()` returns the JSON Schema keyword that the value does not satisfy, such as `maxLength`. It is empty when `kind()` is not `error_kind::keyword`.
+
+| `kind()` | The failure |
+| --- | --- |
+| `type` | The JSON value is of a kind that the C++ type does not read, such as a string for an `int`, or a number that is not an integer for an `int`. |
+| `out_of_range` | The number does not fit in the C++ type. |
+| `size` | The array has another number of elements than a `std::array`, a C array, a `std::tuple` or a `std::pair`, or more elements than a range of fixed capacity holds. |
+| `unknown_key` | The object has a key that the struct does not take, under `yyjson::reject_unknown_keys` or in a [closed struct](validation.md#closed-structs). In a struct with `yyjson::as_array`, the array has an element after the fields. |
+| `missing_key` | The object does not have a key that the struct requires, under `yyjson::reject_missing_keys` or `yyjson::strict`. In a struct with `yyjson::as_array`, the array has no element for a required field. |
+| `duplicate` | The object has a key two times, or a set reads an element two times, under `yyjson::reject_duplicates` or `yyjson::strict`. |
+| `null` | The value is null for a field that does not read null, under `yyjson::reject_null_as_missing` or `yyjson::strict`. |
+| `unknown_enum` | The string or the number names no enumerator. |
+| `tag` | The tag of a tagged variant is not there or is not a string, or it names no alternative that the read can make. |
+| `no_alternative` | No alternative of a `std::variant`, a `yyjson::any_of_variant` or a `yyjson::one_of_variant` reads the value. |
+| `ambiguous_alternative` | Two or more alternatives of a `yyjson::one_of_variant` read the value. |
+| `keyword` | The value does not satisfy a [constraint](validation.md#constraints). `keyword()` tells which. |
+| `recursion_limit` | The value is nested deeper than the [recursion limit](conversions.md#recursive-types). |
+| `other` | A caster constructed the `bad_cast` with its own message. |
+
+`keyword()` gives the name of the keyword in JSON Schema 2020-12, as the [table of keywords](validation.md#json-schema-keywords) relates them to the constraints. Two constraints are not keywords of JSON Schema: `yyjson::satisfies` gives `satisfies`, and `yyjson::matches<T>` gives `matches`. When a value does not satisfy a combinator, such as `yyjson::not_`, `yyjson::any_of` or `yyjson::one_of`, `keyword()` names the combinator, not a constraint in it. When a value does not satisfy `yyjson::if_then_else`, `keyword()` is `then` or `else`, as the condition selects. When a combinator holds another combinator, the outer one gives the name. `yyjson::required` in a combinator or in a condition gives `required`. The keys that `yyjson::dependent_required` requires give `dependentRequired`.
 
 See [Conversion errors](validation.md#conversion-errors) for examples.
 

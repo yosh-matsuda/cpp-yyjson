@@ -938,8 +938,9 @@ TEST(Reflection, EnumFormats)
             write();
             ADD_FAILURE() << "no exception";
         }
-        catch (const bad_cast& e)
+        catch (const yyjson::write_error& e)
         {
+            EXPECT_EQ(e.code(), YYJSON_WRITE_ERROR_INVALID_VALUE_TYPE);
             EXPECT_TRUE(std::string_view(e.what()).find("Color") != std::string_view::npos) << e.what();
             EXPECT_TRUE(std::string_view(e.what()).find("5") != std::string_view::npos) << e.what();
             EXPECT_TRUE(std::string_view(e.what()).find("enum_format") != std::string_view::npos) << e.what();
@@ -958,8 +959,8 @@ TEST(Reflection, EnumFormats)
         (void)yyjson::value(
             std::map<Color, yyjson::reader::const_value_ref>{{unnamed, yyjson::reader::const_value_ref(one)}});
     });
-    EXPECT_THROW((void)yyjson::write(std::vector<Status>{static_cast<Status>(7)}), bad_cast);
-    EXPECT_THROW((void)yyjson::write(std::map<Status, int>{{static_cast<Status>(7), 1}}), bad_cast);
+    EXPECT_THROW((void)yyjson::write(std::vector<Status>{static_cast<Status>(7)}), yyjson::write_error);
+    EXPECT_THROW((void)yyjson::write(std::map<Status, int>{{static_cast<Status>(7), 1}}), yyjson::write_error);
     expect_direct_write(std::vector<Status>{static_cast<Status>(7)});
     auto unnamed_fields = EnumFields();
     unnamed_fields.f = static_cast<Flags>(3);

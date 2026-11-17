@@ -3963,4 +3963,68 @@ TEST(Schema, CasterTypeKeywords)
     check<ct::Closed>({"{}", R"({"a":1})"});
 }
 
+namespace schema_test::throwing
+{
+    // read from 1, 2 and 3 with exceptions of other types than those of the library, and written from 4 with one
+    template <int N>
+    struct Example
+    {
+        int v = 0;
+    };
+}  // namespace schema_test::throwing
+template <int N>
+struct yyjson::caster<schema_test::throwing::Example<N>>
+{
+    static schema_test::throwing::Example<N> from_json(int v)
+    {
+        if (v == 1) throw std::logic_error("logic");
+        if (v == 2) throw std::runtime_error("runtime");
+        if (v == 3) throw 3;
+        if (v < 0) throw yyjson::bad_cast("negative");
+        return {v};
+    }
+    static int to_json(const schema_test::throwing::Example<N>& e)
+    {
+        if (e.v == 4) throw std::logic_error("write");
+        return e.v;
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<schema_test::throwing::Example<1>> = yyjson::annotate(yyjson::examples("1"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::throwing::Example<2>> = yyjson::annotate(yyjson::examples("2"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::throwing::Example<3>> = yyjson::annotate(yyjson::examples("3"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::throwing::Example<4>> = yyjson::annotate(yyjson::examples("4"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::throwing::Example<5>> = yyjson::annotate(yyjson::examples("-1"));
+
+// an exception of a caster of the user passes the check of an example unchanged
+TEST(Schema, ExampleCasterExceptions)
+{
+    using schema_test::throwing::Example;
+    const auto what_of = [](auto make) {
+        try
+        {
+            (void)make();
+        }
+        catch (const std::invalid_argument& e)
+        {
+            return "invalid_argument: " + std::string(e.what());
+        }
+        catch (const std::exception& e)
+        {
+            return std::string(e.what());
+        }
+        return std::string("no exception");
+    };
+    EXPECT_EQ(what_of([] { return yyjson::json_schema<Example<1>>(); }), "logic");
+    EXPECT_EQ(what_of([] { return yyjson::json_schema<Example<2>>(); }), "runtime");
+    EXPECT_THROW((void)yyjson::json_schema<Example<3>>(), int);
+    EXPECT_EQ(what_of([] { return yyjson::json_schema<Example<4>>(yyjson::write_direction); }), "write");
+    // a `bad_cast` rejects the example
+    EXPECT_THROW((void)yyjson::json_schema<Example<5>>(), std::invalid_argument);
+}
+
 // NOLINTEND

@@ -794,7 +794,7 @@ TEST(Validate, TransparentChain)
                    "/out", read_leg::skipped);
 }
 
-// an enumerator without a name is an error of write, which the check does not report
+// an enumerator without a name is an error of write, which the check reports as write does
 struct VdNamedColor
 {
     VdColor c = VdColor::red;
@@ -805,11 +805,29 @@ inline constexpr auto yyjson::annotations<VdNamedColor> = yyjson::annotate(yyjso
 TEST(Validate, UnnamedEnumerator)
 {
     const auto unnamed = VdNamedColor{static_cast<VdColor>(7)};
-    EXPECT_NO_THROW(yyjson::validate(unnamed));
-    const auto plain = validation_error([&] { (void)yyjson::write(unnamed); });
-    const auto e = validation_error([&] { (void)yyjson::write(unnamed, yyjson::with_validation); });
-    EXPECT_EQ(std::string_view(e.what()), std::string_view(plain.what()));
-    EXPECT_EQ(e.path(), plain.path());
+    const auto write_error = [](auto&& f) {
+        try
+        {
+            f();
+        }
+        catch (const yyjson::write_error& e)
+        {
+            EXPECT_EQ(e.code(), YYJSON_WRITE_ERROR_INVALID_VALUE_TYPE);
+            return std::string(e.what());
+        }
+        ADD_FAILURE() << "no yyjson::write_error";
+        return std::string();
+    };
+    const auto plain = write_error([&] { (void)yyjson::write(unnamed); });
+    EXPECT_EQ(write_error([&] { (void)yyjson::write(unnamed, yyjson::with_validation); }), plain);
+    EXPECT_EQ(write_error([&] { yyjson::validate(unnamed); }), plain);
+    EXPECT_EQ(write_error([&] { yyjson::validate(static_cast<VdColor>(7)); }),
+              write_error([&] { (void)yyjson::write(static_cast<VdColor>(7)); }));
+    using unnamed_keys = std::map<VdColor, int>;
+    const auto keys = unnamed_keys{{static_cast<VdColor>(7), 1}};
+    EXPECT_EQ(write_error([&] { yyjson::validate(keys); }), write_error([&] { (void)yyjson::write(keys); }));
+    EXPECT_NO_THROW(yyjson::validate(VdNamedColor{}));
+    EXPECT_NO_THROW(yyjson::validate(unnamed_keys{{VdColor::red, 1}}));
 }
 
 // the keywords of each kind let the types be checked and written

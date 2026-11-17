@@ -114,6 +114,147 @@ struct yyjson::caster<PathMutableScale>
     static void from_json(PathMutableScale& s, const yyjson::writer::const_value_ref& v) { s.value = v.cast<int>(); }
 };
 
+// the kinds of the failures that the library throws
+struct KindPoint
+{
+    int x = 0;
+    std::optional<int> y;
+};
+struct KindLimits
+{
+    int n = 0;
+    std::string s;
+    int odd = 0;
+    int big = 0;
+    yyjson::value flag;
+    int m = 0;
+};
+inline bool kind_is_odd(const int& v) { return v % 2 != 0; }
+template <>
+inline constexpr auto yyjson::annotations<KindLimits> = yyjson::annotate(
+    yyjson::field("n", yyjson::minimum(0)), yyjson::field("s", yyjson::max_length(2)),
+    yyjson::field("odd", yyjson::satisfies<kind_is_odd>), yyjson::field("big", yyjson::not_(yyjson::minimum(10))),
+    yyjson::field("flag", yyjson::matches<bool>),
+    yyjson::field("m", yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)),
+                                            yyjson::else_(yyjson::minimum(0)))));
+struct KindRequired
+{
+    std::vector<int> s;
+    std::optional<int> k;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindRequired> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::property("s", yyjson::min_items(2))), yyjson::then(yyjson::required("k"))));
+using KindOneOf = yyjson::one_of_variant<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
+struct KindNested
+{
+    std::vector<KindNested> v;
+};
+// combinators of a struct, which report their own keyword in the place of that of an operand
+struct KindAll
+{
+    int x = 0;
+    int y = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindAll> = yyjson::annotate(
+    yyjson::all_of(yyjson::property("x", yyjson::minimum(0)), yyjson::property("y", yyjson::maximum(5))));
+struct KindIf
+{
+    int x = 0;
+    int y = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindIf> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::property("x", yyjson::minimum(10))), yyjson::then(yyjson::property("y", yyjson::minimum(0))),
+    yyjson::else_(yyjson::property("y", yyjson::maximum(0)))));
+struct KindAllIf
+{
+    int x = 0;
+    int y = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindAllIf> = yyjson::annotate(yyjson::all_of(yyjson::if_then_else(
+    yyjson::if_(yyjson::property("x", yyjson::minimum(10))), yyjson::then(yyjson::property("y", yyjson::minimum(0))))));
+struct KindAllRequired
+{
+    std::vector<int> s;
+    std::optional<int> k;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindAllRequired> = yyjson::annotate(yyjson::all_of(yyjson::if_then_else(
+    yyjson::if_(yyjson::property("s", yyjson::min_items(2))), yyjson::then(yyjson::required("k")))));
+struct KindThenRequired
+{
+    std::vector<int> s;
+    std::optional<int> k;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindThenRequired> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::property("s", yyjson::min_items(2))), yyjson::then(yyjson::required("k"))));
+struct KindAllDependent
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindAllDependent> =
+    yyjson::annotate(yyjson::all_of(yyjson::dependent_required("a", {"b"})));
+struct KindDependent
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindDependent> = yyjson::annotate(yyjson::dependent_required("a", {"b"}));
+struct KindFieldAll
+{
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindFieldAll> =
+    yyjson::annotate(yyjson::field("x", yyjson::all_of(yyjson::minimum(0), yyjson::maximum(5))));
+struct KindOneKeys
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindOneKeys> =
+    yyjson::annotate(yyjson::one_of(yyjson::required("a"), yyjson::required("b")));
+struct KindAnyKeys
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<KindAnyKeys> =
+    yyjson::annotate(yyjson::any_of(yyjson::required("a"), yyjson::required("b")));
+
+// a caster that throws exceptions of other types than `bad_cast` for some values
+struct Foreign
+{
+    int v = 0;
+    bool operator==(const Foreign&) const = default;
+};
+template <>
+struct yyjson::caster<Foreign>
+{
+    static Foreign from_json(int v)
+    {
+        if (v == 1) throw std::logic_error("logic");
+        if (v == 2) throw std::runtime_error("runtime");
+        if (v == 3) throw 3;
+        if (v < 0) throw yyjson::bad_cast("negative");
+        return {v};
+    }
+    template <typename... Ts>
+    static int to_json(const Foreign& f, Ts...)
+    {
+        return f.v;
+    }
+};
+
 namespace
 {
     template <typename F>
@@ -313,6 +454,247 @@ TEST(ErrorPath, AdjacentTag)
     const auto m = bad_cast_of([&] { yyjson::merge_into(R"([{"kind":"circle","shape":{"r":true}}])", v); });
     EXPECT_EQ(m.path(), "/0/shape/r");
     EXPECT_EQ(m.position(), (yyjson::text_position{1, 32, 31}));
+}
+
+TEST(ErrorPath, Kind)
+{
+    using enum yyjson::error_kind;
+    // each way of reading gives the same kind
+    const auto expect_kind = [](yyjson::error_kind kind, auto read) {
+        EXPECT_EQ(bad_cast_of([&] { read(std::false_type()); }).kind(), kind);
+        EXPECT_EQ(bad_cast_of([&] { read(std::true_type()); }).kind(), kind);
+    };
+    const auto kind_of = [&]<typename T>(std::type_identity<T>, std::string_view json, yyjson::error_kind kind,
+                                         auto... policies) {
+        expect_kind(kind, [&](auto dom) {
+            if constexpr (dom)
+                (void)yyjson::read(json).template cast<T>(policies...);
+            else
+                (void)yyjson::read<T>(json, policies...);
+        });
+    };
+    kind_of(std::type_identity<int>(), R"("a")", type);
+    kind_of(std::type_identity<int>(), "1.5", type);
+    kind_of(std::type_identity<std::vector<int>>(), "{}", type);
+    kind_of(std::type_identity<KindPoint>(), "[]", type);
+    kind_of(std::type_identity<std::uint8_t>(), "300", out_of_range);
+    kind_of(std::type_identity<float>(), "1e39", out_of_range);
+    kind_of(std::type_identity<std::array<int, 2>>(), "[1]", size);
+    kind_of(std::type_identity<std::tuple<int, int>>(), "[1,2,3]", size);
+    kind_of(std::type_identity<KindPoint>(), R"({"x":1,"z":2})", unknown_key, yyjson::reject_unknown_keys);
+    kind_of(std::type_identity<KindPoint>(), R"({"y":1})", missing_key, yyjson::reject_missing_keys);
+    kind_of(std::type_identity<KindPoint>(), R"({"x":1,"x":2})", duplicate, yyjson::reject_duplicates);
+    kind_of(std::type_identity<std::set<int>>(), "[1,1]", duplicate, yyjson::reject_duplicates);
+    kind_of(std::type_identity<KindPoint>(), R"({"x":1,"y":null})", null, yyjson::reject_null_as_missing);
+    kind_of(std::type_identity<Color>(), R"("pink")", unknown_enum);
+    kind_of(std::type_identity<PathShape>(), R"({"type":"oval"})", tag);
+    kind_of(std::type_identity<PathShape>(), R"({"r":1})", tag);
+    kind_of(std::type_identity<std::variant<int, std::string>>(), "[]", no_alternative);
+    kind_of(std::type_identity<KindOneOf>(), "5", ambiguous_alternative);
+    kind_of(std::type_identity<KindLimits>(), R"({"n":-1})", keyword);
+    // a cast that a user caster throws by itself
+    kind_of(std::type_identity<Foreign>(), "-1", other);
+    EXPECT_EQ(yyjson::bad_cast("x").kind(), other);
+    EXPECT_EQ(yyjson::bad_cast("x").keyword(), "");
+
+    auto deep = std::string();
+    for (auto i = 0; i < 300; ++i) deep += R"({"v":[)";
+    for (auto i = 0; i < 300; ++i) deep += "]}";
+    kind_of(std::type_identity<KindNested>(), deep, recursion_limit);
+    EXPECT_THROW((void)yyjson::read<KindNested>(deep), yyjson::detail::recursion_limit_error);
+
+    // a copy keeps the kind
+    const auto e = bad_cast_of([] { (void)yyjson::read<std::uint8_t>("300"); });
+    const auto copy = e;
+    EXPECT_EQ(copy.kind(), out_of_range);
+}
+
+TEST(ErrorPath, Keyword)
+{
+    // the keyword of the setting that fails, as each way of reading gives it
+    const auto expect_keyword = [](std::string_view json, std::string_view keyword, auto type) {
+        using T = typename decltype(type)::type;
+        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<T>(json); }),
+                              bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(); })})
+        {
+            EXPECT_EQ(e.kind(), yyjson::error_kind::keyword) << json;
+            EXPECT_EQ(e.keyword(), keyword) << json;
+        }
+    };
+    const auto limits = std::type_identity<KindLimits>();
+    expect_keyword(R"({"n":-1})", "minimum", limits);
+    expect_keyword(R"({"s":"abc"})", "maxLength", limits);
+    expect_keyword(R"({"odd":2})", "satisfies", limits);
+    expect_keyword(R"({"flag":1})", "matches", limits);
+    // a combinator reports itself, and a condition the branch that fails
+    expect_keyword(R"({"big":10})", "not", limits);
+    expect_keyword(R"({"m":11})", "then", limits);
+    expect_keyword(R"({"m":-1})", "else", limits);
+    expect_keyword(R"({"s":[1,2]})", "required", std::type_identity<KindRequired>());
+
+    // a key that the read does not take is no keyword
+    const auto e = bad_cast_of([] { (void)yyjson::read<KindPoint>(R"({"x":1,"z":2})", yyjson::reject_unknown_keys); });
+    EXPECT_EQ(e.keyword(), "");
+}
+
+TEST(ErrorPath, OtherExceptionsPassThroughVariants)
+{
+    // an exception of another type than `bad_cast` from an alternative ends the read of the variant
+    const auto expect_passed = []<typename V>(std::type_identity<V>) {
+        const auto read_both = [](std::string_view json) {
+            (void)yyjson::read<V>(json);
+            return yyjson::read(json).template cast<V>();
+        };
+        EXPECT_THROW((void)yyjson::read<V>("1"), std::logic_error);
+        EXPECT_THROW((void)yyjson::read("1").template cast<V>(), std::logic_error);
+        EXPECT_THROW((void)yyjson::read<V>("2"), std::runtime_error);
+        EXPECT_THROW((void)yyjson::read("2").template cast<V>(), std::runtime_error);
+        EXPECT_THROW((void)yyjson::read<V>("3"), int);
+        EXPECT_THROW((void)yyjson::read("3").template cast<V>(), int);
+        EXPECT_NO_THROW((void)read_both("4"));
+    };
+    expect_passed(std::type_identity<std::variant<Foreign, double>>());
+    expect_passed(std::type_identity<yyjson::any_of_variant<Foreign, double>>());
+    expect_passed(std::type_identity<yyjson::one_of_variant<Foreign, std::string>>());
+    // a `bad_cast` still lets the next alternative read the value
+    using Plain = std::variant<Foreign, double>;
+    EXPECT_EQ(yyjson::read<Plain>("-1").index(), 1);
+    EXPECT_EQ(yyjson::read("-1").cast<Plain>().index(), 1);
+    EXPECT_THROW((void)yyjson::read<std::vector<Plain>>("[0,1]"), std::logic_error);
+    using Named = std::map<std::string, std::variant<Foreign, std::string>>;
+    EXPECT_THROW((void)yyjson::read<Named>(R"({"a":3})"), int);
+
+    // the check of the written value reads it back into the other alternatives
+    using Both = yyjson::one_of_variant<long long, Foreign>;
+    EXPECT_THROW(yyjson::validate(Both(1LL)), std::logic_error);
+    EXPECT_THROW((void)yyjson::write(Both(2LL), yyjson::with_validation), std::runtime_error);
+    EXPECT_THROW(yyjson::validate(Both(3LL)), int);
+}
+
+namespace
+{
+    // the keyword of the `bad_cast` of `json` for T and of the value `t`, from each way of reading and checking
+    template <typename T>
+    void expect_keyword_everywhere(std::string_view json, const T& t, std::string_view keyword)
+    {
+        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<T>(json); }),
+                              bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(); }), bad_cast_of([&] {
+                                  auto merged = T();
+                                  yyjson::merge_into(json, merged);
+                              }),
+                              bad_cast_of([&] { yyjson::validate(t); })})
+        {
+            EXPECT_EQ(e.kind(), yyjson::error_kind::keyword) << json;
+            EXPECT_EQ(e.keyword(), keyword) << json;
+        }
+    }
+}  // namespace
+
+TEST(ErrorPath, CombinatorKeyword)
+{
+    // a combinator reports its own keyword, and a condition the branch that it takes
+    expect_keyword_everywhere(R"({"x":-1,"y":0})", KindAll{-1, 0}, "allOf");
+    expect_keyword_everywhere(R"({"x":0,"y":6})", KindAll{0, 6}, "allOf");
+    expect_keyword_everywhere(R"({"x":10,"y":-1})", KindIf{10, -1}, "then");
+    expect_keyword_everywhere(R"({"x":0,"y":1})", KindIf{0, 1}, "else");
+    expect_keyword_everywhere(R"({"x":-1})", KindFieldAll{-1}, "allOf");
+    // the outermost combinator
+    expect_keyword_everywhere(R"({"x":10,"y":-1})", KindAllIf{10, -1}, "allOf");
+    // a key that `required` requires inside a combinator, and a key that `dependent_required` requires
+    expect_keyword_everywhere(R"({"s":[1,2]})", KindAllRequired{{1, 2}, {}}, "required");
+    expect_keyword_everywhere(R"({"s":[1,2]})", KindThenRequired{{1, 2}, {}}, "required");
+    expect_keyword_everywhere(R"({"a":1})", KindDependent{1, {}}, "dependentRequired");
+    expect_keyword_everywhere(R"({"a":1})", KindAllDependent{1, {}}, "allOf");
+}
+
+TEST(ErrorPath, RequiredGroupsKeyword)
+{
+    // no group or more than one for `one_of`, and no group for `any_of`
+    expect_keyword_everywhere("{}", KindOneKeys(), "oneOf");
+    expect_keyword_everywhere(R"({"a":1,"b":2})", KindOneKeys{1, 2}, "oneOf");
+    expect_keyword_everywhere("{}", KindAnyKeys(), "anyOf");
+    EXPECT_NO_THROW((void)yyjson::read<KindAnyKeys>(R"({"a":1,"b":2})"));
+    EXPECT_NO_THROW(yyjson::validate(KindAnyKeys{1, 2}));
+}
+
+TEST(ErrorPath, KeyOutlivesTheDocument)
+{
+    // the record names the key after the text and the document of the read are gone
+    auto copy = yyjson::bad_cast("none");
+    {
+        auto json = std::string(R"({"x":null})");
+        auto p = KindPoint();
+        copy = bad_cast_of([&] { yyjson::merge_into(json, p, yyjson::reject_missing_keys); });
+        json.assign(json.size(), ' ');
+    }
+    EXPECT_EQ(copy.kind(), yyjson::error_kind::null);
+    EXPECT_EQ(yyjson::detail::bad_cast_access::failure(copy).key, "x");
+    EXPECT_EQ(yyjson::detail::bad_cast_access::failure(copy).owner, yyjson::detail::type_name<KindPoint>());
+}
+
+TEST(ErrorPath, DirectReadKeepsTheExceptionOfTheDocument)
+{
+    // a read without a document gives the exception that the cast of a document gives for the same text
+    const auto same = []<typename T, typename E>(std::type_identity<T>, std::type_identity<E>, std::string_view json) {
+        EXPECT_THROW((void)yyjson::read<T>(json), E) << json;
+        EXPECT_THROW((void)yyjson::read(json).template cast<T>(), E) << json;
+    };
+    using Single = std::tuple<Foreign>;
+    using Pair = std::tuple<Foreign, int>;
+    // the size of the array is checked before the element is read
+    same(std::type_identity<Single>(), std::type_identity<yyjson::bad_cast>(), "[1,2]");
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<Single>("[1,2]"); }).kind(), yyjson::error_kind::size);
+    same(std::type_identity<Pair>(), std::type_identity<std::logic_error>(), "[1,2]");
+    same(std::type_identity<Pair>(), std::type_identity<std::runtime_error>(), "[2,2]");
+    same(std::type_identity<Pair>(), std::type_identity<int>(), "[3,2]");
+    using Sized = std::variant<Single, std::string>;
+    same(std::type_identity<Sized>(), std::type_identity<yyjson::bad_cast>(), "[1,2]");
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<Sized>("[1,2]"); }).kind(), yyjson::error_kind::no_alternative);
+    using Passed = std::variant<Pair, std::string>;
+    same(std::type_identity<Passed>(), std::type_identity<std::logic_error>(), "[1,2]");
+    same(std::type_identity<Passed>(), std::type_identity<std::runtime_error>(), "[2,2]");
+    same(std::type_identity<Passed>(), std::type_identity<int>(), "[3,2]");
+}
+
+TEST(ErrorPath, DirectReadRecordsTheFacts)
+{
+    // the record of a read without a document holds what the cast of a document records, also in a copy
+    const auto same = []<typename T>(std::type_identity<T>, std::string_view json,
+                                     yyjson::ReadFlag flg = yyjson::ReadFlag::NoFlag) {
+        const auto direct = bad_cast_of([&] { (void)yyjson::read<T>(json, flg); });
+        const auto copy = direct;
+        const auto dom = bad_cast_of([&] { (void)yyjson::read(json, flg).template cast<T>(); });
+        const auto& expected = yyjson::detail::bad_cast_access::failure(dom);
+        for (const auto* e : {&direct, &copy})
+        {
+            const auto& got = yyjson::detail::bad_cast_access::failure(*e);
+            EXPECT_EQ(got.kind, expected.kind) << json;
+            EXPECT_EQ(got.got, expected.got) << json;
+            EXPECT_NE(got.got, 0) << json;
+            EXPECT_EQ(got.input, expected.input) << json;
+            EXPECT_EQ(got.text, expected.text) << json;
+        }
+    };
+    same(std::type_identity<int>(), R"("x")");
+    same(std::type_identity<std::string>(), "12");
+    same(std::type_identity<bool>(), "1.5");
+    same(std::type_identity<std::uint8_t>(), "300");
+    // a number as the document parses it
+    same(std::type_identity<bool>(), "1.0");
+    same(std::type_identity<bool>(), "1e2");
+    same(std::type_identity<bool>(), "-0.0");
+    same(std::type_identity<bool>(), "123456789012345678901234567890");
+    same(std::type_identity<std::string>(), "[1.0]");
+    same(std::type_identity<std::vector<bool>>(), "[true, 1.0]");
+    same(std::type_identity<bool>(), "NaN", yyjson::ReadFlag::AllowInfAndNan);
+    same(std::type_identity<bool>(), "-Infinity", yyjson::ReadFlag::AllowInfAndNan);
+    same(std::type_identity<bool>(), "1e400", yyjson::ReadFlag::AllowInfAndNan);
+    same(std::type_identity<std::vector<int>>(), R"([1,"x"])");
+    same(std::type_identity<KindPoint>(), R"({"x":-1.5})");
+    same(std::type_identity<PathShape>(), R"({"type":"oval","r":1})");
+    same(std::type_identity<std::vector<PathShape>>(), R"([{"type":"oval"}])");
+    const auto tag = bad_cast_of([] { (void)yyjson::read<PathShape>(R"({"type":"oval"})"); });
+    EXPECT_EQ(yyjson::detail::bad_cast_access::failure(tag).input, "oval");
 }
 
 // NOLINTEND

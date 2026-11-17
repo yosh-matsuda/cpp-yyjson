@@ -76,6 +76,12 @@ add_executable("${PROJECT_NAME}_test_user_casters" test_user_casters.cpp)
 target_link_libraries("${PROJECT_NAME}_test_user_casters"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 
+# a replaced operator new applies to the whole program
+add_executable("${PROJECT_NAME}_test_allocation_failure"
+               test_allocation_failure.cpp)
+target_link_libraries("${PROJECT_NAME}_test_allocation_failure"
+                      PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+
 # the schemas of cpp_yyjson_schema.hpp, checked with the JSON Schema validator of jsoncons
 find_package(jsoncons CONFIG REQUIRED)
 add_executable("${PROJECT_NAME}_test_schema" test_schema.cpp)
@@ -136,6 +142,8 @@ endif()
 include(GoogleTest)
 gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_allocation_failure" DISCOVERY_MODE
+                     PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_schema" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_schema_units" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_schema_units_reversed" DISCOVERY_MODE
