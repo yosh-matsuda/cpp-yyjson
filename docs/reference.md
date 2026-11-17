@@ -1165,9 +1165,9 @@ Two JSON values are equal when they are the same JSON value:
 *   Numbers compare by their value. An integer and a real number are equal when they are the same number exactly, so `1` and `1.0` are equal and `9007199254740993` and `9007199254740992.0` are not. `0.0` and `-0.0` are equal, and NaN, which yyjson reads only with `yyjson::ReadFlag::AllowInfAndNan`, is equal to nothing.
 *   Strings compare by their bytes; a raw value, which `yyjson::ReadFlag::NumberAsRaw` and `yyjson::ReadFlag::BignumAsRaw` give, by its text, and only with a raw value.
 *   Arrays are equal when they have the same elements in the same order.
-*   Objects are equal when they have the same number of members and every member of one has a member of the same key and an equal value in the other, in any order. An object that repeats a key may compare equal to an object that does not. Then `l == r` can be true while `r == l` is false.
+*   Objects are equal when they have the same members in any order. A member of one object matches a member of the other with the same name and an equal value. If an object repeats a name, the other object must hold each of those members as many times.
 
-An immutable value compares with a mutable one, and an owning class with a reference class. `!=` is the negation. A JSON value does not compare with a C++ value; [cast](#yyjsoncast) it first. Comparing two objects takes time linear in their size when their members are in the same order and quadratic otherwise.
+An immutable value compares with a mutable one, and an owning class with a reference class. `!=` is the negation. A JSON value does not compare with a C++ value; [cast](#yyjsoncast) it first. Comparing two objects of n members takes time proportional to n when their members are in the same order, and to n log n otherwise. A name that repeats k times adds time proportional to k².
 
 ```cpp
 using namespace yyjson;

@@ -2764,6 +2764,35 @@ TEST(Writer, Equality)
     EXPECT_FALSE(eq("[1]", "[1,1]"));
     EXPECT_FALSE(eq("[1,2]", "[2,1]"));
 
+    // a repeated key: the same members, counted, in any order
+    const auto both = [&](std::string_view l, std::string_view r) {
+        return eq(l, r) && eq(r, l) && value(read(l)) == read(r) && read(r) == value(read(l));
+    };
+    const auto neither = [&](std::string_view l, std::string_view r) {
+        return !eq(l, r) && !eq(r, l) && value(read(l)) != read(r) && read(r) != value(read(l));
+    };
+    EXPECT_TRUE(both(R"({"x":1,"x":2})", R"({"x":2,"x":1})"));
+    EXPECT_TRUE(both(R"({"x":1,"y":0,"x":[2]})", R"({"x":[2],"x":1,"y":0})"));
+    EXPECT_TRUE(neither(R"({"x":1,"x":1})", R"({"x":1,"y":2})"));
+    EXPECT_TRUE(neither(R"({"x":1,"x":2})", R"({"x":2,"x":2})"));
+    EXPECT_TRUE(neither(R"({"x":1,"x":1,"x":2})", R"({"x":1,"x":2,"x":2})"));
+
+    // more members than the comparison counts without a sort
+    const auto members = [](std::vector<std::string> v, const bool reverse) {
+        if (reverse) std::ranges::reverse(v);
+        auto json = std::string("{");
+        for (const auto& member : v) json += (json.size() > 1 ? "," : "") + member;
+        return json + "}";
+    };
+    auto many = std::vector<std::string>();
+    for (auto i = 0; i < 40; ++i) many.push_back(std::format(R"("k{}":{})", i % 30, i));
+    EXPECT_TRUE(both(members(many, false), members(many, true)));
+    auto changed = many;
+    changed[35] = R"("k5":5)";
+    EXPECT_TRUE(neither(members(many, false), members(changed, true)));
+    changed[35] = R"("k6":35)";
+    EXPECT_TRUE(neither(members(many, false), members(changed, true)));
+
     // only JSON values compare with JSON values
     static_assert(!std::equality_comparable_with<value, int>);
     static_assert(!std::equality_comparable_with<reader::value, std::string>);

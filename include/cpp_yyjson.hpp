@@ -11606,10 +11606,6 @@ namespace yyjson
             }
             static yyjson_val* obj_next(yyjson_obj_iter& it) noexcept { return yyjson_obj_iter_next(&it); }
             static yyjson_val* obj_value(yyjson_val* key) noexcept { return yyjson_obj_iter_get_val(key); }
-            static yyjson_val* obj_find(yyjson_obj_iter& it, std::string_view key) noexcept
-            {
-                return yyjson_obj_iter_getn(&it, yyjson::detail::c_chars(key), key.size());
-            }
         };
         template <>
         struct node<yyjson_mut_val>
@@ -11629,10 +11625,6 @@ namespace yyjson
             }
             static yyjson_mut_val* obj_next(yyjson_mut_obj_iter& it) noexcept { return yyjson_mut_obj_iter_next(&it); }
             static yyjson_mut_val* obj_value(yyjson_mut_val* key) noexcept { return yyjson_mut_obj_iter_get_val(key); }
-            static yyjson_mut_val* obj_find(yyjson_mut_obj_iter& it, std::string_view key) noexcept
-            {
-                return yyjson_mut_obj_iter_getn(&it, yyjson::detail::c_chars(key), key.size());
-            }
         };
 
         // whether an integer and a real number are the same number, exactly
@@ -11659,6 +11651,9 @@ namespace yyjson
             const auto i = sa == YYJSON_SUBTYPE_SINT ? sint_of(a) : sint_of(b);
             return i >= 0 && static_cast<std::uint64_t>(i) == (sa == YYJSON_SUBTYPE_UINT ? uint_of(a) : uint_of(b));
         }
+
+        template <typename A, typename B, typename IA, typename IB>
+        bool same_members(A* ka, IA& ia, B* kb, IB& ib, std::size_t n);
 
         template <typename A, typename B>
         bool values_equal(A* a, B* b)
@@ -11688,22 +11683,84 @@ namespace yyjson
                 }
                 case YYJSON_TYPE_OBJ:
                 {
-                    if (size_of(a) != size_of(b)) return false;
+                    const auto n = size_of(a);
+                    if (n != size_of(b)) return false;
                     auto ia = node<A>::obj_iter(a);
-                    // a lookup by the iterator starts after the member found last, so that the members in the
-                    // same order are found at once
                     auto ib = node<B>::obj_iter(b);
-                    for (auto n = size_of(a); n > 0; --n)
+                    for (auto i = std::size_t{0}; i < n; ++i)
                     {
-                        auto* const key = node<A>::obj_next(ia);
-                        auto* const vb = node<B>::obj_find(ib, text_of(key));
-                        if (vb == nullptr || !values_equal(node<A>::obj_value(key), vb)) return false;
+                        auto* const ka = node<A>::obj_next(ia);
+                        auto* const kb = node<B>::obj_next(ib);
+                        if (text_of(ka) != text_of(kb) || !values_equal(node<A>::obj_value(ka), node<B>::obj_value(kb)))
+                            return same_members(ka, ia, kb, ib, n - i);
                     }
                     return true;
                 }
                 default:
                     return false;
             }
+        }
+
+        // Whether each member of `ka` is in `kb` as many times as in `ka`, by key and value. A member counts
+        // itself without a comparison, so that a member that holds NaN, which equals nothing, is in no `kb`.
+        template <typename A, typename B>
+        bool same_members(const std::span<A* const> ka, const std::span<B* const> kb)
+        {
+            for (auto* const x : ka)
+            {
+                const auto name = text_of(x);
+                auto* const v = node<A>::obj_value(x);
+                auto count = std::size_t{0};
+                for (auto* const y : ka)
+                    if (y == x || (text_of(y) == name && values_equal(node<A>::obj_value(y), v))) ++count;
+                for (auto* const y : kb)
+                {
+                    if (text_of(y) != name || !values_equal(node<B>::obj_value(y), v)) continue;
+                    if (count == 0) return false;
+                    --count;
+                }
+                if (count != 0) return false;
+            }
+            return true;
+        }
+
+        // Whether the last n members of two objects are the same members in any order. `ka` and `kb` are the first
+        // of them, and `ia` and `ib` are after them. The members of a repeated key pair in any order too.
+        template <typename A, typename B, typename IA, typename IB>
+        bool same_members(A* ka, IA& ia, B* kb, IB& ib, const std::size_t n)
+        {
+            const auto collect = [n]<typename K, typename It>(K* key, It& it, K** out) {
+                out[0] = key;
+                for (auto i = std::size_t{1}; i < n; ++i) out[i] = node<K>::obj_next(it);
+            };
+            constexpr auto few = std::size_t{16};
+            if (n <= few)
+            {
+                auto ma = std::array<A*, few>{};
+                auto mb = std::array<B*, few>{};
+                collect(ka, ia, ma.data());
+                collect(kb, ib, mb.data());
+                return same_members(std::span<A* const>(ma.data(), n), std::span<B* const>(mb.data(), n));
+            }
+            auto ma = std::vector<A*>(n);
+            auto mb = std::vector<B*>(n);
+            collect(ka, ia, ma.data());
+            collect(kb, ib, mb.data());
+            const auto by_key = [](auto* l, auto* r) { return text_of(l) < text_of(r); };
+            std::ranges::sort(ma, by_key);
+            std::ranges::sort(mb, by_key);
+            for (auto i = std::size_t{0}; i < n;)
+            {
+                const auto name = text_of(ma[i]);
+                auto j = i + 1;
+                while (j < n && text_of(ma[j]) == name) ++j;
+                if (text_of(mb[i]) != name || text_of(mb[j - 1]) != name || (j < n && text_of(mb[j]) == name))
+                    return false;
+                if (!same_members(std::span<A* const>(ma).subspan(i, j - i), std::span<B* const>(mb).subspan(i, j - i)))
+                    return false;
+                i = j;
+            }
+            return true;
         }
 
         template <typename T>
