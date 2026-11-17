@@ -200,7 +200,7 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 // -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
 ```
 
-A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`.
+A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`. A single `std::pair<std::string, int>` reads an array. For an object, its `bad_cast::message()` is `expected an array, got an object`.
 
 ### Untagged variants
 

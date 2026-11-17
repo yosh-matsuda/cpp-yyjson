@@ -737,14 +737,17 @@ TEST(Reader, VariantSkipsAlternatives)
                   (json_kind_null | json_kind_array));
     static_assert(accepted_json_kinds<std::variant<std::array<int, 2>, std::map<std::string, int>>,
                                       const_value_ref>() == (json_kind_array | json_kind_object));
-    static_assert(accepted_json_kinds<std::pair<int, int>, const_value_ref>() == (json_kind_array | json_kind_object));
+    static_assert(accepted_json_kinds<std::pair<std::string, int>, const_value_ref>() == json_kind_array);
+    static_assert(accepted_json_kinds<std::tuple<std::pair<std::string, int>>, const_value_ref>() ==
+                  (json_kind_array | json_kind_object));
     static_assert(accepted_json_kinds<ReadPoint, const_value_ref>() == json_kind_all);
     static_assert(accepted_json_kinds<std::array<int, 2>, writer::const_value_ref>() == json_kind_array);
     static_assert(accepted_json_kinds<std::array<int, 2>, reader::const_array_ref>() == json_kind_all);
 
     // the alternative that a variant holds is the same as when every alternative is tried in order
     constexpr auto values = std::string_view(
-        R"([null,true,false,0,1,-1,300,-300,1.5,-2.5,2.0,-3e2,1e300,18446744073709551615,-9223372036854775808,)"
+        R"([null,true,false,0,1,-1,127,128,-128,-129,255,256,300,-300,32768,65536,4294967296,1.5,-2.5,2.0,-3e2,)"
+        R"(255.0,256.0,1e300,18446744073709551615,-9223372036854775808,)"
         R"("","s","1",[],[1],[1,2],[1.5,"a"],["a","b"],[[1,2]],{},{"a":1},{"x":1,"y":2},{"a":1,"b":2.0,"c":"x"}])");
     expect_variants_as_trying_all<
         std::variant<int, double>, std::variant<double, int>, std::variant<bool, int>,
@@ -757,6 +760,10 @@ TEST(Reader, VariantSkipsAlternatives)
         std::variant<std::nullptr_t, std::string_view, float>,
         std::variant<std::array<int, 2>, std::map<std::string, int>, std::string_view>,
         std::variant<std::int8_t, std::uint64_t, double>, std::variant<int, std::optional<double>>>(values);
+    expect_variants_as_trying_all<
+        std::variant<std::uint8_t, int>, std::variant<std::int8_t, std::uint8_t, std::int64_t, std::string>,
+        std::variant<std::uint32_t, std::int16_t, double>, std::variant<std::uint64_t, std::int64_t>,
+        std::variant<std::optional<std::uint8_t>, std::int16_t>>(values);
     expect_variants_as_trying_all<std::variant<std::vector<int>, std::string, double>,
                                   std::variant<std::nullptr_t, bool, std::string>>(values, ReadFlag::NumberAsRaw);
 

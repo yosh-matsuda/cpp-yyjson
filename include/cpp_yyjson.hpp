@@ -22375,23 +22375,56 @@ namespace yyjson
                 detail::throw_bad_cast_at(at, "{} is not constructible from JSON bool", detail::type_name<U>());
         }
 
+        // Whether `from_json_uint`, `from_json_sint` and `from_json_real` read the value into U without an
+        // overflow.  A variant checks them before it tries an alternative, which saves a throw.
+        template <typename U = T>
+        static constexpr bool fits_json_uint(std::uint64_t value) noexcept
+        {
+            if constexpr (integer_like<U>)
+                return value <= std::numeric_limits<integer_of_t<U>>::max();
+            else
+                return true;
+        }
+        template <typename U = T>
+        static constexpr bool fits_json_sint(std::int64_t value) noexcept
+        {
+            if constexpr (integer_like<U> && std::unsigned_integral<integer_of_t<U>>)
+                return value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<integer_of_t<U>>::max();
+            else if constexpr (integer_like<U>)
+                return value >= std::numeric_limits<integer_of_t<U>>::min() &&
+                       value <= std::numeric_limits<integer_of_t<U>>::max();
+            else
+                return true;
+        }
+        // An integral `value` only, as the kind of a real number tells whether it has a fractional part.
+        template <typename U = T>
+        static bool fits_json_real(double value) noexcept
+        {
+            if constexpr (integer_like<U>)
+            {
+                // checked before the conversion, as converting a value out of range is undefined
+                using I = integer_of_t<U>;
+                constexpr auto upper = std::numeric_limits<I>::max() / 2 * 2.0 + 2.0;
+                constexpr auto lower = std::signed_integral<I> ? -upper : 0.0;
+                return value >= lower && value < upper;
+            }
+            else
+                return true;
+        }
+
         template <typename U = T>
         static U from_json_real(double value, detail::cast_target at = {})
         {
             if constexpr (integer_like<U>)
             {
-                // the value is read only if it is an integer that fits in U, which is checked before the
-                // conversion, as converting a value out of range is undefined
-                using I = integer_of_t<U>;
-                constexpr auto upper = std::numeric_limits<I>::max() / 2 * 2.0 + 2.0;
-                constexpr auto lower = std::signed_integral<I> ? -upper : 0.0;
+                // the value is read only if it is an integer that fits in U
                 if (std::trunc(value) != value) [[unlikely]]
                     detail::throw_bad_cast_at(at,
                                               "{} is not constructible from JSON number {}, which is not an integer",
                                               detail::type_name<U>(), value);
-                if (value >= lower && value < upper) [[likely]]
+                if (fits_json_real<U>(value)) [[likely]]
                 {
-                    return static_cast<U>(static_cast<I>(value));
+                    return static_cast<U>(static_cast<integer_of_t<U>>(value));
                 }
                 detail::throw_bad_cast_at(at, "overflow detected: {} is not constructible from JSON number {}",
                                           detail::type_name<U>(), value);
@@ -22446,8 +22479,7 @@ namespace yyjson
         {
             if constexpr (integer_like<U>)
             {
-                using I = integer_of_t<U>;
-                if (value <= std::numeric_limits<I>::max())
+                if (fits_json_uint<U>(value))
                 {
                     return static_cast<U>(value);
                 }
@@ -22467,20 +22499,9 @@ namespace yyjson
         template <typename U = T>
         static U from_json_sint(std::int64_t value, detail::cast_target at = {})
         {
-            if constexpr (integer_like<U> && std::unsigned_integral<integer_of_t<U>>)
+            if constexpr (integer_like<U>)
             {
-                using I = integer_of_t<U>;
-                if (value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<I>::max())
-                {
-                    return static_cast<U>(value);
-                }
-                detail::throw_bad_cast_at(at, "overflow detected: {} is not constructible from JSON integer {}",
-                                          detail::type_name<U>(), value);
-            }
-            else if constexpr (integer_like<U>)
-            {
-                using I = integer_of_t<U>;
-                if (value >= std::numeric_limits<I>::min() && value <= std::numeric_limits<I>::max())
+                if (fits_json_sint<U>(value))
                 {
                     return static_cast<U>(value);
                 }
@@ -24332,7 +24353,12 @@ namespace yyjson
                 else if constexpr (is_std_optional<T>::value || nullable_value<T>)
                     return json_kind_null | accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (tuple_like<T>)
-                    return json_kind_array | json_kind_object;
+                    // only a tuple of key-value pairs reads an object
+                    return json_kind_array | ([]<std::size_t... I>(std::index_sequence<I...>) {
+                               return (key_value_like<std::tuple_element_t<I, T>> && ...);
+                           }(std::make_index_sequence<std::tuple_size_v<T>>{})
+                                                  ? json_kind_object
+                                                  : 0U);
                 else
                     return json_kind_all;
             }
@@ -25389,6 +25415,25 @@ namespace yyjson
                 if constexpr (n::values) result = result || n::enum_keys || may_reject<typename n::value_type>();
                 return result;
             }
+        }
+
+        // An integer narrower than 64 bits that the default caster reads, whose range a variant checks before it
+        // tries the alternative.  A 64-bit integer rarely overflows, and the check would only add code.
+        template <typename T>
+        concept default_read_integer = integer_like<T> && std::is_arithmetic_v<T> &&
+                                       std::numeric_limits<integer_of_t<T>>::digits < 63 &&
+                                       !reader::detail::from_json_val_usr_defined<T> &&
+                                       !writer::detail::from_json_val_usr_defined<T>;
+
+        // Whether the default caster reads the JSON number `json` of `kind` into the integer T without an overflow.
+        template <default_read_integer T, typename Json>
+        bool integer_fits(const Json& json, std::uint16_t kind)
+        {
+            using dc = default_caster<T>;
+            if (kind == json_kind_uint) return dc::fits_json_uint(*json.as_uint());
+            if (kind == json_kind_sint) return dc::fits_json_sint(*json.as_sint());
+            if (kind == json_kind_integral_real) return dc::fits_json_real(*json.as_real());
+            return true;
         }
 
         // False if `cast<T>(json)` fails for the kind of `json` or of a value nested in it as `nested_casts` lists,
@@ -26628,6 +26673,14 @@ namespace yyjson
             static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads)
             {
                 using T = std::variant_alternative_t<I, V>;
+                if constexpr (json_value_of_document<Json> && default_read_integer<std::remove_cvref_t<T>>)
+                {
+                    if (!integer_fits<std::remove_cvref_t<T>>(json, kind))
+                    {
+                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                        return false;
+                    }
+                }
                 if constexpr (may_reject_nested<std::remove_cvref_t<T>>())
                 {
                     if (!yyjson::detail::may_cast<std::remove_cvref_t<T>>(json, kind))
@@ -36610,6 +36663,14 @@ namespace yyjson
                               !yyjson::detail::constrained_union_alternative<T, I>)
                 {
                     using dc = yyjson::detail::default_caster<alternative>;
+                    if constexpr (yyjson::detail::default_read_integer<alternative>)
+                    {
+                        if (n.kind == yyjson::detail::json_kind_uint    ? !dc::fits_json_uint(n.u)
+                            : n.kind == yyjson::detail::json_kind_sint  ? !dc::fits_json_sint(n.s)
+                            : n.kind == yyjson::detail::json_kind_integral_real ? !dc::fits_json_real(n.r)
+                                                                                : false)
+                            return false;
+                    }
                     try
                     {
                         if (n.kind == yyjson::detail::json_kind_uint)

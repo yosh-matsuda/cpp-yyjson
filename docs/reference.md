@@ -171,11 +171,13 @@ A `T` that would refer into the JSON string, such as `std::string_view`, `const 
 *   numbers, strings, `bool`, `nullptr`, ranges, maps and the other [standard library types](conversions.md#standard-library-types);
 *   structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts;
 *   a `std::variant`, which tries its alternatives in the same order as the cast does, and a [tagged variant](conversions.md#tagged-variants), which reads the alternative that its tag names;
-*   a tuple-like type, such as `std::tuple` or `std::pair`, from an array or an object as its caster reads it from a value;
+*   a tuple-like type from an array, or from an object when each element is a key-value pair;
 *   a [translator `from_json`](conversions.md#translator), read as its parameter type and then converted;
 *   a `from_json` that takes a [`yyjson::json_view`](conversions.md#reading-a-json-value-in-a-caster), which is given a view of the string.
 
-A user-defined `from_json` that takes a DOM value, and a tuple of key-value pairs whose keys are not `std::string`, need a document. The value that such a caster converts is read into a temporary document, and the values around it are still read directly. When such values are the elements of a range or a map, or an alternative of a `std::variant`, `read<T>` reads the whole string into one document and casts it instead.
+A user-defined `from_json` that takes a DOM value needs a document. So does a tuple of key-value pairs whose keys are not `std::string`. The reader uses a temporary document for that value alone. For such elements of a range or map, or alternatives of a `std::variant`, it parses the whole input into one document. A range of `yyjson::as_array` structs also reads through a document. The struct alone can read directly.
+
+Some [constraints](validation.md#the-cost-of-constraints) need a document to compare JSON values. A direct read can also count the elements of a set or the members of a map before checking a size bound. That extra pass needs no document.
 
 Whether `read<T>` reads directly also depends on `flag`; see [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt).
 
