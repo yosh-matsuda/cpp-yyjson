@@ -823,7 +823,8 @@ TEST(AsArray, ArrayKeywords)
     expect_rejected<Ranks>("[6]", "the array has fewer than 2 items that satisfy contains; reading Ranks", "");
     expect_rejected<Ranks>("[0]", "the array has fewer than 2 items that satisfy contains; reading Ranks", "");
     expect_rejected<Ranks>("[5,6,7,8]", "the array has more than 3 items that satisfy contains; reading Ranks", "");
-    expect_read<Labels>(R"([1,"1",2])", {1, "1", {2}});
+    // the positions of several types compare their JSON values, which only a document keeps
+    expect_read<Labels>(R"([1,"1",2])", {1, "1", {2}}, true, false);
     expect_rejected<Labels>(R"([1,"x",2,1])",
                             "the item is equal to an earlier item at /3; reading an element of Labels", "/3");
 
@@ -1055,6 +1056,16 @@ TEST(AsArray, Annotations)
 }
 #endif
 
+// `contains` on positions of different kinds of JSON value
+struct MixedRow
+{
+    int n = 0;
+    std::string s;
+};
+template <>
+inline constexpr auto yyjson::annotations<MixedRow> = yyjson::annotate(
+    yyjson::as_array, yyjson::items(false), yyjson::contains(yyjson::max_length(1)), yyjson::max_contains(1));
+
 TEST(AsArray, Validate)
 {
     expect_valid(Rule{1, std::nullopt, std::nullopt});
@@ -1083,6 +1094,9 @@ TEST(AsArray, Validate)
     expect_invalid(Banner{"a", "b", {}}, "the array has no item that satisfies contains; reading Banner", "");
     expect_invalid(BannerHolder{{"kk", "a", {"bb"}}},
                    "the array has more than 1 item that satisfies contains at /shape; reading Banner", "/shape");
+    // a number satisfies `max_length`
+    expect_valid(MixedRow{1, "ab"});
+    expect_invalid(MixedRow{1, "a"}, "the array has more than 1 item that satisfies contains; reading MixedRow", "");
 }
 
 // NOLINTEND

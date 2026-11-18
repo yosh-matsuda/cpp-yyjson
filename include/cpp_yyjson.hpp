@@ -2364,6 +2364,7 @@ namespace yyjson
 
         public:
             emit_defaults_scope() noexcept : outer_(write_emit_defaults) { write_emit_defaults = true; }
+            explicit emit_defaults_scope(bool on) noexcept : outer_(write_emit_defaults) { write_emit_defaults = on; }
             emit_defaults_scope(const emit_defaults_scope&) = delete;
             emit_defaults_scope& operator=(const emit_defaults_scope&) = delete;
             ~emit_defaults_scope() { write_emit_defaults = outer_; }
@@ -8170,8 +8171,15 @@ namespace yyjson
         template <>
         inline constexpr std::uint64_t real_format<float> = std::uint64_t{YYJSON_WRITE_FP_TO_FLOAT} << 32;
 #endif
-        // The JSON number that `write` gives for `v`: the shortest text of the float, read back as a double.
-        template <narrower_than_double V>
+#if YYJSON_VERSION_HEX >= 0x000B00
+        // The bits of a `WriteFlag` that choose the format of a real number.
+        inline constexpr std::uint32_t real_format_bits = ~std::uint32_t{0} << (32 - YYJSON_WRITE_FP_FLAG_BITS);
+#else
+        inline constexpr std::uint32_t real_format_bits = 0;
+#endif
+        // The JSON number that `write` gives for `v` without the format bits of a flag: the double of `v`, or the
+        // shortest text of a float, read back.
+        template <std::floating_point V>
         double written_real(V v) noexcept
         {
             const auto d = static_cast<double>(v);
@@ -8179,19 +8187,29 @@ namespace yyjson
                 return d;
             else
             {
+#if YYJSON_VERSION_HEX >= 0x000B00
                 if (!std::isfinite(d)) return d;
                 auto buf = std::array<char, 48>{};
-#if YYJSON_VERSION_HEX >= 0x000C00
                 auto num = yyjson_val{};
                 num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL | real_format<V>;
                 num.uni.f64 = d;
+#if YYJSON_VERSION_HEX >= 0x000C00
                 *yyjson_write_number(&num, buf.data()) = '\0';
 #else
-                *std::to_chars(buf.data(), buf.data() + buf.size() - 1, v).ptr = '\0';
+                alignas(std::max_align_t) auto pool = std::array<char, 512>{};
+                auto alc = yyjson_alc{};
+                auto len = std::size_t{0};
+                yyjson_alc_pool_init(&alc, pool.data(), pool.size());
+                const char* text = yyjson_val_write_opts(&num, 0, &alc, &len, nullptr);
+                if (text == nullptr || len >= buf.size()) return d;
+                std::memcpy(buf.data(), text, len);
 #endif
                 auto read = yyjson_val{};
                 if (yyjson_read_number(buf.data(), &read, 0, nullptr, nullptr) == nullptr) return d;
                 return yyjson_get_num(&read);
+#else
+                return d;
+#endif
             }
         }
 
@@ -8213,8 +8231,8 @@ namespace yyjson
             return d == b ? std::partial_ordering::equivalent
                           : (d < b ? std::partial_ordering::less : std::partial_ordering::greater);
         }
-        // Compares the number `v` with the bound `b`, of 64-bit integers exactly. A float compares as its exact
-        // value, so a check gives the JSON number that the float is read from or written as instead.
+        // Compares the number `v` with the bound `b`, of 64-bit integers exactly. A real compares as its exact
+        // value, so a check gives the JSON number that the real is read from or written as instead.
         template <typename V>
         constexpr std::partial_ordering compare_bound(const V& v, const bound_number& b) noexcept
         {
@@ -8257,42 +8275,215 @@ namespace yyjson
             return compare_bound(a.real, b);
         }
 
-        // `yyjson::multiple_of(m)` in decimal: m is n / 10^k with the least k, and `divisor`, n / gcd(n, 10^k), is
-        // what an integer must be a multiple of.  Without `exact`, m has no such n below 2^53, and a value is a
-        // multiple of m when its quotient by m is an integer.
+        // A natural number below 2^1280 for the shortest decimal of a double at compile time.
+        struct wide_natural
+        {
+            std::array<std::uint32_t, 40> limbs{};
+
+            constexpr explicit wide_natural(std::uint64_t v = 0) noexcept
+            {
+                limbs[0] = static_cast<std::uint32_t>(v);
+                limbs[1] = static_cast<std::uint32_t>(v >> 32);
+            }
+            constexpr void multiply(std::uint32_t m) noexcept
+            {
+                auto carry = std::uint64_t{0};
+                for (auto& l : limbs)
+                {
+                    carry += std::uint64_t{l} * m;
+                    l = static_cast<std::uint32_t>(carry);
+                    carry >>= 32;
+                }
+            }
+            constexpr void shift(int bits) noexcept
+            {
+                for (; bits >= 32; bits -= 32)
+                {
+                    for (auto i = limbs.size() - 1; i > 0; --i) limbs[i] = limbs[i - 1];
+                    limbs[0] = 0;
+                }
+                if (bits > 0) multiply(std::uint32_t{1} << bits);
+            }
+            constexpr wide_natural& operator+=(const wide_natural& o) noexcept
+            {
+                auto carry = std::uint64_t{0};
+                for (std::size_t i = 0; i < limbs.size(); ++i)
+                {
+                    carry += std::uint64_t{limbs[i]} + o.limbs[i];
+                    limbs[i] = static_cast<std::uint32_t>(carry);
+                    carry >>= 32;
+                }
+                return *this;
+            }
+            constexpr wide_natural& operator-=(const wide_natural& o) noexcept
+            {
+                auto borrow = std::uint64_t{0};
+                for (std::size_t i = 0; i < limbs.size(); ++i)
+                {
+                    const auto d = std::uint64_t{limbs[i]} - o.limbs[i] - borrow;
+                    limbs[i] = static_cast<std::uint32_t>(d);
+                    borrow = d >> 63;
+                }
+                return *this;
+            }
+            friend constexpr std::strong_ordering operator<=>(const wide_natural& a, const wide_natural& b) noexcept
+            {
+                for (auto i = a.limbs.size(); i-- > 0;)
+                    if (a.limbs[i] != b.limbs[i]) return a.limbs[i] <=> b.limbs[i];
+                return std::strong_ordering::equal;
+            }
+            friend constexpr bool operator==(const wide_natural&, const wide_natural&) noexcept = default;
+        };
+        // The shortest decimal `digits` · 10^`exponent` that reads back as the finite `v` > 0, the nearest of them
+        // to `v`, as `std::to_chars` gives it.  This is the free-format algorithm of Burger and Dybvig.
+        struct shortest_decimal
+        {
+            std::uint64_t digits = 0;
+            int exponent = 0;
+        };
+        constexpr shortest_decimal shortest_decimal_of(double v) noexcept
+        {
+            const auto bits = std::bit_cast<std::uint64_t>(v);
+            const auto biased = static_cast<int>(bits >> 52 & 0x7FF);
+            auto f = bits & ((std::uint64_t{1} << 52) - 1);
+            auto e = -1074;
+            if (biased != 0)
+            {
+                f |= std::uint64_t{1} << 52;
+                e = biased - 1075;
+            }
+            const bool even = f % 2 == 0;
+            // the gap below `v` is half the gap above it
+            const bool unequal = biased > 1 && f == std::uint64_t{1} << 52;
+            auto r = wide_natural(f);
+            auto s = wide_natural(1);
+            auto high = wide_natural(1);
+            auto low = wide_natural(1);
+            r.shift(1 + (e > 0 ? e : 0) + (unequal ? 1 : 0));
+            s.shift(1 + (e < 0 ? -e : 0) + (unequal ? 1 : 0));
+            high.shift((e > 0 ? e : 0) + (unequal ? 1 : 0));
+            low.shift(e > 0 ? e : 0);
+            const auto beyond = [even](wide_natural x, const wide_natural& y, const wide_natural& limit) {
+                x += y;
+                return even ? x >= limit : x > limit;
+            };
+            auto k = 0;
+            for (; beyond(r, high, s); ++k) s.multiply(10);
+            for (auto r10 = r, high10 = high; r10.multiply(10), high10.multiply(10), !beyond(r10, high10, s);
+                 r = r10, high = high10, --k)
+                low.multiply(10);
+            auto result = shortest_decimal{};
+            for (;;)
+            {
+                r.multiply(10);
+                high.multiply(10);
+                low.multiply(10);
+                auto digit = std::uint64_t{0};
+                for (; r >= s; ++digit) r -= s;
+                --k;
+                const bool below = even ? r <= low : r < low;
+                const bool above = beyond(r, high, s);
+                if (below && above)
+                {
+                    auto twice = r;
+                    twice += r;
+                    if (twice > s || (twice == s && digit % 2 != 0)) ++digit;
+                }
+                else if (above)
+                    ++digit;
+                result.digits = result.digits * 10 + digit;
+                if (below || above) break;
+            }
+            result.exponent = k;
+            for (; result.digits % 10 == 0; result.digits /= 10) ++result.exponent;
+            return result;
+        }
+
+        // `yyjson::multiple_of(m)` in decimal: m is n · 10^-k, n an integer, by the shortest decimal of a real m.
+        // n is 2^twos · 5^fives · `odd`, and an integer is a multiple of m when `divisor`, or if 0 no number but 0,
+        // divides it.  `scale` is 10^k when 0 <= k <= 22, which a double holds exactly, or else 0.
         struct decimal_multiple
         {
             bool exact = false;
             std::uint64_t n = 0;
+            int k = 0;
+            std::uint64_t odd = 0;
+            int twos = 0;
+            int fives = 0;
             std::uint64_t divisor = 0;
-            double scale = 1;  // 10^k
+            double scale = 0;
         };
+        consteval decimal_multiple make_decimal_multiple(std::uint64_t n, int k)
+        {
+            auto m = decimal_multiple{true, n, k, n};
+            for (; m.odd % 2 == 0; m.odd /= 2) ++m.twos;
+            for (; m.odd % 5 == 0; m.odd /= 5) ++m.fives;
+            // an integer i is a multiple of m when 2^max(twos - k, 0) · 5^max(fives - k, 0) · odd divides i
+            m.divisor = m.odd;
+            const auto multiply = [&m](std::uint64_t factor, int times) {
+                for (; times > 0 && m.divisor != 0; --times)
+                    m.divisor = m.divisor > std::numeric_limits<std::uint64_t>::max() / factor ? 0 : m.divisor * factor;
+            };
+            multiply(2, m.twos - k);
+            multiply(5, m.fives - k);
+            if (k >= 0 && k <= 22)
+            {
+                m.scale = 1;
+                for (int i = 0; i < k; ++i) m.scale *= 10;
+            }
+            return m;
+        }
         template <typename B>
         requires std::same_as<B, bound_number>
         consteval decimal_multiple decimal_multiple_of(const B& m)
         {
-            constexpr auto limit = std::uint64_t{1} << 53;
             if (m.kind != bound_number::kind_t::real)
             {
                 const auto n = m.kind == bound_number::kind_t::uint ? m.uint : static_cast<std::uint64_t>(m.sint);
-                return {n < limit, n, n, 1};
+                if (n == 0) return {};
+                return make_decimal_multiple(n, 0);
             }
-            auto scale = 1.0;
-            auto power = std::uint64_t{1};
-            for (int k = 0; k <= 17; ++k, scale *= 10, power *= 10)
+            if (!(m.real > 0) || m.real > std::numeric_limits<double>::max()) return {};
+            const auto d = shortest_decimal_of(m.real);
+            return make_decimal_multiple(d.digits, -d.exponent);
+        }
+        // Whether the integer d · 10^shift is a multiple of `m`: the quotient d · 10^(shift + k) / n is an integer.
+        inline bool decimal_is_multiple(std::uint64_t d, int shift, const decimal_multiple& m) noexcept
+        {
+            if (d == 0) return true;
+            if (d % m.odd != 0) return false;
+            int twos = 0;
+            int fives = 0;
+            for (; d % 2 == 0; d /= 2) ++twos;
+            for (; d % 5 == 0; d /= 5) ++fives;
+            return twos + shift + m.k >= m.twos && fives + shift + m.k >= m.fives;
+        }
+        // Whether the decimal of the shortest text of the finite `x` that reads back as `x`, d · 10^e, is a multiple
+        // of `m`.
+        inline bool shortest_decimal_multiple(double x, const decimal_multiple& m) noexcept
+        {
+            if (x == 0) return true;
+            // below 2^50, one decimal r · 10^-k at most reads back as x, and it is then the shortest one
+            if (const auto scaled = x * m.scale; m.scale != 0 && std::fabs(scaled) < 0x1p50)
             {
-                const auto x = m.real * scale;
-                if (x >= static_cast<double>(limit)) break;
-                const auto rounded = static_cast<std::uint64_t>(x + 0.5);
-                for (auto n = rounded == 0 ? rounded : rounded - 1; n <= rounded + 1; ++n)
-                {
-                    if (n == 0 || static_cast<double>(n) / scale != m.real) continue;
-                    auto a = n;
-                    for (auto b = power; b != 0;) a = std::exchange(b, a % b);
-                    return {true, n, n / a, scale};
-                }
+                const auto r = std::round(scaled);
+                return r / m.scale == x && static_cast<std::uint64_t>(std::fabs(r)) % m.n == 0;
             }
-            return {};
+            auto buf = std::array<char, 40>{};
+            const auto end = std::to_chars(buf.data(), buf.data() + buf.size(), x, std::chars_format::scientific).ptr;
+            const char* p = buf.data() + (buf[0] == '-' ? 1 : 0);
+            auto d = std::uint64_t{0};
+            int digits = 0;
+            for (; *p != 'e'; ++p)
+                if (*p != '.')
+                {
+                    d = d * 10 + static_cast<std::uint64_t>(*p - '0');
+                    ++digits;
+                }
+            p += p[1] == '+' ? 2 : 1;
+            int exponent = 0;
+            std::from_chars(p, end, exponent);
+            return decimal_is_multiple(d, exponent - (digits - 1), m);
         }
         template <typename Schema, typename V>
         bool multiple_of_bound(const V& v) noexcept
@@ -8303,16 +8494,15 @@ namespace yyjson
             {
                 const auto u = static_cast<std::uint64_t>(v);
                 const auto magnitude = std::is_signed_v<V> && v < 0 ? std::uint64_t{0} - u : u;
-                return magnitude % decimal.divisor == 0;
+                if constexpr (decimal.divisor == 0)
+                    return magnitude == 0;
+                else
+                    return magnitude % decimal.divisor == 0;
             }
             else if constexpr (decimal.exact)
             {
-                // v·10^k within the rounding error of a double of an integer that n divides
-                const auto x = static_cast<double>(v) * decimal.scale;
-                if (!std::isfinite(x)) return false;
-                const auto r = std::nearbyint(x);
-                return std::fabs(x - r) <= 4 * std::numeric_limits<double>::epsilon() * std::fabs(x) &&
-                       std::fmod(r, static_cast<double>(decimal.n)) == 0;
+                const auto x = static_cast<double>(v);
+                return std::isfinite(x) && shortest_decimal_multiple(x, decimal);
             }
             else
             {
@@ -11299,13 +11489,6 @@ namespace yyjson
         {
             if constexpr (std::same_as<V, bool>)
                 return v == s.boolean;
-            else if constexpr (std::floating_point<V>)
-            {
-                const auto& b = s.number;
-                return v == (b.kind == bound_number::kind_t::sint   ? static_cast<V>(b.sint)
-                             : b.kind == bound_number::kind_t::uint ? static_cast<V>(b.uint)
-                                                                    : static_cast<V>(b.real));
-            }
             else if constexpr (std::is_arithmetic_v<V>)
                 return std::is_eq(compare_bound(v, s.number));
             else if constexpr (constraint_string<V>)
@@ -11341,6 +11524,10 @@ namespace yyjson
         // Whether the value `v` equals the value I of `yyjson::json_text`, read as V.  Defined after `cast_text`.
         template <typename Schema, std::size_t I, typename V>
         bool equals_json_text(const V& v);
+        template <typename Schema, std::size_t I, typename T>
+        const std::optional<T>& json_text_constant();
+        template <typename Schema, typename V, typename Node>
+        constraint_kind input_listed_violation(const Node& node);
 
         // Whether `v` equals the value I of `yyjson::const_` and `yyjson::enum_` of `Schema`.
         template <typename Schema, std::size_t I, typename V>
@@ -11722,15 +11909,17 @@ namespace yyjson
         requires std::same_as<N, yyjson_val>
         constraint_kind json_number_violation(const N& number)
         {
-            if (yyjson_is_real(&number)) return number_violation<Schema>(yyjson_get_real(&number));
-            if (yyjson_is_uint(&number)) return number_violation<Schema>(yyjson_get_uint(&number));
-            return number_violation<Schema>(yyjson_get_sint(&number));
+            // some versions of yyjson take no const pointer
+            auto* const p = const_cast<yyjson_val*>(&number);
+            if (yyjson_is_real(p)) return number_violation<Schema>(yyjson_get_real(p));
+            if (yyjson_is_uint(p)) return number_violation<Schema>(yyjson_get_uint(p));
+            return number_violation<Schema>(yyjson_get_sint(p));
         }
         // Whether the keywords of `Schema` on numbers compare a value of V as the JSON number that it is read from
-        // or written as, which V rounds.
+        // or written as: a floating-point type rounds a JSON integer, and a float or a long double its double.
         template <typename Schema, typename V>
         inline constexpr bool checks_json_number =
-            narrower_than_double<V> && (Schema::constraints.bits & numeric_constraints) != 0;
+            std::floating_point<V> && (Schema::constraints.bits & numeric_constraints) != 0;
         // An enumeration that reads a name or an integer, whose keywords check the kind of the JSON value read: an
         // integer can give a value that has a name.
         template <typename V>
@@ -11773,7 +11962,7 @@ namespace yyjson
         }
 
         // The keyword of `Schema` that the value `v`, which is not null, does not satisfy, other than
-        // `yyjson::satisfies`, and other than `yyjson::const_` and `yyjson::enum_` unless `Listed`.  A float takes
+        // `yyjson::satisfies`, and other than `yyjson::const_` and `yyjson::enum_` unless `Listed`.  A real takes
         // the keywords on numbers, unless not `Numbers`, as the JSON number that `write` gives.
         template <typename Schema, bool Listed = true, bool Numbers = true, typename V>
         constraint_kind value_violation(const V& v)
@@ -11806,7 +11995,7 @@ namespace yyjson
                               !std::same_as<V, bool> && Numbers)
                 {
                     constraint_kind kind;
-                    if constexpr (narrower_than_double<V>)
+                    if constexpr (std::floating_point<V>)
                         kind = number_violation<Schema>(written_real(v));
                     else
                         kind = number_violation<Schema>(v);
@@ -11820,6 +12009,15 @@ namespace yyjson
                 }
                 return constraint_kind::none;
             }
+        }
+        // The keyword of `Schema` on numbers that the real `d` of a JSON text does not satisfy, as the text is.
+        template <typename Schema>
+        constraint_kind json_real_violation(double d)
+        {
+            if constexpr ((Schema::constraints.bits & numeric_constraints) != 0)
+                return number_violation<Schema>(d);
+            else
+                return constraint_kind::none;
         }
 
         // The keyword of `Schema` that JSON null does not satisfy: `yyjson::const_` and `yyjson::enum_` without
@@ -11876,11 +12074,26 @@ namespace yyjson
         template <typename V, typename Json, typename Holds>
         bool absent_holds(const V& value, const Json& json, const Holds& holds);
 
-        // Whether `Schema` on F checks the JSON value that F was read from: a keyword of the whole array on a struct
-        // annotated with `yyjson::as_array`, at any depth, counts the elements of the input.  Defined after the
-        // concepts of ranges.
-        template <typename Schema, typename F>
+        // Whether `Schema` on F checks the JSON value that F was read from, or if `Written`, that write gives, where
+        // a double needs no JSON: a keyword of the whole array of an `as_array` struct counts the elements of the
+        // input.  Defined after the concepts of ranges.
+        template <typename Schema, typename F, bool Written = false>
         consteval bool counts_input();
+        // What the keywords that compare JSON values, `yyjson::const_`, `yyjson::enum_` and `yyjson::unique_items`,
+        // need of the JSON value of a position: `fast` if its C++ value tells them exactly, `document` if they compare
+        // the JSON value itself, which the type then reads through a document.  Defined after the concepts of ranges.
+        enum class json_need : unsigned char
+        {
+            none,
+            fast,
+            document
+        };
+        template <typename Schema, typename F>
+        consteval json_need json_requirement();
+        template <typename V>
+        consteval json_need unique_items_need();
+        template <typename Schema, typename V>
+        consteval bool listed_compares_json();
 
         // `input`, a pointer to the JSON value of F, if `Schema` on F checks it, or else `no_input`.
         // Whether `Input` points to a record of the direct reader, which keeps a variant or a tuple as its JSON
@@ -11977,7 +12190,7 @@ namespace yyjson
         // Whether `input` is a JSON number.  Defined after the DOM.
         template <typename Input>
         bool input_is_number(Input input);
-        // The keyword of `Schema` on numbers that the float `v`, read from `input`, does not satisfy.  Defined
+        // The keyword of `Schema` on numbers that the real `v`, read from `input`, does not satisfy.  Defined
         // after the DOM.
         template <typename Schema, typename V, typename Input>
         constraint_kind input_number_violation(const V& v, Input input);
@@ -12198,7 +12411,7 @@ namespace yyjson
                 return lazy_or(first, [&] { return lazy_fold<All, J + 1, N>(holds); });
         }
 
-        // `value_violation<Schema, Listed>(v)`, but a float read from `input` takes the keywords on numbers as the
+        // `value_violation<Schema, Listed>(v)`, but a real read from `input` takes the keywords on numbers as the
         // JSON number that it was read from.
         template <typename Schema, bool Listed = true, typename V, typename Input>
         constraint_kind read_value_violation(const V& v, Input input)
@@ -12260,7 +12473,27 @@ namespace yyjson
                 if (const auto kind = variant_violation<Schema>(*value, input); kind != constraint_kind::none)
                     return kind;
             }
-            else if (const auto kind = read_value_violation<Schema>(*value, input); kind != constraint_kind::none)
+            else if (const auto kind =
+                         [&] {
+                             if constexpr (json_input<Input> && listed_compares_json<Schema, V>())
+                                 if (input != nullptr)
+                                 {
+                                     // the other keywords first, of which those on numbers take the JSON number
+                                     const auto other = read_value_violation<Schema, false>(*value, input);
+                                     return other != constraint_kind::none ? other
+                                                                           : input_listed_violation<Schema, V>(*input);
+                                 }
+                             if constexpr (merged_input<Input> && listed_compares_json<Schema, V>())
+                                 if (input != nullptr && input->json() != nullptr)
+                                 {
+                                     const auto other = read_value_violation<Schema, false>(*value, input);
+                                     return other != constraint_kind::none
+                                                ? other
+                                                : input_listed_violation<Schema, V>(*input->json());
+                                 }
+                             return read_value_violation<Schema>(*value, input);
+                         }();
+                     kind != constraint_kind::none)
                 return kind;
             if constexpr (struct_object_node<Schema> && !dom_checked<V> && !variant_value<V> && !caster_json)
                 if constexpr (object_struct_value<V>())
@@ -12950,31 +13183,29 @@ namespace yyjson
             const auto* sub = origin->find(struct_field_key<T, k>);
             if (committed || sub == nullptr || sub->from == source::kept)
                 return field_json_violation<N>(struct_field<k>(t), value, true);
-            if constexpr (!schema_takes_value<N>)
-                return constraint_violation<N, true>(value);
-            else
+            using F = struct_field_type<T, k>;
+            // a patched member reads as the field, whose type decides which listed values it can equal
+            if (sub->from == source::patch)
             {
-                using F = struct_field_type<T, k>;
-                if (sub->from == source::patch)
-                {
-                    if constexpr (!adjacent_field<T, k> && ((reads_field_in_place<F, reader::const_value_ref>() &&
-                                                             std::default_initializable<T>) ||
-                                                            requires { cast_nested<F>(value); }))
-                        return with_patched_field<T, k>(value,
-                                                        [&](const F& f) { return field_json_violation<N>(f, value); });
-                    else
-                        return constraint_kind::none;
-                }
-                // the member before the merge, whose merged members the merged object gives
-                const auto& f = struct_field<k>(t);
-                const dependent_t<reader::const_value_ref, Origin>& json = value;
-                if (const auto o = json.as_object(); o.has_value())
-                {
-                    const typename Origin::object merged(*o, sub);
-                    return constraint_violation<N>(f, input_for<N, F>(&merged));
-                }
-                return constraint_violation<N>(f, input_for<N, F>(&value));
+                if constexpr (!adjacent_field<T, k> &&
+                              ((reads_field_in_place<F, reader::const_value_ref>() && std::default_initializable<T>) ||
+                               requires { cast_nested<F>(value); }))
+                    return with_patched_field<T, k>(value,
+                                                    [&](const F& f) { return field_json_violation<N>(f, value); });
+                else if constexpr (!schema_takes_value<N>)
+                    return constraint_violation<N, true>(value);
+                else
+                    return constraint_kind::none;
             }
+            // the member before the merge, whose merged members the merged object gives, keeps the types of its fields
+            const auto& f = struct_field<k>(t);
+            const dependent_t<reader::const_value_ref, Origin>& json = value;
+            if (const auto o = json.as_object(); o.has_value())
+            {
+                const typename Origin::object merged(*o, sub, false, &json);
+                return constraint_violation<N>(f, input_for<N, F>(&merged));
+            }
+            return constraint_violation<N>(f, input_for<N, F>(&value));
         }
 
         // Whether the `yyjson::field` M of the conditions of T, and the later ones, hold for `t`, whose fields of the
@@ -20678,6 +20909,16 @@ namespace yyjson
         template <typename T>
         inline constexpr std::uint8_t repeated_element_policies =
             json_unique_set<T> ? duplicates_policy | unique_items_policy : duplicates_policy;
+        template <typename V>
+        consteval bool json_fast_read();
+        // Whether the set T reads two JSON values into one element exactly when they are equal, so that a repeated
+        // element is a repeated JSON value.  A float, an enum by name or integer, or a caster can merge or split them.
+        template <typename T>
+        inline constexpr bool exact_unique_set = json_fast_read<typename T::key_type>();
+        // The policies under which the set T rejects an element that does not grow it.
+        template <typename T>
+        inline constexpr std::uint8_t unchanged_set_policies =
+            exact_unique_set<T> ? repeated_element_policies<T> : duplicates_policy;
 
         // A map whose keys are neither strings nor `enum_key`s is written as a JSON array of [key, value] pairs, and
         // is read back from one with `emplace`.
@@ -21015,7 +21256,7 @@ namespace yyjson
 
         // Whether the subschema at `Sub` of `Schema`, or for 0 the subschemas of its `yyjson::prefix_items`, check
         // the JSON values of the elements of V, a tuple or a range written as a JSON array.
-        template <typename Schema, typename V, std::size_t Sub>
+        template <typename Schema, typename V, std::size_t Sub, bool Written = false>
         consteval bool elements_count_input()
         {
             constexpr auto size = [] {
@@ -21028,21 +21269,21 @@ namespace yyjson
             }();
             return []<std::size_t... J>(std::index_sequence<J...>) {
                 return (counts_input<typename Schema::template at<(Sub == 0 ? Schema::node.prefix_first + J : Sub)>,
-                                     typename array_element_of<V, J>::type>() ||
+                                     typename array_element_of<V, J>::type, Written>() ||
                         ...);
             }(std::make_index_sequence<size>{});
         }
 
         // Whether a combinator R of `Schema`, or a later one, checks the JSON value of F.
-        template <typename Schema, std::size_t R, typename F>
+        template <typename Schema, std::size_t R, typename F, bool Written>
         consteval bool combinators_count_input()
         {
             using N = typename Schema::template at<R>;
             const bool operands = []<std::size_t... J>(std::index_sequence<J...>) {
-                return (counts_input<typename Schema::template at<N::node.operands_first + J>, F>() || ...);
+                return (counts_input<typename Schema::template at<N::node.operands_first + J>, F, Written>() || ...);
             }(std::make_index_sequence<N::node.operands_count>());
             if constexpr (N::node.next != 0)
-                return operands || combinators_count_input<Schema, N::node.next, F>();
+                return operands || combinators_count_input<Schema, N::node.next, F, Written>();
             else
                 return operands;
         }
@@ -21122,16 +21363,19 @@ namespace yyjson
                 return other_kind;
         }
 
-        template <typename Schema, typename F>
+        template <typename Schema, typename F, bool Written>
         consteval bool counts_input()
         {
             using V = constrained_value_t<F>;
             constexpr const schema_node& n = Schema::node;
             // the direct reader checks the JSON that the caster of a field reads as it reads it
             if constexpr (checks_caster_json<Schema, F>()) return !field_root<Schema> || !caster_reads_json<V>;
-            if constexpr (checks_json_number<Schema, V> || checks_json_enum<Schema, V>) return true;
+            if constexpr ((checks_json_number<Schema, V> && (!Written || narrower_than_double<V>)) ||
+                          checks_json_enum<Schema, V>)
+                return true;
             if constexpr (n.combinators != 0)
-                if (combinators_count_input<Schema, n.combinators, F>()) return true;
+                if (combinators_count_input<Schema, n.combinators, F, Written>()) return true;
+            if constexpr (json_requirement<Schema, F>() == json_need::document) return true;
             if constexpr (dom_checked<V>)
                 return false;
             else if constexpr (object_struct_value<V>())
@@ -21140,7 +21384,7 @@ namespace yyjson
                 return (n.constraints.bits & array_constraints) != 0;
             else if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
-                    return (counts_input<Schema, As>() || ...);
+                    return (counts_input<Schema, As, Written>() || ...);
                 }(std::type_identity<variant_base_t<V>>{});
             else if constexpr (array_written_tuple<V> || array_written_range<V>)
             {
@@ -21149,18 +21393,18 @@ namespace yyjson
                                          n.constraints.has<unique_items_t>() || n.contains != 0;
                 if constexpr (!array_written_tuple<V> && unique_set<V>)
                     if (counted) return true;
-                return (n.prefix_count != 0 && elements_count_input<Schema, V, 0>()) ||
-                       (n.items != 0 && elements_count_input<Schema, V, n.items>()) ||
-                       (n.contains != 0 && elements_count_input<Schema, V, n.contains>());
+                return (n.prefix_count != 0 && elements_count_input<Schema, V, 0, Written>()) ||
+                       (n.items != 0 && elements_count_input<Schema, V, n.items, Written>()) ||
+                       (n.contains != 0 && elements_count_input<Schema, V, n.contains, Written>());
             }
             else if constexpr (object_written_range<V>)
             {
                 if constexpr (unique_set<V>)
                     if (n.constraints.has<min_properties>() || n.constraints.has<max_properties>()) return true;
                 if constexpr (n.properties != 0)
-                    return counts_input<
-                        typename Schema::template at<n.properties>,
-                        std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>>();
+                    return counts_input<typename Schema::template at<n.properties>,
+                                        std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>,
+                                        Written>();
                 else
                     return false;
             }
@@ -21170,14 +21414,14 @@ namespace yyjson
 
         // Whether the keywords can count a part of the JSON value that V does not keep, which `input_record<V>`
         // then keeps: a set or a map drops repeated elements or keys, a struct annotated with `yyjson::as_array`
-        // does not tell how many positions the array gave, and a float rounds its number.
+        // does not tell how many positions the array gave, and a real rounds its number.
         template <typename V>
         consteval bool input_sensitive()
         {
             if constexpr (dom_checked<V>)
                 return false;
             else if constexpr (caster_json_type<V> || as_array_struct<V> || object_struct_value<V>() ||
-                               narrower_than_double<V> || enum_name_or_integer<V>)
+                               std::floating_point<V> || enum_name_or_integer<V>)
                 return true;
             else if constexpr (variant_value<V>)
                 return []<typename... As>(std::type_identity<std::variant<As...>>) {
@@ -21398,6 +21642,9 @@ namespace yyjson
                             return constraint_violation<S, true>(*x, input_for<S, E>(&e));
                         }
                     }
+                    // a predicate takes the element that was written, and a listed value its JSON value
+                    else if (const E* x = written ? element_at<V, J>(v, j, true) : nullptr; x != nullptr)
+                        return written_field_violation<S, true>(*x, e);
                     // the value read from `e` is not the value that wrote it
                     const E value(cast_nested<typename array_element_of<V, J>::read>(e));
                     return constraint_violation<S, true>(value, input_for<S, E>(&e));
@@ -21421,6 +21668,45 @@ namespace yyjson
                 return check(std::integral_constant<std::size_t, 0>());
         }
 
+        // The elements of the JSON array `r` from the index `from` below `to`.
+        template <typename R>
+        auto json_elements(const R& r, std::size_t from = 0, std::size_t to = static_cast<std::size_t>(-1))
+        {
+            auto nodes = std::vector<std::remove_cvref_t<std::ranges::range_reference_t<const R>>>();
+            auto j = std::size_t{0};
+            for (auto&& e : r)
+            {
+                if (j >= to) break;
+                if (j++ >= from) nodes.push_back(e);
+            }
+            return nodes;
+        }
+        // The index of the first of `nodes` that equals an earlier one as a JSON value, or `no_duplicate`.
+        template <typename Node>
+        std::size_t json_duplicate(const std::vector<Node>& nodes)
+        {
+            for (std::size_t j = 1; j < nodes.size(); ++j)
+                for (std::size_t i = 0; i < j; ++i)
+                    if (json_compare::keyword_equal(nodes[i], nodes[j])) return j;
+            return no_duplicate;
+        }
+        // The index of the first element of the JSON array that `input` gives, which equals an earlier one as a JSON
+        // value, or `no_duplicate`.
+        template <typename Input>
+        std::size_t input_json_duplicate(Input input)
+        {
+            if constexpr (requires { input.from; })
+                return json_duplicate(json_elements(*input.arr, input.from));
+            else if constexpr (std::derived_from<std::remove_cvref_t<decltype(*input)>, reader::const_array_ref>)
+                return json_duplicate(json_elements(*input));
+            else
+            {
+                const auto a = input->as_array();
+                if (!a.has_value()) return no_duplicate;
+                return json_duplicate(json_elements(*a));
+            }
+        }
+
         // Whether the JSON array that `input` gives has two equal elements.
         template <typename Input>
         bool input_has_duplicate(Input input)
@@ -21433,14 +21719,7 @@ namespace yyjson
                                        })) != no_duplicate;
             }
             else
-            {
-                const auto a = input->as_array();
-                if (!a.has_value()) return false;
-                for (std::size_t j = 1; j < a->size(); ++j)
-                    for (std::size_t i = 0; i < j; ++i)
-                        if (json_compare::keyword_equal((*a)[i], (*a)[j])) return true;
-                return false;
-            }
+                return input_json_duplicate(input) != no_duplicate;
         }
 
         // The keyword of `Schema` that a value written as a JSON array does not satisfy.  The keywords on the
@@ -21465,7 +21744,12 @@ namespace yyjson
                 if (size() > n.prefix_count) return constraint_kind::items;
             if constexpr (c.has<unique_items_t>())
             {
-                if constexpr (tuple)
+                if constexpr (!std::same_as<Input, no_input> && !record_input<Input> &&
+                              unique_items_need<V>() == json_need::document)
+                {
+                    if (input_has_duplicate(input)) return constraint_kind::unique_items;
+                }
+                else if constexpr (tuple)
                 {
                     if (tuple_has_duplicate(v)) return constraint_kind::unique_items;
                 }
@@ -21697,7 +21981,7 @@ namespace yyjson
                         if (value == nullptr) continue;
                         if (const auto o = json.as_object(); sub != nullptr && o.has_value())
                         {
-                            const std::remove_cvref_t<decltype(*input)> merged(*o, sub, input->committed);
+                            const std::remove_cvref_t<decltype(*input)> merged(*o, sub, input->committed, &json);
                             if (!holds(*value, &merged)) return constraint_kind::additional_properties;
                         }
                         else if (!holds(*value, &json))
@@ -21717,7 +22001,18 @@ namespace yyjson
                 }
                 else
                 {
-                    if (const auto o = input->as_object(); o.has_value())
+                    const auto o = input->as_object();
+                    // write gives a member for each entry in order, and its key can differ from the entry's key
+                    if (o.has_value() && written_input(input) &&
+                        o->size() == static_cast<std::size_t>(std::ranges::distance(v)))
+                    {
+                        auto entry = std::ranges::begin(v);
+                        for (const auto& kv : *o)
+                            if (written_field_violation<properties, true>(std::get<1>(*entry++), std::get<1>(kv)) !=
+                                constraint_kind::none)
+                                return constraint_kind::additional_properties;
+                    }
+                    else if (o.has_value())
                         for (const auto& kv : *o)
                         {
                             const auto& json = std::get<1>(kv);
@@ -21729,12 +22024,16 @@ namespace yyjson
                                 if (constraint_violation<properties, true>(json) != constraint_kind::none)
                                     return constraint_kind::additional_properties;
                             }
-                            else if (const E* value = checks_caster_json<properties, E>()
+                            // the value that write gave as `json` keeps what its JSON value rounds
+                            else if (const E* value = checks_caster_json<properties, E>() || written_input(input)
                                                           ? json_key_value(v, std::get<0>(kv))
                                                           : nullptr;
                                      value != nullptr)
                             {
-                                if (!holds(*value, &json)) return constraint_kind::additional_properties;
+                                if (written_input(input) ? written_field_violation<properties, true>(*value, json) !=
+                                                               constraint_kind::none
+                                                         : !holds(*value, &json))
+                                    return constraint_kind::additional_properties;
                             }
                             else if (!holds(E(cast_nested<E>(json)), &json))
                                 return constraint_kind::additional_properties;
@@ -21878,6 +22177,33 @@ namespace yyjson
                 return v.is_sint() && equals_scalar(*v.as_int(), Schema::values[I]);
         }
 
+        // The keyword of `yyjson::const_` and `yyjson::enum_` of `Schema` that the JSON value `node` of a value of V
+        // does not equal as a JSON value.  A text of `yyjson::json_text` that V cannot read throws first.
+        template <typename Schema, typename V, typename Node>
+        constraint_kind input_listed_violation(const Node& node)
+        {
+            constexpr const field_constraints& c = Schema::constraints;
+            constexpr std::size_t constants = c.template has<const_<>>() ? 1 : 0;
+            const auto equals = [&node](auto i) {
+                constexpr auto I = decltype(i)::value;
+                if constexpr (Schema::values[I].kind == json_scalar::kind_t::json)
+                {
+                    using T = std::conditional_t<constraint_string<V>, std::string, V>;
+                    if (!json_text_constant<Schema, I, T>().has_value()) return false;
+                    return json_compare::keyword_equal(node, *json_text_constant<Schema, I, writer::value>());
+                }
+                else
+                    return dom_equals_listed<Schema, I>(node);
+            };
+            if constexpr (constants != 0)
+                if (!equals(std::integral_constant<std::size_t, 0>())) return constraint_kind::const_;
+            if constexpr (c.template has<enum_<0>>())
+                if (all_indices<Schema::values.size() - constants>(
+                        [&](auto i) { return !equals(std::integral_constant<std::size_t, constants + i()>()); }))
+                    return constraint_kind::enum_;
+            return constraint_kind::none;
+        }
+
         // Whether the object of the DOM `o` has the members that the `yyjson::field` M of `Schema`, and those after
         // it, give: the key if `yyjson::required`, and a value that satisfies its keywords if it has the key.
         template <typename Schema, std::size_t M, typename O>
@@ -21922,7 +22248,7 @@ namespace yyjson
         {
             auto number = yyjson_val{};
             if (!read_raw_number(text, number)) return constraint_kind::none;
-            if (yyjson_is_real(&number)) return value_violation<Schema, false>(yyjson_get_real(&number));
+            if (yyjson_is_real(&number)) return json_real_violation<Schema>(yyjson_get_real(&number));
             if (yyjson_is_uint(&number)) return value_violation<Schema, false>(yyjson_get_uint(&number));
             return value_violation<Schema, false>(yyjson_get_sint(&number));
         }
@@ -22296,8 +22622,10 @@ namespace yyjson
             }
         }
 
-        template <typename Schema, typename V, typename Input>
-        constraint_kind variant_violation(const V& v, Input input)
+        // The keyword of `yyjson::const_` and `yyjson::enum_` of `Schema` that the variant `v` does not satisfy, by
+        // the value of its alternative.
+        template <typename Schema, typename V>
+        constraint_kind variant_listed_violation(const V& v)
         {
             constexpr const field_constraints& c = Schema::constraints;
             constexpr std::size_t constants = c.template has<const_<>>() ? 1 : 0;
@@ -22311,6 +22639,30 @@ namespace yyjson
                 }(std::make_index_sequence<Schema::values.size() - constants>{});
                 if (std::ranges::none_of(equals, [&v](const auto f) { return f(v); })) return constraint_kind::enum_;
             }
+            return constraint_kind::none;
+        }
+
+        template <typename Schema, typename V, typename Input>
+        constraint_kind variant_violation(const V& v, Input input)
+        {
+            if constexpr ((json_input<Input> || merged_input<Input>) && !Schema::values.empty())
+            {
+                const auto* json = [&] {
+                    if constexpr (json_input<Input>)
+                        return input;
+                    else
+                        return input == nullptr ? nullptr : input->json();
+                }();
+                if (json != nullptr)
+                {
+                    if (const auto kind = input_listed_violation<Schema, V>(*json); kind != constraint_kind::none)
+                        return kind;
+                }
+                else if (const auto kind = variant_listed_violation<Schema>(v); kind != constraint_kind::none)
+                    return kind;
+            }
+            else if (const auto kind = variant_listed_violation<Schema>(v); kind != constraint_kind::none)
+                return kind;
             if (v.valueless_by_exception()) return constraint_kind::none;
             constexpr auto tag = [] {
                 if constexpr (internally_tagged<V>)
@@ -22404,11 +22756,28 @@ namespace yyjson
 
         template <typename S>
         std::size_t array_struct_duplicate(const S& t, std::size_t count);
+        template <typename S, typename Array>
+        std::size_t array_struct_json_duplicate(const Array& arr);
 
         template <typename S, std::size_t K, typename Schema, typename V, typename Json>
         void throw_located_violation(const Json& json, constraint_kind kind, const V* v)
         {
             constexpr const schema_node& n = Schema::node;
+            if constexpr (Schema::constraints.template has<unique_items_t>() &&
+                          unique_items_need<V>() == json_need::document)
+                if (const auto a = json.as_array(); kind == constraint_kind::unique_items && a.has_value())
+                {
+                    const auto j = [&] {
+                        if constexpr (as_array_struct<V>)
+                            return array_struct_json_duplicate<V>(*a);
+                        else
+                            return json_duplicate(json_elements(*a));
+                    }();
+                    if (j != no_duplicate)
+                        throw_constraint_violation<S, K, Schema>((*a)[j], constraint_kind::duplicate_item,
+                                                                 constraint_subject::element);
+                    return;
+                }
             if constexpr (as_array_struct<V>)
             {
                 if constexpr (Schema::constraints.template has<unique_items_t>())
@@ -23366,13 +23735,23 @@ namespace yyjson
             {
                 // the end is the right hint for the elements of a sorted set, which are written in order
                 reserve_if_possible(result, arr.size());
+                if constexpr (json_unique_set<T> && !exact_unique_set<T>)
+                {
+                    // `uniqueItems` compares the JSON elements, whether the set grows or not
+                    if ((read_policies & (unique_items_policy | duplicates_policy)) == unique_items_policy)
+                    {
+                        const auto elements = json_elements(arr);
+                        if (const auto j = json_duplicate(elements); j != no_duplicate) [[unlikely]]
+                            throw_repeated_element(target_of(elements[j]), type_name<T>());
+                    }
+                }
                 for (const auto& e : arr)
                 {
                     [[maybe_unused]] const auto size = result.size();
                     result.insert(result.end(), detail::cast_nested<value_type>(e));
                     if constexpr (unique_set<T>)
                     {
-                        if (result.size() == size && (read_policies & repeated_element_policies<T>) != 0) [[unlikely]]
+                        if (result.size() == size && (read_policies & unchanged_set_policies<T>) != 0) [[unlikely]]
                             throw_repeated_element(target_of(e), type_name<T>());
                     }
                 }
@@ -24493,10 +24872,10 @@ namespace yyjson
             E value;
             record_t<E> record;
         };
-        // A float keeps the JSON number that it was read from, and an enumeration read by name or integer the
+        // A real keeps the JSON number that it was read from, and an enumeration read by name or integer the
         // integer.
         template <typename V>
-        requires narrower_than_double<V> || enum_name_or_integer<V>
+        requires std::floating_point<V> || enum_name_or_integer<V>
         struct input_record<V>
         {
             yyjson_val number{};
@@ -24555,7 +24934,7 @@ namespace yyjson
         template <typename V>
         requires (input_sensitive<V>() && (variant_value<V> || array_written_tuple<V> ||
                                            (caster_json_type<V> && !object_struct_value<V>() && !as_array_struct<V> &&
-                                            !narrower_than_double<V> && !enum_name_or_integer<V> &&
+                                            !std::floating_point<V> && !enum_name_or_integer<V> &&
                                             !array_written_range<V> && !object_written_range<V>)))
         struct input_record<V>
         {
@@ -24738,6 +25117,256 @@ namespace yyjson
         template <typename S>
         using uniform_array_struct_t = typename uniform_array_struct<S>::type;
 
+        template <typename V>
+        struct fast_sequence : std::false_type
+        {
+        };
+        template <typename U>
+        struct fast_sequence<std::vector<U, std::allocator<U>>> : std::true_type
+        {
+            using element = U;
+        };
+        template <typename U>
+        struct fast_sequence<std::deque<U, std::allocator<U>>> : std::true_type
+        {
+            using element = U;
+        };
+        template <typename U, std::size_t N>
+        struct fast_sequence<std::array<U, N>> : std::true_type
+        {
+            using element = U;
+        };
+        template <typename V>
+        struct fast_tuple : std::false_type
+        {
+        };
+        template <typename U, typename... Us>
+        struct fast_tuple<std::tuple<U, Us...>> : std::bool_constant<(std::same_as<U, Us> && ...)>
+        {
+            using element = U;
+        };
+        template <typename U>
+        struct fast_tuple<std::pair<U, U>> : std::true_type
+        {
+            using element = U;
+        };
+
+        // Whether two values of V read from JSON values are equal exactly when those JSON values are equal.  Only
+        // these default conversions qualify: a range of pairs can read an object, and a float rounds its number.
+        template <typename V>
+        consteval bool json_fast_read()
+        {
+            if constexpr (!std::same_as<V, std::remove_cv_t<V>>)
+                return json_fast_read<std::remove_cv_t<V>>();
+            else if constexpr (!reads_by_default<V> || write_conversion::opaque<V>)
+                return false;
+            else if constexpr (std::same_as<V, bool>)
+                return true;
+            else if constexpr (std::integral<V>)
+                return !std::same_as<V, char> && !std::same_as<V, wchar_t> && !std::same_as<V, char8_t> &&
+                       !std::same_as<V, char16_t> && !std::same_as<V, char32_t>;
+            else if constexpr (std::same_as<V, std::string> || std::same_as<V, std::string_view>)
+                return true;
+            else if constexpr (std::is_enum_v<V>)
+                return enum_by_name<V> != enum_by_integer<V>;
+            else if constexpr (is_std_optional<V>::value)
+                return !is_std_optional<std::remove_cv_t<typename V::value_type>>::value &&
+                       json_fast_read<typename V::value_type>();
+            else if constexpr (fast_sequence<V>::value)
+                return !pair_like<typename fast_sequence<V>::element> &&
+                       json_fast_read<typename fast_sequence<V>::element>();
+            else if constexpr (fast_tuple<V>::value)
+                return !pair_like<typename fast_tuple<V>::element> && json_fast_read<typename fast_tuple<V>::element>();
+            else
+                return false;
+        }
+        // Whether two values of V are equal exactly when the JSON values that write gives for them are equal.  The
+        // list of `json_fast_read` holds no nested null state, such as `std::optional<std::optional<int>>`.
+        template <typename V>
+        consteval bool json_fast_written()
+        {
+            return json_fast_read<V>();
+        }
+
+        consteval json_need max_need(json_need a, json_need b) noexcept { return a < b ? b : a; }
+
+        // Whether the node `root` of `tree`, or a node below it, has `yyjson::unique_items` or a value of
+        // `yyjson::json_text`.
+        template <typename Tree>
+        consteval bool subtree_compares_json(const Tree& tree, std::size_t root)
+        {
+            auto pending = std::vector<std::size_t>{root};
+            while (!pending.empty())
+            {
+                const auto& n = tree.nodes[pending.back()];
+                pending.pop_back();
+                if ((n.constraints.bits & constraint_bit<unique_items_t>) != 0) return true;
+                for (std::size_t i = 0; i < n.values_count; ++i)
+                    if (tree.values[n.values_first + i].kind == json_scalar::kind_t::json) return true;
+                for (const auto sub : {n.items, n.properties, n.keys, n.contains})
+                    if (sub != 0) pending.push_back(sub);
+                for (std::size_t j = 0; j < n.prefix_count; ++j) pending.push_back(n.prefix_first + j);
+                for (auto r = n.combinators; r != 0; r = tree.nodes[r].next)
+                    for (std::size_t j = 0; j < tree.nodes[r].operands_count; ++j)
+                        pending.push_back(tree.nodes[r].operands_first + j);
+                for (auto m = n.members; m != 0; m = tree.nodes[m].next) pending.push_back(m);
+            }
+            return false;
+        }
+
+        // What `yyjson::unique_items` needs of the elements of V: a typed comparison is exact only for elements of
+        // one type of `json_fast_read`.  A range of key-value pairs can read an object instead of an array.
+        template <typename V>
+        consteval json_need unique_items_need()
+        {
+            const auto of = []<typename E>(std::type_identity<E>) {
+                if constexpr (!std::same_as<E, void> && !key_value_like<E> && json_fast_read<E>())
+                    return json_need::fast;
+                else
+                    return json_need::document;
+            };
+            if constexpr (as_array_struct<V>)
+                return of(std::type_identity<uniform_array_struct_t<V>>());
+            else if constexpr (array_written_tuple<V>)
+            {
+                if constexpr (std::tuple_size_v<V> == 0 || !uniform_tuple<V>)
+                    return json_need::document;
+                else
+                    return of(std::type_identity<std::remove_cv_t<std::tuple_element_t<0, V>>>());
+            }
+            else if constexpr (array_written_range<V>)
+                return of(std::type_identity<constrained_element_t<V>>());
+            else
+                return json_need::fast;
+        }
+
+        template <typename Schema, std::size_t R, typename F>
+        consteval json_need combinators_need()
+        {
+            using N = typename Schema::template at<R>;
+            auto need = json_need::none;
+            all_indices<N::node.operands_count>([&](auto j) {
+                need =
+                    max_need(need, json_requirement<typename Schema::template at<N::node.operands_first + j()>, F>());
+                return true;
+            });
+            if constexpr (N::node.next != 0) need = max_need(need, combinators_need<Schema, N::node.next, F>());
+            return need;
+        }
+
+        // What the subschemas of `Schema` on the elements or the values of V need of their JSON values.
+        template <typename Schema, typename V>
+        consteval json_need elements_need()
+        {
+            constexpr const schema_node& n = Schema::node;
+            auto need = json_need::none;
+            // the requirement of the subschema `Sub`, or for 0 of `yyjson::prefix_items` at J, on the element J
+            const auto element = [&]<std::size_t Sub, typename E>(std::integral_constant<std::size_t, Sub>,
+                                                                  std::type_identity<E>, auto j) {
+                if constexpr (Sub != 0)
+                    need = max_need(need, json_requirement<typename Schema::template at<Sub>, E>());
+                else if constexpr (decltype(j)::value < n.prefix_count)
+                    need = max_need(
+                        need, json_requirement<typename Schema::template at<n.prefix_first + decltype(j)::value>, E>());
+            };
+            const auto each = [&]<typename E>(std::type_identity<E> e, auto j) {
+                element(std::integral_constant<std::size_t, 0>(), e, j);
+                element(std::integral_constant<std::size_t, n.items>(), e, j);
+                element(std::integral_constant<std::size_t, n.contains>(), e, j);
+            };
+            if constexpr (as_array_struct<V>)
+            {
+                constexpr auto positions = array_position_count<V>;
+                all_indices<positions>([&](auto k) {
+                    each(std::type_identity<struct_field_type<V, k()>>(), k);
+                    return true;
+                });
+                if constexpr (has_extra_items<V>)
+                    all_indices<std::max(n.prefix_count, positions) - positions + 1>([&](auto k) {
+                        each(std::type_identity<constrained_element_t<extra_items_type<V>>>(),
+                             std::integral_constant<std::size_t, positions + k()>());
+                        return true;
+                    });
+            }
+            else if constexpr (array_written_tuple<V>)
+                all_indices<std::tuple_size_v<V>>([&](auto j) {
+                    each(std::type_identity<typename array_element_of<V, j()>::type>(), j);
+                    return true;
+                });
+            else if constexpr (array_written_range<V>)
+                all_indices<n.prefix_count + 1>([&](auto j) {
+                    each(std::type_identity<constrained_element_t<V>>(), j);
+                    return true;
+                });
+            else if constexpr (object_written_range<V>)
+            {
+                if constexpr (n.properties != 0)
+                    need = json_requirement<
+                        typename Schema::template at<n.properties>,
+                        std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>>();
+            }
+            return need;
+        }
+
+        template <typename V, typename Schema>
+        consteval json_need alternatives_need()
+        {
+            auto need = json_need::none;
+            using B = std::remove_cv_t<variant_base_t<V>>;
+            all_indices<std::variant_size_v<B>>([&](auto i) {
+                need = max_need(need, json_requirement<Schema, std::variant_alternative_t<i(), B>>());
+                return true;
+            });
+            // a separate branch, because Clang 18 forms `union_alternative_schema` of any variant in the lambda
+            if constexpr (union_variant<V>)
+                all_indices<std::variant_size_v<B>>([&](auto i) {
+                    if constexpr (constrained_union_alternative<V, i()>)
+                        need = max_need(
+                            need,
+                            json_requirement<union_alternative_schema<V, i()>, std::variant_alternative_t<i(), B>>());
+                    return true;
+                });
+            return need;
+        }
+
+        // Whether `yyjson::const_` and `yyjson::enum_` of `Schema` compare the JSON value of V: a float rounds the
+        // JSON number, and a variant reads a literal as one of its alternatives.
+        template <typename Schema, typename V>
+        consteval bool listed_compares_json()
+        {
+            if constexpr (Schema::values.empty())
+                return false;
+            else
+            {
+                constexpr bool texts = std::ranges::any_of(
+                    Schema::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::json; });
+                return std::floating_point<V> || variant_value<V> || (texts && !json_fast_read<V>());
+            }
+        }
+
+        template <typename Schema, typename F>
+        consteval json_need json_requirement()
+        {
+            using V = constrained_value_t<F>;
+            constexpr const schema_node& n = Schema::node;
+            if constexpr (dom_checked<V>)
+                return json_need::none;
+            else if constexpr (caster_json_type<V>)
+                return subtree_compares_json(Schema::tree, Schema::index) ? json_need::document : json_need::none;
+            else
+            {
+                auto need = json_need::none;
+                if constexpr (!Schema::values.empty())
+                    need = listed_compares_json<Schema, V>() ? json_need::document : json_need::fast;
+                if constexpr ((Schema::constraints.bits & constraint_bit<unique_items_t>) != 0)
+                    need = max_need(need, unique_items_need<V>());
+                if constexpr (n.combinators != 0) need = max_need(need, combinators_need<Schema, n.combinators, F>());
+                need = max_need(need, elements_need<Schema, V>());
+                if constexpr (variant_value<V>) need = max_need(need, alternatives_need<V, Schema>());
+                return need;
+            }
+        }
+
         // Whether S, a struct annotated with `yyjson::as_array`, has a position that the write may leave out before
         // one that it always writes, which no array of S could give a value without the earlier one.
         template <typename S>
@@ -24816,7 +25445,7 @@ namespace yyjson
 
         // Whether `yyjson::contains` of `Schema` on S, a struct annotated with `yyjson::as_array`, checks the JSON
         // value of a position or of an element of `yyjson::extra_items`.
-        template <typename Schema, typename S>
+        template <typename Schema, typename S, bool Written = false>
         consteval bool array_struct_elements_count_input()
         {
             if constexpr (Schema::node.contains != 0)
@@ -24824,12 +25453,12 @@ namespace yyjson
                 using contained = typename Schema::template at<Schema::node.contains>;
                 const bool extra = [] {
                     if constexpr (has_extra_items<S>)
-                        return counts_input<contained, constrained_element_t<extra_items_type<S>>>();
+                        return counts_input<contained, constrained_element_t<extra_items_type<S>>, Written>();
                     else
                         return false;
                 }();
                 return extra || []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return (counts_input<contained, struct_field_type<S, Ks>>() || ...);
+                    return (counts_input<contained, struct_field_type<S, Ks>, Written>() || ...);
                 }(std::make_index_sequence<array_position_count<S>>{});
             }
             else
@@ -24906,6 +25535,27 @@ namespace yyjson
             }
         }
 
+        // The index of the element of the JSON array `arr`, read into a struct S annotated with `yyjson::as_array`,
+        // that equals an earlier one as a JSON value, or `no_duplicate`.  The read ignores the elements after the
+        // fields of S that it has no `yyjson::extra_items` for.
+        template <typename S, typename Array>
+        std::size_t array_struct_json_duplicate(const Array& arr)
+        {
+            return json_duplicate(
+                json_elements(arr, 0, has_extra_items<S> ? arr.size() : std::min(arr.size(), array_position_count<S>)));
+        }
+
+        // The JSON kinds of the positions of the struct S annotated with `yyjson::as_array`, and of the elements of
+        // its `yyjson::extra_items`.
+        template <typename S>
+        inline constexpr unsigned array_struct_element_kinds = [] {
+            auto kinds = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return (0U | ... | json_kinds_of<constrained_value_t<std::remove_cv_t<struct_field_type<S, Ks>>>>());
+            }(std::make_index_sequence<array_position_count<S>>{});
+            if constexpr (has_extra_items<S>)
+                kinds |= json_kinds_of<constrained_value_t<constrained_element_t<extra_items_type<S>>>>();
+            return kinds;
+        }();
         // The keyword of `Schema` that an array of `size` elements does not satisfy; `t` holds its first `count`
         // elements and those of its `yyjson::extra_items`, and the read ignores the rest. `elements` is the JSON
         // array or the record of the direct reader, or `no_input` if no keyword checks the input of an element.
@@ -24921,21 +25571,37 @@ namespace yyjson
             if constexpr (c.has<max_items>())
                 if (size > c.max_items) return constraint_kind::max_items;
             if constexpr (c.has<unique_items_t>())
-                if (array_struct_duplicate(t, count) != no_duplicate) return constraint_kind::unique_items;
+            {
+                if constexpr (!std::same_as<Elements, no_input> && !record_input<Elements> &&
+                              unique_items_need<S>() == json_need::document)
+                {
+                    if (array_struct_json_duplicate<S>(*elements) != no_duplicate) return constraint_kind::unique_items;
+                }
+                else if (array_struct_duplicate(t, count) != no_duplicate)
+                    return constraint_kind::unique_items;
+            }
             if constexpr (node.contains != 0)
             {
-                using contained = typename Schema::template at<node.contains>;
+                using contained = typename Schema::template at<Schema::node.contains>;
                 constexpr bool has_min = c.has<yyjson::min_contains>();
                 constexpr bool has_max = c.has<yyjson::max_contains>();
                 constexpr std::size_t min = has_min ? c.min_contains : 1;
                 auto found = std::size_t{0};
+                static_assert(keyword_kinds_fit<condition_keyword_bits(contained::tree, contained::index),
+                                                array_struct_element_kinds<S>>());
                 if constexpr (record_input<Elements> && array_struct_elements_count_input<Schema, S>())
                 {
                     [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                        ((found += Ks < count && constraint_violation<contained, true>(
-                                                     struct_field<Ks>(t),
-                                                     input_for<contained, struct_field_type<S, Ks>>(
-                                                         &std::get<Ks>(elements->positions))) == constraint_kind::none
+                        ((found += Ks < count &&
+                                           [&] {
+                                               using F = struct_field_type<S, Ks>;
+                                               if constexpr (element_kinds_fit<contained, F>)
+                                                   return constraint_violation<contained, true>(
+                                                       struct_field<Ks>(t),
+                                                       input_for<contained, F>(&std::get<Ks>(elements->positions)));
+                                               else
+                                                   return tuple_element_violation<contained>(struct_field<Ks>(t));
+                                           }() == constraint_kind::none
                                        ? 1
                                        : 0),
                          ...);
@@ -24946,13 +25612,18 @@ namespace yyjson
                         if constexpr (requires { elements->extras.elements; })
                         {
                             for (const auto& e : elements->extras.elements)
-                                if (constraint_violation<contained, true>(
-                                        e.value, input_for<contained, E>(&e.record)) == constraint_kind::none)
+                                if ([&] {
+                                        if constexpr (element_kinds_fit<contained, E>)
+                                            return constraint_violation<contained, true>(
+                                                e.value, input_for<contained, E>(&e.record));
+                                        else
+                                            return tuple_element_violation<contained>(e.value);
+                                    }() == constraint_kind::none)
                                     ++found;
                         }
                         else
                             for (const auto& e : struct_field<n>(t))
-                                if (constraint_violation<contained, true>(static_cast<const E&>(e)) ==
+                                if (tuple_element_violation<contained>(static_cast<const E&>(e)) ==
                                     constraint_kind::none)
                                     ++found;
                     }
@@ -24968,10 +25639,15 @@ namespace yyjson
                     }();
                     auto j = std::size_t{0};
                     const bool written = written_input(elements);
-                    const auto violation = [written](const auto& x, const auto& e) {
-                        if (written) return written_field_violation<contained, true>(x, e);
-                        return constraint_violation<contained, true>(
-                            x, input_for<contained, std::remove_cvref_t<decltype(x)>>(&e));
+                    const auto violation = [&](const auto& x, const auto& e) {
+                        using X = std::remove_cvref_t<decltype(x)>;
+                        if constexpr (!element_kinds_fit<contained, X>)
+                            return tuple_element_violation<contained>(x);
+                        else
+                        {
+                            if (written) return written_field_violation<contained, true>(x, e);
+                            return constraint_violation<contained, true>(x, input_for<contained, X>(&e));
+                        }
                     };
                     for (const auto& e : *elements)
                     {
@@ -24998,7 +25674,7 @@ namespace yyjson
                     const auto hits = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                         return std::array<bool, n + 1>{
                             (Ks < count &&
-                             constraint_violation<contained, true>(struct_field<Ks>(t)) == constraint_kind::none)...,
+                             tuple_element_violation<contained>(struct_field<Ks>(t)) == constraint_kind::none)...,
                             false};
                     }(std::make_index_sequence<n>{});
                     found = static_cast<std::size_t>(std::ranges::count(hits, true));
@@ -25006,8 +25682,8 @@ namespace yyjson
                     {
                         using V = extra_items_type<S>;
                         for (const auto& e : struct_field<n>(t))
-                            if (constraint_violation<contained, true>(
-                                    static_cast<const constrained_element_t<V>&>(e)) == constraint_kind::none)
+                            if (tuple_element_violation<contained>(static_cast<const constrained_element_t<V>&>(e)) ==
+                                constraint_kind::none)
                                 ++found;
                     }
                 }
@@ -25130,7 +25806,12 @@ namespace yyjson
             if constexpr (schema::constraints.template has<unique_items_t>())
                 if (const auto arr = json.as_array(); kind == constraint_kind::unique_items && arr.has_value())
                 {
-                    const auto j = array_struct_duplicate(t, std::min(arr->size(), array_position_count<S>));
+                    const auto j = [&] {
+                        if constexpr (unique_items_need<S>() == json_need::document)
+                            return array_struct_json_duplicate<S>(*arr);
+                        else
+                            return array_struct_duplicate(t, std::min(arr->size(), array_position_count<S>));
+                    }();
                     if (j != no_duplicate)
                         throw_keyword_at<schema, S>(target_of((*arr)[j]), constraint_kind::duplicate_item,
                                                     "reading an element of {}", type_name<S>());
@@ -25775,11 +26456,28 @@ namespace yyjson
             return n;
         }
 
+        // Whether the double that a double type reads for each listed number of `listed` is in `interval`; with
+        // `all`, whether every one is, else whether any one is.
+        constexpr bool rounded_points_in(const number_bound& interval, const number_bound& listed, bool all) noexcept
+        {
+            for (std::size_t i = 0; i < listed.count; ++i)
+                if (has_number(interval, real_number(bound_to_double(listed.points[i]))) != all) return !all;
+            return all;
+        }
         // Whether each number of b, in the domain of b, is a number of a, which has them exactly.
         constexpr bool numbers_contain(const number_bound& a, const number_bound& b) noexcept
         {
             if (b.extent == bound_extent::none) return true;
             if (a.extent != bound_extent::exact) return false;
+            // the listed numbers compare JSON numbers exactly, and an interval the number that its type reads
+            if (a.listed && b.listed)
+            {
+                for (std::size_t i = 0; i < b.count; ++i)
+                    if (!has_number(a, b.points[i])) return false;
+                return true;
+            }
+            if (a.listed != b.listed && a.integral != b.integral) return false;
+            if (a.listed != b.listed && !a.integral) return !a.listed && rounded_points_in(a, b, true);
             const std::size_t points = point_count(b);
             if (a.integral == b.integral || !a.integral)
             {
@@ -25815,6 +26513,15 @@ namespace yyjson
         constexpr bool numbers_disjoint(const number_bound& a, const number_bound& b) noexcept
         {
             if (a.extent == bound_extent::none || b.extent == bound_extent::none) return true;
+            if (a.listed && b.listed)
+            {
+                for (std::size_t i = 0; i < a.count; ++i)
+                    if (has_number(b, a.points[i])) return false;
+                return true;
+            }
+            if (a.listed != b.listed && a.integral != b.integral) return false;
+            if (a.listed != b.listed && !a.integral)
+                return a.listed ? !rounded_points_in(b, a, false) : !rounded_points_in(a, b, false);
             if (a.integral != b.integral) return numbers_disjoint(as_reals(a), as_reals(b));
             if (const std::size_t points = point_count(a); points != 0)
             {
@@ -26035,115 +26742,111 @@ namespace yyjson
         {
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool integral = std::integral<T>;
-            // a long double compares in its own precision, which the bound does not follow
-            if constexpr (std::floating_point<T> && !std::same_as<T, double> && !narrower_than_double<T>)
-                return all_numbers(false, bound_extent::partial);
-            else
+            auto n = all_numbers(integral, bound_extent::exact);
+            if constexpr (integral)
             {
-                auto n = all_numbers(integral, bound_extent::exact);
+                using limits = std::numeric_limits<T>;
+                n.low = std::is_signed_v<T> ? sint_number(limits::min()) : uint_number(limits::min());
+                n.high = std::is_signed_v<T> ? sint_number(limits::max()) : uint_number(limits::max());
+            }
+            else if constexpr (narrower_than_double<T>)
+            {
+                // the doubles that round to a finite T: those below the midpoint of its maximum and the next
+                // power of 2, which rounds to infinity
+                using limits = std::numeric_limits<T>;
+                auto half_ulp = 1.0;
+                for (int i = 0; i < limits::max_exponent - limits::digits - 1; ++i) half_ulp *= 2;
+                const auto edge = static_cast<double>(limits::max()) + half_ulp;
+                n.low = real_number(-edge);
+                n.high = real_number(edge);
+            }
+            bool empty = false;
+            const auto bound = [&](const bound_number& b, bool up, bool open) {
+                bound_number& end = up ? n.low : n.high;
+                bool& end_open = up ? n.low_open : n.high_open;
                 if constexpr (integral)
                 {
-                    using limits = std::numeric_limits<T>;
-                    n.low = std::is_signed_v<T> ? sint_number(limits::min()) : uint_number(limits::min());
-                    n.high = std::is_signed_v<T> ? sint_number(limits::max()) : uint_number(limits::max());
+                    const auto step = integer_beyond(b, up, open);
+                    if (!step.exists)
+                        empty = true;
+                    else if (up ? number_less(end, step.value) : number_less(step.value, end))
+                        end = step.value;
                 }
-                else if constexpr (narrower_than_double<T>)
+                else
                 {
-                    // the doubles that round to a finite T: those below the midpoint of its maximum and the next
-                    // power of 2, which rounds to infinity
-                    using limits = std::numeric_limits<T>;
-                    auto half_ulp = 1.0;
-                    for (int i = 0; i < limits::max_exponent - limits::digits - 1; ++i) half_ulp *= 2;
-                    const auto edge = static_cast<double>(limits::max()) + half_ulp;
-                    n.low = real_number(-edge);
-                    n.high = real_number(edge);
+                    const auto o = compare_bounds(b, end);
+                    if ((up ? std::is_gt(o) : std::is_lt(o)) || (std::is_eq(o) && open && !end_open))
+                    {
+                        end = b;
+                        end_open = open;
+                    }
                 }
-                bool empty = false;
-                const auto bound = [&](const bound_number& b, bool up, bool open) {
-                    bound_number& end = up ? n.low : n.high;
-                    bool& end_open = up ? n.low_open : n.high_open;
+            };
+            if constexpr (c.has<minimum>()) bound(c.minimum, true, false);
+            if constexpr (c.has<exclusive_minimum>()) bound(c.exclusive_minimum, true, true);
+            if constexpr (c.has<maximum>()) bound(c.maximum, false, false);
+            if constexpr (c.has<exclusive_maximum>()) bound(c.exclusive_maximum, false, true);
+            const auto order = compare_bounds(n.low, n.high);
+            if (empty || std::is_gt(order) || (std::is_eq(order) && (n.low_open || n.high_open))) return {};
+            if constexpr (!integral)
+            {
+                // a real compares a JSON integer exactly, so an end where doubles skip integers widens to the
+                // closed double nearest to it, which holds the doubles of the integers that it takes
+                const auto widen = [&n](bound_number& end, bool& open) {
+                    constexpr auto beyond = real_number(18446744073709551616.0);
+                    if (double_exact_range(end) || number_less(beyond, end) ||
+                        number_less(end, real_number(-beyond.real)))
+                        return;
+                    end = real_number(bound_to_double(end));
+                    open = false;
+                    n.extent = bound_extent::partial;
+                };
+                widen(n.low, n.low_open);
+                widen(n.high, n.high_open);
+            }
+            // a float compares the listed values as floats
+            if constexpr (narrower_than_double<T> && (c.bits & listing_settings) != 0)
+                n.extent = bound_extent::partial;
+            else if constexpr ((c.bits & listing_settings) != 0)
+            {
+                // an integer type equals a value of its own, and a double the JSON number listed, exactly
+                const auto value_of = [](const json_scalar& s, bound_number& v) {
+                    if (s.kind != json_scalar::kind_t::number) return false;
                     if constexpr (integral)
                     {
-                        const auto step = integer_beyond(b, up, open);
-                        if (!step.exists)
-                            empty = true;
-                        else if (up ? number_less(end, step.value) : number_less(step.value, end))
-                            end = step.value;
+                        const auto step = integer_beyond(s.number, true, false);
+                        v = step.value;
+                        return step.exists && number_equal(v, s.number);
                     }
                     else
                     {
-                        const auto o = compare_bounds(b, end);
-                        if ((up ? std::is_gt(o) : std::is_lt(o)) || (std::is_eq(o) && open && !end_open))
-                        {
-                            end = b;
-                            end_open = open;
-                        }
+                        v = s.number;
+                        return true;
                     }
                 };
-                if constexpr (c.has<minimum>()) bound(c.minimum, true, false);
-                if constexpr (c.has<exclusive_minimum>()) bound(c.exclusive_minimum, true, true);
-                if constexpr (c.has<maximum>()) bound(c.maximum, false, false);
-                if constexpr (c.has<exclusive_maximum>()) bound(c.exclusive_maximum, false, true);
-                const auto order = compare_bounds(n.low, n.high);
-                if (empty || std::is_gt(order) || (std::is_eq(order) && (n.low_open || n.high_open))) return {};
-                if constexpr (narrower_than_double<T>)
-                {
-                    // a float compares a JSON integer exactly, so an end where doubles skip integers widens to
-                    // the closed double nearest to it, which holds the doubles of the integers that it takes
-                    const auto widen = [&n](bound_number& end, bool& open) {
-                        constexpr auto beyond = real_number(18446744073709551616.0);
-                        if (double_exact_range(end) || number_less(beyond, end) ||
-                            number_less(end, real_number(-beyond.real)))
-                            return;
-                        end = real_number(bound_to_double(end));
-                        open = false;
-                        n.extent = bound_extent::partial;
-                    };
-                    widen(n.low, n.low_open);
-                    widen(n.high, n.high_open);
-                }
-                // a float compares the listed values as floats
-                if constexpr (narrower_than_double<T> && (c.bits & listing_settings) != 0)
-                    n.extent = bound_extent::partial;
-                else if constexpr ((c.bits & listing_settings) != 0)
-                {
-                    // an integer type equals a value of its own, and a double the double nearest to it
-                    const auto value_of = [](const json_scalar& s, bound_number& v) {
-                        if (s.kind != json_scalar::kind_t::number) return false;
-                        if constexpr (integral)
-                        {
-                            const auto step = integer_beyond(s.number, true, false);
-                            v = step.value;
-                            return step.exists && number_equal(v, s.number);
-                        }
+                auto listed = n;
+                listed.listed = true;
+                for_each_listed<Level>(
+                    [&](const json_scalar& x, const json_scalar& y) {
+                        auto v = bound_number{};
+                        auto w = bound_number{};
+                        return value_of(x, v) && value_of(y, w) && number_equal(v, w);
+                    },
+                    [&](const json_scalar& s) {
+                        auto v = bound_number{};
+                        if (!value_of(s, v) || has_number(listed, v)) return;
+                        // the bounds take the number that the type reads, and the listed value stays exact
+                        if (!has_number(n, integral ? v : real_number(bound_to_double(v)))) return;
+                        if (listed.count == bound_capacity)
+                            listed.extent = bound_extent::partial;
                         else
-                        {
-                            v = real_number(bound_to_double(s.number));
-                            return true;
-                        }
-                    };
-                    auto listed = n;
-                    listed.listed = true;
-                    for_each_listed<Level>(
-                        [&](const json_scalar& x, const json_scalar& y) {
-                            auto v = bound_number{};
-                            auto w = bound_number{};
-                            return value_of(x, v) && value_of(y, w) && number_equal(v, w);
-                        },
-                        [&](const json_scalar& s) {
-                            auto v = bound_number{};
-                            if (!value_of(s, v) || !has_number(n, v) || has_number(listed, v)) return;
-                            if (listed.count == bound_capacity)
-                                listed.extent = bound_extent::partial;
-                            else
-                                listed.points[listed.count++] = v;
-                        });
-                    if (listed.count == 0) return {};
-                    if (listed.extent == bound_extent::exact) return listed;
-                    n.extent = bound_extent::partial;
-                }
-                return n;
+                            listed.points[listed.count++] = v;
+                    });
+                if (listed.count == 0) return {};
+                if (listed.extent == bound_extent::exact) return listed;
+                n.extent = bound_extent::partial;
             }
+            return n;
         }
 
         // The JSON values that a value of the type T reads with the settings of `Level`, a `node_schema` or
@@ -28050,6 +28753,126 @@ namespace yyjson
         };
         template <typename T>
         constexpr bool checks_merged_json = graph_search(&graph_node<merged_json_type_node<std::remove_cv_t<T>>>);
+
+        template <typename T, std::size_t I>
+        consteval bool struct_node_compares_json();
+        template <typename T, std::size_t M>
+        consteval bool struct_members_compare_json()
+        {
+            using N = node_schema<struct_tree<T>, M>;
+            constexpr auto k = struct_field_of_key<T>(N::node.key.view());
+            constexpr bool compares = [] {
+                if constexpr (k == struct_field_count<T>)
+                    return false;
+                else
+                    return json_requirement<N, struct_field_type<T, k>>() == json_need::document;
+            }();
+            if constexpr (N::node.next != 0)
+                return compares || struct_members_compare_json<T, N::node.next>();
+            else
+                return compares;
+        }
+        template <typename T, std::size_t R>
+        consteval bool struct_combinators_compare_json()
+        {
+            using N = node_schema<struct_tree<T>, R>;
+            const bool operands = all_indices<N::node.operands_count>(
+                [](auto j) { return !struct_node_compares_json<T, N::node.operands_first + j()>(); });
+            if constexpr (N::node.next != 0)
+                return !operands || struct_combinators_compare_json<T, N::node.next>();
+            else
+                return !operands;
+        }
+        // Whether the node I of the conditions of T compares a JSON value with `yyjson::json_text` or with
+        // `yyjson::unique_items` on a field.
+        template <typename T, std::size_t I>
+        consteval bool struct_node_compares_json()
+        {
+            using N = node_schema<struct_tree<T>, I>;
+            if (std::ranges::any_of(N::values,
+                                    [](const json_scalar& s) { return s.kind == json_scalar::kind_t::json; }))
+                return true;
+            if constexpr (N::node.members != 0)
+                if (struct_members_compare_json<T, N::node.members>()) return true;
+            if constexpr (N::node.combinators != 0)
+                return struct_combinators_compare_json<T, N::node.combinators>();
+            else
+                return false;
+        }
+
+        // Whether a keyword of T itself, of one of its fields, or of the values of its key maps compares JSON values
+        // that a typed comparison cannot, so that T must read through a document.
+        template <typename T>
+        consteval bool type_compares_json()
+        {
+            if constexpr (read_conversion::opaque<T>)
+            {
+                if constexpr (caster_type_keywords<T>)
+                    return subtree_compares_json(caster_type_schema<T>::tree, 0);
+                else
+                    return false;
+            }
+            else if constexpr (!std::is_class_v<T>)
+                return false;
+            else if constexpr (union_variant<T>)
+                return !all_indices<std::variant_size_v<std::remove_cv_t<variant_base_t<T>>>>([](auto i) {
+                    if constexpr (constrained_union_alternative<T, i()>)
+                        return json_requirement<union_alternative_schema<T, i()>,
+                                                std::variant_alternative_t<i(), variant_base_t<T>>>() !=
+                               json_need::document;
+                    else
+                        return true;
+                });
+            else
+            {
+                bool compares = false;
+                if constexpr (as_array_struct<T>)
+                    compares = json_requirement<array_struct_schema<T>, T>() == json_need::document;
+                if constexpr (has_constraints<T>)
+                    compares = compares || !all_indices<struct_field_count<T>>([](auto k) {
+                                   if constexpr (constrained_field<T, k()>)
+                                       return json_requirement<field_schema<T, struct_declared_index<T, k()>>,
+                                                               struct_field_type<T, k()>>() != json_need::document;
+                                   else
+                                       return true;
+                               });
+                if constexpr (has_key_maps<T>)
+                {
+                    const auto map_compares = [](auto r) {
+                        using schema = extra_keys_schema<T, decltype(r)::value>;
+                        if constexpr (schema::node.properties != 0)
+                            return json_requirement<typename schema::template at<schema::node.properties>,
+                                                    typename key_map_type<T, decltype(r)::value>::mapped_type>() ==
+                                   json_need::document;
+                        else
+                            return false;
+                    };
+                    compares =
+                        compares || !all_indices<pattern_count<T>>([&](auto p) {
+                            return !map_compares(std::integral_constant<std::size_t, pattern_field_indices<T>[p()]>());
+                        });
+                    if constexpr (has_extra_keys<T>)
+                        compares = compares || map_compares(std::integral_constant<std::size_t, extra_keys_index<T>>());
+                }
+                if constexpr (has_struct_conditions<T>) compares = compares || struct_node_compares_json<T, 0>();
+                return compares;
+            }
+        }
+        // A node marked for a type whose keywords compare JSON values that a typed comparison cannot.
+        template <typename T>
+        struct json_equality_type_node;
+        template <typename... Us>
+        auto json_equality_type_nodes(type_list<read_type_node<Us>...>) -> type_list<json_equality_type_node<Us>...>;
+        template <typename T>
+        struct json_equality_type_node
+        {
+            using edges = decltype(joined_nodes(json_equality_type_nodes(typename read_type_node<T>::edges{}),
+                                                key_map_value_nodes<json_equality_type_node, T, read_conversion>()));
+            static constexpr bool marked = type_compares_json<T>();
+        };
+        // Whether a value of T read from JSON has a keyword that compares JSON values, which only a document keeps.
+        template <typename T>
+        constexpr bool compares_json_values = graph_search(&graph_node<json_equality_type_node<std::remove_cv_t<T>>>);
 
         template <typename V>
         [[noreturn]] CPPYYJSON_COLD void throw_one_of_matches(cast_target at, std::size_t i, std::size_t j)
@@ -32895,15 +33718,19 @@ namespace yyjson
         // The merged object of a struct with the origin of its members, which its conditions are checked on.
         struct merged_object : reader::const_object_ref
         {
-            merged_object(const reader::const_object_ref& json, const merged_origin* from, bool after = false) noexcept
-                : reader::const_object_ref(json), origin(from), committed(after)
+            merged_object(const reader::const_object_ref& json, const merged_origin* from, bool after = false,
+                          const reader::const_value_ref* node = nullptr) noexcept
+                : reader::const_object_ref(json), origin(from), committed(after), whole(node)
             {
             }
             // an object is no array, for the alternatives of a variant that read an array
             [[nodiscard]] static std::optional<reader::const_array_ref> as_array() noexcept { return std::nullopt; }
+            // the merged JSON value, which `yyjson::const_` and `yyjson::enum_` compare, or null if unknown
+            [[nodiscard]] const reader::const_value_ref* json() const noexcept { return whole; }
             const merged_origin* origin;
             // whether the merge is done, so that the struct holds the merged value of each member
             bool committed;
+            const reader::const_value_ref* whole;
         };
 
         // The origin of a value that a repeated key merges into again: `later` from the value `earlier` gave.
@@ -34530,38 +35357,52 @@ namespace yyjson
             template <typename T>
             static constexpr bool reads_documents_in_loop =
                 yyjson::detail::graph_search(&yyjson::detail::graph_node<value_node<T, false>>);
+            // The keywords that compare JSON values take the nodes of a document, which this reader does not keep.
+            template <typename T>
+            static constexpr bool reads_documents =
+                reads_documents_in_loop<T> || yyjson::detail::compares_json_values<T>;
 
             template <typename T>
             T read_root()
             {
-                if constexpr (!builtin_variant<T> && !builtin_tuple<T> &&
-                              !yyjson::detail::from_json_translator<T>::castable && !from_json_val_usr_defined<T> &&
-                              from_json_def_arr_defined<T> && yyjson::detail::back_insertable<T> &&
-                              reserves_elements<T>)
+                if constexpr (yyjson::detail::compares_json_values<T>)
+                    unsupported();
+                else
                 {
-                    if constexpr (std::is_trivially_copyable_v<std::ranges::range_value_t<T>>)
+                    if constexpr (!builtin_variant<T> && !builtin_tuple<T> &&
+                                  !yyjson::detail::from_json_translator<T>::castable && !from_json_val_usr_defined<T> &&
+                                  from_json_def_arr_defined<T> && yyjson::detail::back_insertable<T> &&
+                                  reserves_elements<T>)
                     {
-                        // the array that `read_value<T>` reads, given room for its elements
-                        if (*cur_ == '[')
+                        if constexpr (std::is_trivially_copyable_v<std::ranges::range_value_t<T>>)
                         {
-                            auto result = T();
-                            read_array_into<T, true>(result);
-                            if (cur_ != end_) fail();
-                            return result;
+                            // the array that `read_value<T>` reads, given room for its elements
+                            if (*cur_ == '[')
+                            {
+                                auto result = T();
+                                read_array_into<T, true>(result);
+                                if (cur_ != end_) fail();
+                                return result;
+                            }
                         }
                     }
+                    auto result = read_value<T>();
+                    if (cur_ != end_) fail();
+                    return result;
                 }
-                auto result = read_value<T>();
-                if (cur_ != end_) fail();
-                return result;
             }
 
             template <typename T>
             void read_root_into(T& t)
             {
-                into_ = true;
-                read_value_into(t);
-                if (cur_ != end_) fail();
+                if constexpr (yyjson::detail::compares_json_values<T>)
+                    unsupported();
+                else
+                {
+                    into_ = true;
+                    read_value_into(t);
+                    if (cur_ != end_) fail();
+                }
             }
 
             template <typename T>
@@ -34575,10 +35416,15 @@ namespace yyjson
             template <typename T>
             void merge_root(T& t, std::vector<absent_key>& absent)
             {
-                into_ = true;
-                absent_ = &absent;
-                merge_value(t);
-                if (cur_ != end_) fail();
+                if constexpr (yyjson::detail::compares_json_values<T>)
+                    unsupported();
+                else
+                {
+                    into_ = true;
+                    absent_ = &absent;
+                    merge_value(t);
+                    if (cur_ != end_) fail();
+                }
             }
 
         private:
@@ -34601,6 +35447,15 @@ namespace yyjson
             template <typename T>
             static constexpr std::string_view name = yyjson::detail::type_name<std::remove_cv_t<T>>();
             [[noreturn]] CPPYYJSON_COLD static void unsupported() { throw direct_read_unsupported{}; }
+            // Leaves the set T to a document when `uniqueItems` compares the JSON values of its elements.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE void check_json_unique() const
+            {
+                namespace d = yyjson::detail;
+                if constexpr (d::json_unique_set<T> && !d::exact_unique_set<T>)
+                    if ((policies_ & (d::unique_items_policy | d::duplicates_policy)) == d::unique_items_policy)
+                        unsupported();
+            }
 
             CPPYYJSON_ALWAYS_INLINE static bool is_digit(char c) noexcept
             {
@@ -36014,7 +36869,8 @@ namespace yyjson
                         throw;
                     }
                 }
-                else if constexpr (yyjson::detail::borrows_strings<S>)
+                // a source whose keywords compare JSON values reads from a document too
+                else if constexpr (yyjson::detail::borrows_strings<S> || yyjson::detail::compares_json_values<S>)
                     return with_document<T>(
                         [&](const const_value_ref& v) -> decltype(auto) { return f(v.template cast<S>()); });
                 else if constexpr (caster_checked<T> && caster_scalar_source<S> && !caster_typed<T>)
@@ -36384,7 +37240,7 @@ namespace yyjson
                     if constexpr ((Schema::constraints.bits & d::numeric_constraints) != 0)
                     {
                         const auto number = view_number(cur_);
-                        const auto kind = yyjson_is_real(&number)   ? d::value_violation<Schema, false>(number.uni.f64)
+                        const auto kind = yyjson_is_real(&number)   ? d::json_real_violation<Schema>(number.uni.f64)
                                           : yyjson_is_uint(&number) ? d::value_violation<Schema, false>(number.uni.u64)
                                                                     : d::value_violation<Schema, false>(number.uni.i64);
                         if (kind != d::constraint_kind::none) [[unlikely]]
@@ -38376,7 +39232,7 @@ namespace yyjson
                 }
             }
 
-            // Reads the value at `cur_` into the float V as `read_value` does, and keeps in `number` the JSON number.
+            // Reads the value at `cur_` into the real V as `read_value` does, and keeps in `number` the JSON number.
             template <typename V>
             V read_recorded_number(yyjson_val& number)
             {
@@ -38394,6 +39250,15 @@ namespace yyjson
                     default:
                         break;
                 }
+#if defined(CPPYYJSON_READ_DECIMAL)
+                if constexpr (yyjson::detail::reads_by_default<V> && std::floating_point<V>)
+                    if (auto d = 0.0; read_decimal(d)) [[likely]]
+                    {
+                        number.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                        number.uni.f64 = d;
+                        return dc::from_json_real(d);
+                    }
+#endif
                 number = scan_number();
                 if constexpr (!yyjson::detail::reads_by_default<V> || std::is_enum_v<V>)
                 {
@@ -38494,10 +39359,10 @@ namespace yyjson
                             result.push_back(std::move(e));
                         else if constexpr (d::insertable_set<V>)
                         {
+                            check_json_unique<V>();
                             const auto size = result.size();
                             result.insert(result.end(), std::move(e));
-                            if (result.size() == size && (policies_ & d::repeated_element_policies<V>) != 0)
-                                [[unlikely]]
+                            if (result.size() == size && (policies_ & d::unchanged_set_policies<V>) != 0) [[unlikely]]
                                 fail();
                         }
                         else if constexpr (d::pair_array_map<V>)
@@ -39248,11 +40113,12 @@ namespace yyjson
                     else if constexpr (yyjson::detail::insertable_set<T>)
                     {
                         [[maybe_unused]] const auto size = result.size();
+                        if constexpr (yyjson::detail::unique_set<T>) check_json_unique<T>();
                         result.insert(result.end(), read_element<value_type>());
                         if constexpr (yyjson::detail::unique_set<T>)
                         {
-                            if (result.size() == size &&
-                                (policies_ & yyjson::detail::repeated_element_policies<T>) != 0) [[unlikely]]
+                            if (result.size() == size && (policies_ & yyjson::detail::unchanged_set_policies<T>) != 0)
+                                [[unlikely]]
                                 fail();
                         }
                     }
@@ -41655,7 +42521,7 @@ namespace yyjson
         yyjson::detail::assert_reads_through_casters<T>();
         const yyjson::detail::independent_checks_for<T> independent;
         using U = std::remove_cv_t<T>;
-        if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
+        if constexpr (reader::detail::direct_reader::reads_documents<U>)
             return yyjson::detail::cast_text<U>(json, read_flag);
         else
         {
@@ -41716,7 +42582,7 @@ namespace yyjson
         yyjson::detail::assert_reads_owned_strings<T>();
         yyjson::detail::assert_reads_through_casters<T>();
         const yyjson::detail::independent_checks_for<T> independent;
-        if constexpr (reader::detail::direct_reader::reads_documents_in_loop<T>)
+        if constexpr (reader::detail::direct_reader::reads_documents<T>)
             t = yyjson::detail::cast_text<T>(json, read_flag);
         else
         {
@@ -41781,7 +42647,7 @@ namespace yyjson
         const yyjson::detail::independent_checks_for<T> independent;
         const auto commit = [&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
             const auto outer = reader::detail::absent_before_scope();
-            if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
+            if constexpr (!reader::detail::direct_reader::reads_documents<T>)
             {
                 using reader::detail::direct_reader;
                 const char* first;
@@ -42031,13 +42897,17 @@ namespace yyjson
                 return false;
         }
 
-        // Whether `yyjson::contains` in the keywords of the whole array of S checks the JSON value of an element.
+        // Whether `yyjson::contains` in the keywords of the whole array of S checks the JSON value of an element, or
+        // `yyjson::unique_items` compares the JSON values of the elements.
         template <typename S>
         consteval bool written_array_counts_input()
         {
             if constexpr (checks_written_array<S>())
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (array_struct_elements_count_input<node_schema<array_struct_tree<S>, Is>, S>() || ...);
+                    constexpr const auto& nodes = array_struct_tree<S>::tree.nodes;
+                    constexpr bool unique = (nodes[Is].constraints.template has<unique_items_t>() || ...);
+                    return (unique && unique_items_need<S>() == json_need::document) ||
+                           (array_struct_elements_count_input<node_schema<array_struct_tree<S>, Is>, S, true>() || ...);
                 }(std::make_index_sequence<array_struct_tree<S>::tree.nodes.size()>{});
             else
                 return false;
@@ -42073,7 +42943,8 @@ namespace yyjson
         // the value, or the JSON of a caster of the user.
         template <typename S, std::size_t K, typename F>
         inline constexpr bool field_checks_written_json =
-            field_counts_input<S, K, F> || checks_caster_json<field_schema<S, struct_declared_index<S, K>>, F>();
+            counts_input<field_schema<S, struct_declared_index<S, K>>, F, true>() ||
+            checks_caster_json<field_schema<S, struct_declared_index<S, K>>, F>();
         // Whether the keywords of the object of T check the JSON object that its caster of the user writes and reads.
         template <typename T>
         inline constexpr bool caster_checks_written_object =
@@ -42399,6 +43270,22 @@ namespace yyjson
         // is read back as a whole tells it by the write of `v`.
         template <typename T>
         struct reads_written_whole;
+        // Whether write gives `v` with `flag` as an infinity or a NaN: a long double out of the range of a double
+        // and a double that `WriteFlag` writes as a float out of the range of a float are too.
+        template <std::floating_point V>
+        bool written_non_finite(V v, WriteFlag flag) noexcept
+        {
+            const auto d = static_cast<double>(v);
+#if YYJSON_VERSION_HEX >= 0x000B00
+            constexpr auto prec_bits = ~std::uint32_t{0} << (32 - YYJSON_WRITE_FP_PREC_BITS);
+            const auto format = static_cast<std::uint32_t>(real_format<V> >> 32 | to_underlying(flag));
+            if ((format & YYJSON_WRITE_FP_TO_FLOAT) != 0 && (format & prec_bits) == 0)
+                return !std::isfinite(static_cast<float>(d));
+#else
+            (void)flag;
+#endif
+            return !std::isfinite(d);
+        }
         template <typename T>
         bool holds_non_finite(const T& v, WriteFlag flag)
         {
@@ -42411,7 +43298,7 @@ namespace yyjson
             else if constexpr (written_by_library_caster<T>)
                 return holds_non_finite(v.value, flag);
             else if constexpr (std::floating_point<T>)
-                return !std::isfinite(v);
+                return written_non_finite(v, flag);
             else if constexpr (is_std_optional<T>::value || nullable_value<T>)
                 return v.has_value() && holds_non_finite(*v, flag);
             else if constexpr (owning_pointer<T>)
@@ -42448,6 +43335,46 @@ namespace yyjson
         {
             return (to_underlying(flag) & YYJSON_WRITE_INF_AND_NAN_AS_NULL) != 0;
         }
+
+        // A node of the graph of `conversion_node`, marked for a value of the DOM.
+        template <typename T>
+        struct dom_node;
+        template <typename... Ts>
+        auto dom_nodes(type_list<conversion_node<write_conversion, Ts>...>) -> type_list<dom_node<Ts>...>;
+        template <typename T>
+        struct dom_node
+        {
+            using edges = decltype(joined_nodes(
+                joined_nodes(dom_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                             key_map_value_nodes<dom_node, T>()),
+                joined_nodes(translation_nodes<dom_node, T>(), library_written_nodes<dom_node, T>())));
+            static constexpr bool marked = dom_checked<T>;
+        };
+        // Whether a value of T can hold a value of the DOM.
+        template <typename T>
+        inline constexpr bool reaches_dom = graph_search(&graph_node<dom_node<std::remove_cvref_t<T>>>);
+
+        // A node of the same graph, marked for a type whose caster of the user writes into a value or an emitter,
+        // which can write a real or a value of the DOM that the graph does not see.
+        template <typename T>
+        struct in_place_writer_node;
+        template <typename... Ts>
+        auto in_place_writer_nodes(type_list<conversion_node<write_conversion, Ts>...>)
+            -> type_list<in_place_writer_node<Ts>...>;
+        template <typename T>
+        struct in_place_writer_node
+        {
+            using edges = decltype(joined_nodes(
+                joined_nodes(in_place_writer_nodes(typename conversion_node<write_conversion, T>::edges{}),
+                             key_map_value_nodes<in_place_writer_node, T>()),
+                joined_nodes(translation_nodes<in_place_writer_node, T>(),
+                             library_written_nodes<in_place_writer_node, T>())));
+            static constexpr bool marked =
+                (writer::detail::to_json_inp_usr_defined<const T&> || writer::detail::to_json_inp_usr_defined<T>) &&
+                !std::derived_from<caster<T>, builtin_caster> && !written_by_library_caster<T>;
+        };
+        template <typename T>
+        inline constexpr bool writes_in_place = graph_search(&graph_node<in_place_writer_node<std::remove_cvref_t<T>>>);
 
         // The JSON string that the key `k` of a map or of a pair is written as.
         template <typename K>
@@ -42670,14 +43597,18 @@ namespace yyjson
         }
 
         // Reads `text` as the flag of the write that gave it allows.
-        inline auto written_document(std::string_view text, WriteFlag flag)
+        inline ReadFlag written_read_flag(WriteFlag flag) noexcept
         {
             auto read_flag = ReadFlag::NoFlag;
             if ((to_underlying(flag) & YYJSON_WRITE_ALLOW_INF_AND_NAN) != 0)
                 read_flag = read_flag | ReadFlag::AllowInfAndNan;
             if ((to_underlying(flag) & YYJSON_WRITE_ALLOW_INVALID_UNICODE) != 0)
                 read_flag = read_flag | ReadFlag::AllowInvalidUnicode;
-            return reader::read(text, read_flag);
+            return read_flag;
+        }
+        inline auto written_document(std::string_view text, WriteFlag flag)
+        {
+            return reader::read(text, written_read_flag(flag));
         }
         // Calls `f` with the document `doc`, with the path of a `bad_cast` that leaves it taken from its root, as
         // the document does not outlive the call.
@@ -42972,30 +43903,30 @@ namespace yyjson
         // Whether write gives null for `v` itself with `WriteFlag::InfAndNanAsNull`: `v` is an infinity or a NaN, or
         // holds one in a `std::optional`, a pointer, a variant or a transparent struct.
         template <typename T>
-        bool written_null_for_non_finite(const T& v)
+        bool written_null_for_non_finite(const T& v, WriteFlag flag)
         {
             if constexpr (!writes_floating_point<T>)
                 return false;
             else if constexpr (written_by_translator<T>)
-                return written_null_for_non_finite(writer::detail::to_json_wrapper(v));
+                return written_null_for_non_finite(writer::detail::to_json_wrapper(v), flag);
             else if constexpr (written_by_library_caster<T>)
-                return written_null_for_non_finite(v.value);
+                return written_null_for_non_finite(v.value, flag);
             else if constexpr (std::floating_point<T>)
-                return !std::isfinite(v);
+                return written_non_finite(v, flag);
             else if constexpr (is_std_optional<T>::value || nullable_value<T>)
-                return v.has_value() && written_null_for_non_finite(*v);
+                return v.has_value() && written_null_for_non_finite(*v, flag);
             else if constexpr (owning_pointer<T>)
-                return v != nullptr && written_null_for_non_finite(*v);
+                return v != nullptr && written_null_for_non_finite(*v, flag);
             else if constexpr (indirect_value<T>)
-                return !v.valueless_after_move() && written_null_for_non_finite(*v);
+                return !v.valueless_after_move() && written_null_for_non_finite(*v, flag);
             else if constexpr (requires { std::variant_size<T>::value; })
             {
                 auto found = false;
-                visit_alternative(v, [&](const auto& a) { found = written_null_for_non_finite(a); });
+                visit_alternative(v, [&](const auto& a) { found = written_null_for_non_finite(a, flag); });
                 return found;
             }
             else if constexpr (validated_struct<T> && transparent_struct<T>)
-                return written_null_for_non_finite(struct_field<0>(v));
+                return written_null_for_non_finite(struct_field<0>(v), flag);
             else
                 return false;
         }
@@ -43112,7 +44043,7 @@ namespace yyjson
                 if constexpr (requires { std::variant_size<T>::value; })
                 {
                     // the alternative that `v` holds reads null without the trial reads of the others
-                    if (written_null_for_non_finite(v))
+                    if (written_null_for_non_finite(v, flag))
                     {
                         try
                         {
@@ -43129,7 +44060,7 @@ namespace yyjson
                 }
                 else if constexpr (validated_struct<T> && transparent_struct<T>)
                     read_back_positions<std::remove_cvref_t<struct_field_type<T, 0>>, true>(struct_field<0>(v), flag);
-                else if (written_null_for_non_finite(v))
+                else if (written_null_for_non_finite(v, flag))
                     read_back_null<T, Field>(flag);
                 else if constexpr (written_by_translator<T>)
                 {
@@ -43503,15 +44434,22 @@ namespace yyjson
         }
 
         // Throws as read throws for `s`, a struct annotated with `yyjson::as_array` whose array has its first `count`
-        // positions, which does not satisfy the keyword `kind` of the whole array.
+        // positions, which does not satisfy the keyword `kind` of the whole array.  `elements` is the written array,
+        // or null if no keyword compares its JSON values.
         template <typename S>
-        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_validated_array_struct(const S& s, std::size_t count,
-                                                                                         constraint_kind kind)
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_validated_array_struct(
+            const S& s, std::size_t count, constraint_kind kind, const written_array* elements = nullptr)
         {
             using schema = array_struct_schema<S>;
             if constexpr (schema::constraints.template has<unique_items_t>())
                 if (kind == constraint_kind::unique_items)
-                    if (const auto j = array_struct_duplicate(s, count); j != no_duplicate)
+                    if (const auto j =
+                            [&] {
+                                if constexpr (unique_items_need<S>() == json_need::document)
+                                    if (elements != nullptr) return array_struct_json_duplicate<S>(*elements);
+                                return array_struct_duplicate(s, count);
+                            }();
+                        j != no_duplicate)
                         validate_at([j] { return std::to_string(j); },
                                     [] {
                                         throw_keyword_at<schema, S>(cast_target{}, constraint_kind::duplicate_item,
@@ -43532,7 +44470,7 @@ namespace yyjson
                 const written_array elements(*arr);
                 if (const auto kind = array_struct_node_violation<array_struct_schema<S>>(s, count, size, &elements);
                     kind != constraint_kind::none) [[unlikely]]
-                    throw_validated_array_struct(s, count, kind);
+                    throw_validated_array_struct(s, count, kind, &elements);
             };
             if (json != nullptr)
             {
@@ -43864,7 +44802,7 @@ namespace yyjson
                         const auto violated = [&] {
                             if (const auto o = json.as_object(); o.has_value() && mode.origin != nullptr)
                             {
-                                const merged_object merged(*o, mode.origin);
+                                const merged_object merged(*o, mode.origin, false, &json);
                                 return extra_value_violation<S, r>(*e, &merged);
                             }
                             return extra_value_violation<S, r>(*e, &json);
@@ -44263,7 +45201,7 @@ namespace yyjson
             using Schema = union_alternative_schema<V, I>;
             if constexpr (AsNull && writes_floating_point<A>)
                 if (holds_non_finite(a, flag)) return true;
-            if constexpr (counts_input<Schema, A>() || checks_caster_json<Schema, A>())
+            if constexpr (counts_input<Schema, A, true>() || checks_caster_json<Schema, A>())
                 return json == nullptr || written_field_violation<Schema, true>(a, *json) != constraint_kind::none;
             else
                 return constraint_violation<Schema, true>(a) != constraint_kind::none;
@@ -44467,13 +45405,11 @@ namespace yyjson
         {
             const independent_checks_for<T> independent;
             if constexpr (writes_floating_point<T>)
-            {
                 if (writes_non_finite_as_null(flag)) [[unlikely]]
                 {
                     validate_as_null(t, flag);
                     return;
                 }
-            }
             if constexpr (needs_validation<T>) validate_value<false>(t, flag);
         }
 
@@ -44496,6 +45432,77 @@ namespace yyjson
             auto scratch = std::string();
             yyjson::write(t, scratch, flag);
             std::rethrow_exception(failure);
+        }
+
+        // Whether a value of T can hold a value of the DOM, also through a caster of the user that writes in place.
+        template <typename T>
+        inline constexpr bool may_hold_dom = reaches_dom<T> || writes_in_place<T>;
+        // Whether the flags of the write or the backend can change the text of a real that T writes.  Only such a T
+        // tests `yyjson::readable<T>` and instantiates `yyjson::read<T>` for the check.
+        template <typename T>
+        consteval bool may_change_written_text()
+        {
+            if constexpr (may_hold_dom<T>)
+                return true;
+            else if constexpr (real_format_bits != 0)
+                return writes_floating_point<T>;
+            else
+                return false;
+        }
+        template <typename T>
+        concept reads_written_text = may_change_written_text<T>() && yyjson::readable<T>;
+        // Whether the check before a write of T with `flag` also reads the written text as `yyjson::read<T>`: the
+        // format bits of `flag`, a `float` in a value of the DOM, or a non-finite real in it written as null can
+        // change the JSON that a read checks.
+        template <typename T>
+        bool checks_written_text(WriteFlag flag) noexcept
+        {
+            if constexpr (reads_written_text<T>)
+            {
+                if ((to_underlying(flag) & real_format_bits) != 0) return true;
+                if constexpr (may_hold_dom<T>)
+#if YYJSON_VERSION_HEX >= 0x000B00
+                    return true;
+#else
+                    return writes_non_finite_as_null(flag);
+#endif
+                else
+                    return false;
+            }
+            else
+                return false;
+        }
+        // Reads `text`, which write gives for a T with `flag`, as `yyjson::read<T>` reads it, and throws what the
+        // read throws.  With `WriteFlag::InfAndNanAsNull`, a `null` is read as `yyjson::reject_null_as_missing` does.
+        template <typename T>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_written_text(std::string_view text, WriteFlag flag)
+        {
+            if constexpr (reads_written_text<T>)
+            {
+                const emit_defaults_scope defaults(false);
+                const exact_policy_scope scope(writes_non_finite_as_null(flag) ? null_as_missing_policy : 0);
+                (void)yyjson::read<std::remove_cv_t<T>>(text, written_read_flag(flag));
+            }
+        }
+        // Whether a write of T without flags reads the written text: only a `float` in a value of the DOM can then
+        // change it.
+        template <typename T>
+        consteval bool checks_text_without_flag()
+        {
+            if constexpr (YYJSON_VERSION_HEX >= 0x000B00 && may_hold_dom<T>)
+                return reads_written_text<T>;
+            else
+                return false;
+        }
+        // The same for `yyjson::validate(t)`, which takes no flag: the write allows what the check allows.
+        template <typename T>
+        void check_written_dom(const T& t)
+        {
+            if constexpr (checks_text_without_flag<T>())
+            {
+                constexpr auto flag = WriteFlag::AllowInfAndNan | WriteFlag::AllowInvalidUnicode;
+                check_written_text<T>(yyjson::write(t, flag), flag);
+            }
         }
 
         // The check of a merged JSON value for `yyjson::merge_into`, which constructs no value of the type: a part
@@ -44532,7 +45539,7 @@ namespace yyjson
                                 // the patch merges only into an object
                                 const auto o = value.as_object();
                                 if (!o.has_value()) return constraint_kind::none;
-                                const merged_object merged(*o, &origin);
+                                const merged_object merged(*o, &origin, false, &value);
                                 return constraint_violation<schema>(field, input_for<schema, F>(&merged));
                             }
                             else if constexpr (schema_takes_value<schema>)
@@ -44606,9 +45613,11 @@ namespace yyjson
                                 if (from == merged_origin::source::kept)
                                 {
                                     if constexpr (validation_walks<F, false> || constrained_field<S, K>)
+                                    {
                                         validate_written_field<false, S, K>(field, WriteFlag::NoFlag,
                                                                             static_cast<const validated_tag*>(nullptr),
                                                                             &member);
+                                    }
                                     return;
                                 }
                                 // only a field that the merge merges into has members of both sources
@@ -44653,7 +45662,7 @@ namespace yyjson
                                 return constraint_violation<values, true>(value);
                             else if (const auto o = value.as_object(); o.has_value())
                             {
-                                const merged_object merged(*o, sub);
+                                const merged_object merged(*o, sub, false, &value);
                                 return extra_value_violation<S, R>(e, &merged);
                             }
                             else
@@ -45087,6 +46096,7 @@ namespace yyjson
     void validate(const T& t)
     {
         detail::validate_root(t, WriteFlag::NoFlag);
+        detail::check_written_dom(t);
     }
     // The same for `yyjson::write(t, yyjson::emit_defaults)`, which writes the fields that equal their defaults.
     template <writable T>
@@ -45094,6 +46104,7 @@ namespace yyjson
     {
         const detail::emit_defaults_scope scope;
         detail::validate_root(t, WriteFlag::NoFlag);
+        detail::check_written_dom(t);
     }
 
     // Writes `t` as `yyjson::write` does after `yyjson::validate(t)` accepts it.  `out` is left as it is when the
@@ -45102,53 +46113,70 @@ namespace yyjson
     [[nodiscard]] json_string write(const T& t, with_validation_t)
     {
         detail::validate_for_write(t, WriteFlag::NoFlag);
-        return write(t);
+        auto json = write(t);
+        if constexpr (detail::checks_text_without_flag<T>()) detail::check_written_text<T>(json, WriteFlag::NoFlag);
+        return json;
     }
     template <writable T>
     [[nodiscard]] json_string write(const T& t, WriteFlag write_flag, with_validation_t)
     {
         detail::validate_for_write(t, write_flag);
-        return write(t, write_flag);
+        auto json = write(t, write_flag);
+        if (detail::checks_written_text<T>(write_flag)) [[unlikely]]
+            detail::check_written_text<T>(json, write_flag);
+        return json;
     }
     template <writable T>
     void write(const T& t, std::string& out, with_validation_t)
     {
         detail::validate_for_write(t, WriteFlag::NoFlag);
-        write(t, out);
+        if constexpr (detail::checks_text_without_flag<T>())
+        {
+            auto text = std::string();
+            write(t, text);
+            detail::check_written_text<T>(text, WriteFlag::NoFlag);
+            out.swap(text);
+        }
+        else
+            write(t, out);
     }
     template <writable T>
     void write(const T& t, std::string& out, WriteFlag write_flag, with_validation_t)
     {
         detail::validate_for_write(t, write_flag);
-        write(t, out, write_flag);
+        if (detail::checks_written_text<T>(write_flag)) [[unlikely]]
+        {
+            auto text = std::string();
+            write(t, text, write_flag);
+            detail::check_written_text<T>(text, write_flag);
+            out.swap(text);
+        }
+        else
+            write(t, out, write_flag);
     }
     template <writable T>
     [[nodiscard]] json_string write(const T& t, emit_defaults_t, with_validation_t)
     {
         const detail::emit_defaults_scope scope;
-        detail::validate_for_write(t, WriteFlag::NoFlag);
-        return write(t);
+        return write(t, with_validation);
     }
     template <writable T>
     [[nodiscard]] json_string write(const T& t, WriteFlag write_flag, emit_defaults_t, with_validation_t)
     {
         const detail::emit_defaults_scope scope;
-        detail::validate_for_write(t, write_flag);
-        return write(t, write_flag);
+        return write(t, write_flag, with_validation);
     }
     template <writable T>
     void write(const T& t, std::string& out, emit_defaults_t, with_validation_t)
     {
         const detail::emit_defaults_scope scope;
-        detail::validate_for_write(t, WriteFlag::NoFlag);
-        write(t, out);
+        write(t, out, with_validation);
     }
     template <writable T>
     void write(const T& t, std::string& out, WriteFlag write_flag, emit_defaults_t, with_validation_t)
     {
         const detail::emit_defaults_scope scope;
-        detail::validate_for_write(t, write_flag);
-        write(t, out, write_flag);
+        write(t, out, write_flag, with_validation);
     }
 
     namespace detail

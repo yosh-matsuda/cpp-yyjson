@@ -2061,6 +2061,75 @@ namespace yyjson
                     return true;
             }
         }
+        // Whether the subschema `root` of `tree` has `yyjson::matches`, whose test reads more than the schema takes.
+        template <typename Tree>
+        consteval bool subtree_has_matches(const Tree& tree, std::size_t root)
+        {
+            auto pending = std::vector<std::size_t>{root};
+            while (!pending.empty())
+            {
+                const auto i = pending.back();
+                const auto& n = tree.nodes[i];
+                pending.pop_back();
+                if (n.constraints.template has<yyjson::matches_t<void>>()) return true;
+                for (const auto child : {n.items, n.properties, n.keys, n.contains, n.combinators, n.members})
+                    if (child != 0) pending.push_back(child);
+                if (n.next != 0 && i != root) pending.push_back(n.next);
+                for (std::size_t j = 0; j < n.prefix_count; ++j) pending.push_back(n.prefix_first + j);
+                for (std::size_t j = 0; j < n.operands_count; ++j) pending.push_back(n.operands_first + j);
+            }
+            return false;
+        }
+        // Whether `a`, the alternative I of the variant V, satisfies the settings of its `yyjson::alt`, which check
+        // its written JSON where only the JSON tells.
+        template <typename V, std::size_t I, typename A>
+        bool alternative_settings_take(const A& a)
+        {
+            namespace yd = yyjson::detail;
+            using Schema = yd::union_alternative_schema<V, I>;
+            if constexpr (subtree_has_matches(Schema::tree, Schema::index))
+                return false;
+            else
+            {
+                try
+                {
+                    if constexpr (yd::counts_input<Schema, A, true>() || yd::checks_caster_json<Schema, A>())
+                    {
+                        const auto text = std::string(yyjson::write(yd::writable_field(a), yyjson::emit_defaults));
+                        const auto doc = yyjson::reader::read(text);
+                        return yd::written_field_violation<Schema, true>(a, yyjson::reader::const_value_ref(doc)) ==
+                               yd::constraint_kind::none;
+                    }
+                    else
+                        return yd::constraint_violation<Schema, true>(a) == yd::constraint_kind::none;
+                }
+                catch (const yyjson::bad_cast&)
+                {
+                    return false;
+                }
+                catch (const yyjson::read_error&)
+                {
+                    return false;
+                }
+                catch (const yyjson::write_error&)
+                {
+                    return false;
+                }
+                catch (const std::invalid_argument&)
+                {
+                    return false;
+                }
+            }
+        }
+        // Whether the read schema of the alternative I of the variant V takes `a`, with the settings of its
+        // `yyjson::alt`.
+        template <typename V, std::size_t I, typename A>
+        bool held_alternative_takes(const A& a)
+        {
+            if constexpr (yyjson::detail::constrained_union_alternative<V, I>)
+                if (!alternative_settings_take<V, I>(a)) return false;
+            return read_schema_takes(a);
+        }
         template <typename T, bool User>
         bool read_schema_takes(const T& v)
         {
@@ -2095,8 +2164,9 @@ namespace yyjson
             else if constexpr (variant_type<T>)
             {
                 const auto& base = yd::as_std_variant(v);
-                return !base.valueless_by_exception() &&
-                       std::visit([](const auto& a) { return read_schema_takes(a); }, base);
+                return !base.valueless_by_exception() && [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return ((base.index() == Is && held_alternative_takes<T, Is>(std::get<Is>(base))) || ...);
+                }(std::make_index_sequence<std::variant_size_v<std::remove_cvref_t<decltype(base)>>>{});
             }
             else if constexpr (std::ranges::range<T>)
             {

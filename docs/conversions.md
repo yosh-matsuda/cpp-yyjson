@@ -248,6 +248,17 @@ Two cases need care:
 *   A struct none of whose keys the object has, such as an empty struct, is not a candidate and keeps its place in the order, so an empty object is read as the first alternative that reads it.
 *   A catch-all alternative, such as a map or a `yyjson::value`, placed before a struct of `std::optional` fields, holds every object that has none of the keys of the struct. Put catch-all alternatives last, or use a [tagged variant](#tagged-variants) when objects must be told apart reliably.
 
+Some orders of the alternatives hide a later alternative, because the earlier one reads every value that the later one reads:
+
+| Variant | JSON | Index |
+| --- | --- | --- |
+| `std::variant<double, std::int64_t>` | `1` | 0 |
+| `std::variant<std::int64_t, int>` | `1` | 0 |
+| `std::variant<std::string, Color>`, with `Color` written by name | `"red"` | 0 |
+| `std::variant<yyjson::value, int>` | `1` | 0 |
+
+The read never gives the later alternative. Thus a write and a read change the `index()` of a variant that holds it. The library gives no warning and no error for such an order. Put the narrower alternative first, or use [`yyjson::any_of_variant`](#alternatives-with-constraints) with `yyjson::alt` and settings that tell the alternatives apart.
+
 ### Alternatives with constraints
 
 `yyjson::any_of_variant<As...>` is a variant whose alternatives can have [constraints](validation.md#constraints), as `anyOf` of JSON Schema. Each template argument is a type `T` or `yyjson::alt<T, s...>`. The settings `s` are those that a field of `T` takes for its value. `yyjson::alt<T>` with no settings is `T`.
@@ -808,7 +819,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     The struct also takes `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` with these settings in their subschemas, as in `yyjson::annotate(yyjson::as_array, yyjson::not_(yyjson::min_items(3)))`. Every read of the struct checks them.
 
     Another struct can give these settings to a field of such a struct, as in `yyjson::field("p", yyjson::min_items(2))`. They also apply to its elements, its values and its alternatives through `yyjson::items` and the other settings of elements. The same rules apply there. The message then names the field, at the path of the field.
-*   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains` on the struct or on a field of its type check every element of the array. Thus the struct must have a field of `yyjson::extra_items` or `yyjson::items(false)`, so that the read reads every element. `yyjson::unique_items` compares the elements as JSON values, also when the fields have different types.
+*   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains` on the struct or on a field of its type check every element of the array. Thus the struct must have a field of `yyjson::extra_items` or `yyjson::items(false)`, so that the read reads every element. `yyjson::unique_items` compares the elements as JSON values, also when the fields have different types. A keyword of `yyjson::contains` that constrains one JSON kind accepts elements of other kinds, as in JSON Schema. If the keyword fits no position, the struct fails to compile.
 *   **Errors.** The note of a constraint error about the value of a field names it as an element of the struct, as `reading an element of Rule` above. The JSON array has no key for a field, so the note does not name the field. This applies also to an element of the field of `yyjson::extra_items`, as `reading an element of Series` above. The note of a type error names the type of the field, as in `reading int`. The path is the index of the element, such as `/0` above and `/rules/1/0` for the struct in the element 1 of a field `rules`. A JSON value that is not an array, such as an object, throws `expected an array, got an object`.
 *   **Where it applies.** The struct is an array everywhere: as a field of another struct, an element, a value of a map, an alternative of a `std::variant` and the root. An untagged `std::variant` chooses it for a JSON array, as it chooses a `std::vector`. `read_into` and `merge_into` read the whole array into the struct. `merge_into` does not merge an array into the fields that the struct has: `yyjson::merge_into("[7]", point)` gives `Point{7, 0}` when `point` was `Point{5, 6}`.
 *   **Settings of the fields.** The fields take the [constraints](validation.md#constraints), `yyjson::required`, `yyjson::default_`, `yyjson::default_from<f>` and `yyjson::skip`. The struct takes the [read policies](validation.md#read-policies), `yyjson::items(false)`, the settings of the whole array and the combinators of them. `VISITABLE_STRUCT` registers such a struct too.

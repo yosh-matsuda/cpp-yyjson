@@ -305,6 +305,12 @@ namespace schema_test
     {
         float f;
     };
+    struct RealNumbers
+    {
+        double top;
+        double tenth;
+        double three;
+    };
     struct FloatUnder
     {
         float f;
@@ -604,6 +610,44 @@ namespace schema_test
             int a;
             int b;
         };
+        using LowOrReal = yyjson::any_of_variant<yyjson::alt<int, yyjson::maximum(5)>, double>;
+        // a tuple of pairs whose JSON the read schema of the tuple does not take
+        using MixedPairs = std::tuple<std::pair<std::string, int>, std::pair<std::string, std::string>>;
+        using OneKey = yyjson::alt<yyjson::value, yyjson::max_properties(1)>;
+        struct Row
+        {
+            int x;
+        };
+        struct TwoKeys
+        {
+            int a;
+            std::string b;
+        };
+        inline bool not_five(const int& v)
+        {
+            if (v == 5) throw yyjson::bad_cast("five");
+            return true;
+        }
+        struct HeldAlternatives
+        {
+            LowOrReal low = LowOrReal(std::in_place_index<0>, 3);
+            LowOrReal high = LowOrReal(std::in_place_index<0>, 10);
+            // the read takes the object back as the tuple, but neither read schema takes it
+            yyjson::any_of_variant<OneKey, MixedPairs> settings{std::in_place_index<0>,
+                                                                yyjson::value(MixedPairs{{"a", 1}, {"b", "x"}})};
+            // the settings that count the keys or the elements check the written JSON
+            yyjson::any_of_variant<yyjson::alt<Row, yyjson::min_items(1)>, int> row{std::in_place_index<0>, Row{1}};
+            yyjson::any_of_variant<yyjson::alt<TwoKeys, yyjson::max_properties(1)>, MixedPairs> keys{
+                std::in_place_index<0>, TwoKeys{1, "x"}};
+            // the test of `yyjson::matches` reads the tuple, whose read schema does not take the object
+            yyjson::any_of_variant<yyjson::alt<yyjson::value, yyjson::matches<MixedPairs>>, int> matched{
+                std::in_place_index<0>, yyjson::value(MixedPairs{{"a", 1}, {"b", "x"}})};
+        };
+        struct HeldThrows
+        {
+            // the first alternative reads the default back, and only the check of the held one throws
+            yyjson::any_of_variant<int, yyjson::alt<int, yyjson::satisfies<not_five>>> v{std::in_place_index<1>, 5};
+        };
     }  // namespace variants
     namespace tags
     {
@@ -859,6 +903,10 @@ template <>
 inline constexpr auto yyjson::annotations<schema_test::FloatAbove> =
     yyjson::annotate(yyjson::field("f", yyjson::minimum(0.1)));
 template <>
+inline constexpr auto yyjson::annotations<schema_test::RealNumbers> =
+    yyjson::annotate(yyjson::field("top", yyjson::maximum(9007199254740992LL)),
+                     yyjson::field("tenth", yyjson::multiple_of(0.1)), yyjson::field("three", yyjson::multiple_of(3)));
+template <>
 inline constexpr auto yyjson::annotations<schema_test::FloatNotAbove> =
     yyjson::annotate(yyjson::field("f", yyjson::not_(yyjson::minimum(0.1))));
 template <>
@@ -1013,6 +1061,11 @@ inline constexpr auto yyjson::annotations<schema_test::variants::Limited> = yyjs
     yyjson::field("w", yyjson::not_(yyjson::const_(0)), yyjson::one_of(yyjson::minimum(5), yyjson::max_length(1))));
 template <>
 inline constexpr auto yyjson::annotations<schema_test::variants::ClosedA> = yyjson::annotate(yyjson::reject_unknown_keys);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::variants::Row> = yyjson::annotate(yyjson::as_array);
+template <>
+inline constexpr auto yyjson::annotations<schema_test::variants::HeldAlternatives> =
+    yyjson::annotate(yyjson::field("low", yyjson::default_), yyjson::field("high", yyjson::default_));
 
 template <>
 inline constexpr auto yyjson::annotations<schema_test::tags::Shape> =
@@ -1587,6 +1640,11 @@ namespace
         integer_only = 64,
         // the read takes a number that rounds to a float whose text the keywords on numbers reject
         rounded = 128,
+        // the read rejects a decimal that is not an exact multiple, which the validator takes as it divides binary
+        // reals
+        inexact_multiple = 256,
+        // the read takes a large integer that is an exact multiple, which the validator rounds to a binary real
+        exact_multiple = 512,
     };
 
     struct doc
@@ -1671,8 +1729,7 @@ namespace
     json checked_schema(const yyjson::object& schema) { return checked_schema(to_jsoncons(schema)); }
 
     // The read schema under Ps takes what `read<T>(json, Ps...)` takes, but where a mark says that the read takes
-    // more (`lenient` and its kinds, `format`) or less (`not_expressible`, `unchecked`). A read without
-    // `yyjson::reject_missing_keys` also takes a document that misses a required key.
+    // more or less. A read without `yyjson::reject_missing_keys` also takes a document that misses a required key.
     template <typename T, typename... Ps>
     void check_read(std::initializer_list<doc> docs, const Ps&... ps)
     {
@@ -1684,10 +1741,11 @@ namespace
         for (const auto& d : docs)
         {
             const auto accepted = reads<T>(d.json, ps...);
-            auto more =
-                (d.diff & (lenient | format | (null ? 0U : lenient_null) | (repeat ? 0U : lenient_repeat))) != 0;
+            auto more = (d.diff & (lenient | format | exact_multiple | (null ? 0U : lenient_null) |
+                                   (repeat ? 0U : lenient_repeat))) != 0;
             if constexpr (!missing) more = more || (accepted && !reads<T>(d.json, ps..., yyjson::reject_missing_keys));
-            const auto less = (repeat && (d.diff & not_expressible) != 0) || (d.diff & (unchecked | integer_only)) != 0;
+            const auto less = (repeat && (d.diff & not_expressible) != 0) ||
+                              (d.diff & (unchecked | integer_only | inexact_multiple)) != 0;
             const auto valid = validator.is_valid(json::parse(d.json));
             const auto policy = yyjson::detail::policies_of<Ps...>;
             EXPECT_EQ(valid && !accepted, less) << "valid, but not read: " << d.json << " under " << +policy;
@@ -2307,6 +2365,28 @@ TEST(Schema, FloatNumberKeywords)
     EXPECT_NE(schema<FloatUnder>().find(R"("maximum":3.4028235e38,"exclusiveMaximum":0.1,)"), std::string::npos);
 }
 
+// the read compares the JSON number with the bound of a double, and takes a decimal multiple exactly
+TEST(Schema, RealNumberKeywords)
+{
+    // each case gives the other properties, which the schema requires, a value that they accept
+    check<RealNumbers>({R"({"top":9007199254740992,"tenth":0,"three":0})",
+                        R"({"top":9007199254740993,"tenth":0,"three":0})",
+                        R"({"top":0,"tenth":0.3,"three":0})",
+                        R"({"top":0,"tenth":-0.3,"three":0})",
+                        {R"({"top":0,"tenth":0.30000000000000004,"three":0})", inexact_multiple},
+                        R"({"top":0,"tenth":0.35,"three":0})",
+                        {R"({"top":0,"tenth":0,"three":9007199254740993})", exact_multiple},
+                        R"({"top":0,"tenth":0,"three":9007199254740992})"});
+    const auto emitted = schema<RealNumbers>();
+    EXPECT_NE(emitted.find(R"("top":{"type":"number","minimum":-1.7976931348623157e308,"maximum":9007199254740992,)"),
+              std::string::npos)
+        << emitted;
+    EXPECT_NE(emitted.find(R"("maximum":1.7976931348623157e308,"multipleOf":0.1,"default":0.0},"three")"),
+              std::string::npos)
+        << emitted;
+    EXPECT_NE(emitted.find(R"("multipleOf":3,"default":0.0}},"required")"), std::string::npos) << emitted;
+}
+
 TEST(Schema, TextKeywords)
 {
     check<Texts>({R"({"s":"ab","mail":"a@example.com","day":"2024-01-31","odd":1})",
@@ -2603,6 +2683,17 @@ TEST(Schema, AnyOfVariant)
     EXPECT_EQ(schema<Low>(yyjson::write_direction),
               R"({"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[)"
               R"({"type":"integer","minimum":1,"maximum":2147483647},{"type":"string"}]})");
+    // a default is valid against the held alternative, with the settings of its `yyjson::alt`
+    const auto held = definition<HeldAlternatives>(false)["properties"];
+    EXPECT_EQ(held["low"]["default"], json::parse("3"));
+    EXPECT_FALSE(held["high"].contains("default"));
+    EXPECT_FALSE(held["settings"].contains("default"));
+    EXPECT_EQ(held["row"]["default"], json::parse("[1]"));
+    EXPECT_FALSE(held["keys"].contains("default"));
+    EXPECT_FALSE(held["matched"].contains("default"));
+    check_read<HeldAlternatives>({"{}", R"({"high":10})"});
+    // a setting that throws as it checks the default gives no default
+    EXPECT_FALSE(definition<HeldThrows>(false)["properties"]["v"].contains("default"));
 }
 
 TEST(Schema, OneOfVariant)

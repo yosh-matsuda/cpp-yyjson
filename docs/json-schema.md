@@ -198,11 +198,9 @@ In these cases, JSON that is valid against the read schema is not read, or a wri
 *   A [format](#formats). The library checks only `yyjson::format_assertion`, and many validators check no format. Other validators check the formats of `yyjson::format` too. Then `yyjson::not_(yyjson::format("email"))` accepts `"abc"` in the validator, and the read rejects every string.
 *   A [caster](#casters) that rejects some values of the type that its `from_json` takes. The schema describes that type. For example, a `from_json(const std::string&)` that throws for `"abc"` gives `{"type":"string"}`, and the read rejects `"abc"`. Give the rest of the schema with [`yyjson::schema_extend`](#declared-schemas).
 *   A `pattern`. The program gives the [pattern matcher](validation.md#pattern-matcher) of the library. The validator matches the pattern with its own engine, and the two can disagree.
-*   A comparison of a `float` with `yyjson::const_`, `yyjson::enum_` or `yyjson::unique_items`. The read rounds the JSON number to `float` before it compares. The validator compares the JSON numbers. These examples are valid against the read schema and are not read:
-    *   `0.10000000149011612` for `yyjson::not_(yyjson::const_(0.1))`
-    *   `[0.1,0.10000000149011612]` for a `std::vector<float>` with `yyjson::unique_items`
-    *   The same array for `yyjson::contains(yyjson::const_(0.1))` with `yyjson::max_contains(1)`
-*   A `float` that the read gives, with the bounds or `yyjson::multiple_of`. The read compares the JSON number, as the validator does. `write` writes the shortest text of the `float`, and that text can give another number. For example, `yyjson::maximum(0.099999999)` accepts the JSON number `0.099999999`. The read rounds it to the `float` that `write` writes as `0.1`. The written value is not valid against the write schema. [`yyjson::validate`](validation.md#checking-a-value-before-writing) rejects the value.
+*   A real that the read gives, with the bounds or `yyjson::multiple_of`. The read compares the JSON number, as the validator does. `write` writes the shortest text of the real, and that text can give another number. For example, `yyjson::maximum(0.099999999)` on a `float` accepts the JSON number `0.099999999`. The read rounds it to the `float` that `write` writes as `0.1`. Also, `yyjson::multiple_of(3)` on a `double` accepts `9007199254740993`. The read rounds it to the `double` that `write` writes as `9007199254740992.0`. The written value is not valid against the write schema. [`yyjson::validate`](validation.md#checking-a-value-before-writing) rejects the value.
+*   A JSON number that is not an integer, and that is more precise than a `double`. The read compares the `double` of the number, and the validator can compare the number itself. For example, `yyjson::maximum(9007199254740992)` on a `double` accepts `9007199254740993.0`.
+*   `yyjson::multiple_of`. The read decides exactly on a JSON integer, and on the shortest decimal of a real. A validator can divide in binary reals. Then, for `yyjson::multiple_of(0.1)`, it can reject `0.3` or accept `0.30000000000000004`. A validator can also round a large integer to a binary real. Then, for `yyjson::multiple_of(3)`, it can reject `9007199254740993`.
 *   A repeated key. `{"a":1,"a":2}` is valid against `yyjson::max_properties(1)`, because the validator keeps one member. The read counts two members and rejects the object. With `yyjson::reject_duplicates` or `yyjson::strict`, the read rejects each repeated key, and the schema accepts it.
 *   A `std::chrono::duration` with an integer count. JSON Schema takes `5.0` as an integer, and the read rejects it. `read<int>` reads `5.0`.
 *   The depth of a [recursive type](conversions.md#recursive-types). The read rejects JSON deeper than `CPPYYJSON_RECURSION_DEPTH_LIMIT`. The schema has no limit.
@@ -227,6 +225,8 @@ Each schema gives `default` for each field, also for a required key. The value i
 *   The value cannot be written, such as infinity, or a read under `yyjson::strict` and `yyjson::reject_unknown_keys` rejects its written text. The type of the field cannot be written, such as a `std::chrono` duration.
 *   `T` has no default constructor, and the field has no declared default.
 *   The field has a text of `yyjson::schema(...)` for the direction of the schema. The text replaces the whole schema of the field, and it can give its own `default`.
+
+The value of a `std::variant` field must be valid against the read schema of its alternative in `T()`. The check includes the settings of its `yyjson::alt`. If those settings have `yyjson::matches`, or if only another alternative takes the value, the field has no `default`.
 
 ## Names of types
 

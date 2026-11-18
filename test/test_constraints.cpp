@@ -98,6 +98,53 @@ inline constexpr auto yyjson::annotations<FloatElements> = yyjson::annotate(
     yyjson::field("v", yyjson::items(yyjson::maximum(0.1))),
     yyjson::field("m", yyjson::additional_properties(yyjson::maximum(0.1))), yyjson::field("u", yyjson::maximum(0.1)));
 
+// bounds of a double field, which compares the JSON number that the field is read from
+struct RealBounds
+{
+    double top = 0;
+    double tenth = 0;
+    double cent = 0;
+    double half = 0;
+    double third = 0;
+    double three = 0;
+    long double wide = 0;
+    bool operator==(const RealBounds&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<RealBounds> = yyjson::annotate(
+    yyjson::field("top", yyjson::maximum(9007199254740992LL)), yyjson::field("tenth", yyjson::multiple_of(0.1)),
+    yyjson::field("cent", yyjson::multiple_of(0.01)), yyjson::field("half", yyjson::multiple_of(0.5)),
+    yyjson::field("third", yyjson::multiple_of(1.5)), yyjson::field("three", yyjson::multiple_of(3)),
+    yyjson::field("wide", yyjson::exclusive_minimum(-9007199254740992LL)));
+
+// doubles in elements and in an alternative of a variant
+struct RealElements
+{
+    std::vector<double> v;
+    std::variant<double, std::string> u = 0.0;
+    bool operator==(const RealElements&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<RealElements> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::maximum(9007199254740992LL))),
+                     yyjson::field("u", yyjson::multiple_of(0.1)));
+
+// divisors that no fixed number of digits holds: integers up to 2^64, and reals by their shortest decimal
+struct WideDivisors
+{
+    double big = 0;
+    std::uint64_t ubig = 0;
+    double tiny = 0;
+    double odd = 0;
+    std::int64_t huge = 0;
+    bool operator==(const WideDivisors&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<WideDivisors> = yyjson::annotate(
+    yyjson::field("big", yyjson::multiple_of(9007199254740992ULL)),
+    yyjson::field("ubig", yyjson::multiple_of(9007199254740992ULL)), yyjson::field("tiny", yyjson::multiple_of(1e-18)),
+    yyjson::field("odd", yyjson::multiple_of(900719925474098.8)), yyjson::field("huge", yyjson::multiple_of(1e20)));
+
 struct Texts
 {
     std::string name;
@@ -575,6 +622,233 @@ inline constexpr auto yyjson::annotations<UniqueParts> =
                      yyjson::field("trees", yyjson::unique_items), yyjson::field("maps", yyjson::unique_items),
                      yyjson::field("pairs", yyjson::unique_items), yyjson::field("tuples", yyjson::unique_items),
                      yyjson::field("twins", yyjson::unique_items));
+// keywords that compare JSON values, so that each struct below reads through a document
+enum class UjColor
+{
+    red,
+    green
+};
+template <>
+inline constexpr auto yyjson::annotations<UjColor> = yyjson::annotate(yyjson::enum_format::name_or_integer);
+struct UniqueJsonEquality
+{
+    std::vector<Spot> spots = {};
+    std::vector<std::set<int>> sets = {};
+    std::vector<std::variant<int, double>> mixed = {};
+    std::vector<std::map<std::string, int>> maps = {};
+    std::vector<std::vector<std::pair<std::string, int>>> pairs = {};
+    std::vector<std::vector<std::pair<std::string, std::string>>> kv = {};
+    std::vector<UjColor> colors = {};
+    std::tuple<Spot, Spot> twins = {Spot{0, 0}, Spot{1, 0}};
+    std::vector<std::vector<Spot>> nested = {};
+    bool operator==(const UniqueJsonEquality&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<UniqueJsonEquality> =
+    yyjson::annotate(yyjson::field("spots", yyjson::unique_items), yyjson::field("sets", yyjson::unique_items),
+                     yyjson::field("mixed", yyjson::unique_items), yyjson::field("maps", yyjson::unique_items),
+                     yyjson::field("pairs", yyjson::unique_items), yyjson::field("kv", yyjson::unique_items),
+                     yyjson::field("colors", yyjson::unique_items), yyjson::field("twins", yyjson::unique_items),
+                     yyjson::field("nested", yyjson::items(yyjson::unique_items)));
+struct UniqueReals2
+{
+    std::vector<double> v = {};
+    std::set<double> s = {};
+    std::vector<double> n = {0.0, 0.0};
+    bool operator==(const UniqueReals2&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<UniqueReals2> =
+    yyjson::annotate(yyjson::field("v", yyjson::unique_items), yyjson::field("s", yyjson::unique_items),
+                     yyjson::field("n", yyjson::not_(yyjson::unique_items)));
+inline constexpr auto spot_10 = yyjson::json_text(R"({"x":1,"y":0})");
+struct ListedJsonEquality
+{
+    Spot at{1, 0};
+    Spot not_at{};
+    Spot any_at{1, 0};
+    bool operator==(const ListedJsonEquality&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ListedJsonEquality> = yyjson::annotate(
+    yyjson::field("at", yyjson::const_(spot_10)), yyjson::field("not_at", yyjson::not_(yyjson::const_(spot_10))),
+    yyjson::field("any_at",
+                  yyjson::any_of(yyjson::const_(spot_10), yyjson::const_(yyjson::json_text(R"({"x":2,"y":0})")))));
+// a constant that the type of the field cannot read
+struct BadLiteral
+{
+    Spot at{};
+    bool operator==(const BadLiteral&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<BadLiteral> =
+    yyjson::annotate(yyjson::field("at", yyjson::const_(yyjson::json_text(R"({"x":"a"})"))));
+// a constant that no alternative of the variant reads
+struct VariantLiteral
+{
+    std::variant<int, std::string> v{};
+    bool operator==(const VariantLiteral&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<VariantLiteral> =
+    yyjson::annotate(yyjson::field("v", yyjson::const_(yyjson::json_text(R"({"x":1})"))));
+// the keyword of the values of the key map is the only one that compares JSON values
+struct KeyMapOnly
+{
+    std::map<std::string, std::vector<Spot>> extra = {};
+    bool operator==(const KeyMapOnly&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyMapOnly> =
+    yyjson::annotate(yyjson::field("extra", yyjson::extra_keys, yyjson::additional_properties(yyjson::unique_items)));
+// keywords that compare C++ values equal to their JSON values, so that the struct reads directly
+enum class FastColor
+{
+    a,
+    b
+};
+struct FastUnique
+{
+    std::vector<int> ints = {};
+    std::vector<std::string> strs = {};
+    std::vector<std::vector<int>> rows = {};
+    std::tuple<int, int> two = {0, 1};
+    std::vector<std::optional<int>> opts = {};
+    std::vector<FastColor> named = {};
+    std::set<int> si = {};
+    bool operator==(const FastUnique&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<FastUnique> =
+    yyjson::annotate(yyjson::field("ints", yyjson::unique_items), yyjson::field("strs", yyjson::unique_items),
+                     yyjson::field("rows", yyjson::unique_items), yyjson::field("two", yyjson::unique_items),
+                     yyjson::field("opts", yyjson::unique_items), yyjson::field("named", yyjson::unique_items),
+                     yyjson::field("si", yyjson::unique_items));
+struct ListedNumbersExact
+{
+    double d = 9007199254740992.0;
+    double e = 0;
+    float f = 0.1F;
+    double n = 0;
+    float g = 16777216.0F;
+    bool operator==(const ListedNumbersExact&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ListedNumbersExact> = yyjson::annotate(
+    yyjson::field("d", yyjson::const_(9007199254740992LL)),
+    yyjson::field("e", yyjson::enum_(0, 18446744073709551615ULL)), yyjson::field("f", yyjson::const_(0.1)),
+    yyjson::field("n", yyjson::not_(yyjson::const_(9007199254740992LL))),
+    yyjson::field("g", yyjson::enum_(16777216, 16777217), yyjson::maximum(16777216)));
+// a merge that changes the member "d" to a number that its double rounds
+struct MergedExact
+{
+    double d = 9007199254740992.0;
+    int keep = 1;
+    bool operator==(const MergedExact&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedExact> =
+    yyjson::annotate(yyjson::field("d", yyjson::const_(9007199254740992LL)), yyjson::field("keep", yyjson::const_(1)));
+
+// the review of the JSON equality
+constexpr auto big_integer = 9007199254740992LL;
+struct ArrayExact
+{
+    double d = 0;
+    bool operator==(const ArrayExact&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ArrayExact> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("d", yyjson::const_(big_integer)));
+struct ArrayExactRest
+{
+    int a = 0;
+    std::vector<double> rest = {};
+    bool operator==(const ArrayExactRest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ArrayExactRest> = yyjson::annotate(
+    yyjson::as_array, yyjson::field("rest", yyjson::extra_items, yyjson::items(yyjson::const_(big_integer))));
+struct ExactSource
+{
+    double d = 0;
+    bool operator==(const ExactSource&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExactSource> =
+    yyjson::annotate(yyjson::field("d", yyjson::const_(big_integer)));
+struct ExactWrap
+{
+    ExactSource s = {};
+    bool operator==(const ExactWrap&) const = default;
+};
+template <>
+struct yyjson::caster<ExactWrap>
+{
+    static ExactWrap from_json(ExactSource s) { return {s}; }
+    static ExactSource to_json(const ExactWrap& w) { return w.s; }
+};
+using RoundedOneOf =
+    yyjson::one_of_variant<yyjson::alt<double, yyjson::enum_(0, big_integer + 1), yyjson::maximum(big_integer)>,
+                           yyjson::alt<long long, yyjson::enum_(1, big_integer + 1)>>;
+using RealSetOneOf =
+    yyjson::one_of_variant<yyjson::alt<std::set<double>, yyjson::unique_items>,
+                           yyjson::alt<std::vector<double>, yyjson::min_items(2), yyjson::max_items(2)>>;
+struct MergedVariantLiteral
+{
+    std::variant<Spot, bool> p = false;
+    bool operator==(const MergedVariantLiteral&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MergedVariantLiteral> =
+    yyjson::annotate(yyjson::not_(yyjson::property("p", yyjson::const_(yyjson::json_text("{}")))));
+// casters that read two unequal JSON values as one key, and two equal ones as two keys
+enum class OneKey
+{
+    only
+};
+template <>
+struct yyjson::caster<OneKey>
+{
+    static OneKey from_json(std::string_view) { return OneKey::only; }
+    static std::string to_json(OneKey) { return "only"; }
+};
+enum class KindKey
+{
+    integer,
+    real
+};
+template <>
+struct yyjson::caster<KindKey>
+{
+    static KindKey from_json(yyjson::json_view v) { return v.is_real() ? KindKey::real : KindKey::integer; }
+    static double to_json(KindKey k) { return k == KindKey::real ? 1.5 : 1; }
+};
+using OneKeyOneOf =
+    yyjson::one_of_variant<yyjson::alt<std::set<OneKey>, yyjson::unique_items>,
+                           yyjson::alt<std::vector<std::string>, yyjson::min_items(2), yyjson::max_items(2)>>;
+using KindKeyOneOf = yyjson::one_of_variant<std::set<KindKey>, std::vector<int>>;
+struct NestedVariantInner
+{
+    std::variant<Spot, bool> p = false;
+    bool operator==(const NestedVariantInner&) const = default;
+};
+struct NestedVariantLiteral
+{
+    NestedVariantInner c = {};
+    bool operator==(const NestedVariantLiteral&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NestedVariantLiteral> = yyjson::annotate(
+    yyjson::not_(yyjson::property("c", yyjson::property("p", yyjson::const_(yyjson::json_text(R"({"x":1,"y":0})"))))),
+    yyjson::not_(yyjson::property("c", yyjson::property("p", yyjson::const_(yyjson::json_text("{}"))))));
+struct UniqueIntPairs
+{
+    std::vector<std::pair<int, int>> v = {};
+    bool operator==(const UniqueIntPairs&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<UniqueIntPairs> = yyjson::annotate(yyjson::field("v", yyjson::unique_items));
 
 bool is_lower(const std::string& s)
 {
@@ -3257,6 +3531,79 @@ TEST(Constraints, FloatBounds)
         R"(the number is greater than the maximum 0.1 at /u; reading the key "u" of FloatElements)", "/u");
 }
 
+TEST(Constraints, RealBounds)
+{
+    // the JSON integer is compared before the read rounds it to a double
+    expect_rejected<RealBounds>(
+        R"({"top":9007199254740993})",
+        R"(the number is greater than the maximum 9007199254740992 at /top; reading the key "top" of RealBounds)",
+        "/top");
+    expect_rejected<RealBounds>(
+        R"({"wide":-9007199254740993})",
+        R"(the number is not greater than the exclusive minimum -9007199254740992 at /wide; reading the key "wide" of RealBounds)",
+        "/wide");
+    // the text of a real is read as a double before the comparison
+    expect_accepted<RealBounds>(R"({"top":9007199254740992,"wide":-9007199254740991})",
+                                {9007199254740992.0, 0, 0, 0, 0, 0, -9007199254740991.0L});
+    expect_accepted<RealBounds>(R"({"top":9007199254740993.0})", {9007199254740992.0});
+
+    // a decimal multiple is decided on the shortest decimal of the double
+    expect_accepted<RealBounds>(R"({"tenth":0.3,"cent":-1234567.89,"half":5,"third":4.5,"three":9007199254740993})",
+                                {0, 0.3, -1234567.89, 5, 4.5, 9007199254740992.0});
+    for (const auto* json : {R"({"tenth":-0.3})", R"({"tenth":1e300})", R"({"tenth":0.1e-0})"})
+        EXPECT_NO_THROW((void)yyjson::read<RealBounds>(json)) << json;
+    for (const auto* json : {R"({"tenth":0.30000000000000004})", R"({"tenth":0.35})", R"({"tenth":1e-300})"})
+        expect_rejected<RealBounds>(
+            json, R"(the number is not a multiple of 0.1 at /tenth; reading the key "tenth" of RealBounds)", "/tenth");
+    expect_rejected<RealBounds>(
+        R"({"cent":0.001})", R"(the number is not a multiple of 0.01 at /cent; reading the key "cent" of RealBounds)",
+        "/cent");
+    for (const auto* json : {R"({"third":4.0})", R"({"third":4})"})
+        expect_rejected<RealBounds>(
+            json, R"(the number is not a multiple of 1.5 at /third; reading the key "third" of RealBounds)", "/third");
+    for (const auto* json : {R"({"three":9007199254740992})", R"({"three":1e300})"})
+        expect_rejected<RealBounds>(
+            json, R"(the number is not a multiple of 3 at /three; reading the key "three" of RealBounds)", "/three");
+
+    expect_accepted<RealElements>(R"({"v":[9007199254740992],"u":0.7})", {{9007199254740992.0}, 0.7});
+    expect_rejected<RealElements>(
+        R"({"v":[0,9007199254740993]})",
+        R"(the number is greater than the maximum 9007199254740992 at /v/1; reading an element of the value at the key "v" of RealElements)",
+        "/v/1");
+    expect_rejected<RealElements>(R"({"u":0.7000000000000001})",
+                                  R"(the number is not a multiple of 0.1 at /u; reading the key "u" of RealElements)",
+                                  "/u");
+}
+
+TEST(Constraints, WideDivisors)
+{
+    // an integer divisor divides the JSON integer exactly
+    for (const auto* json : {R"({"big":9007199254740993})", R"({"big":-9007199254740993})"})
+        expect_rejected<WideDivisors>(
+            json, R"(the number is not a multiple of 9007199254740992 at /big; reading the key "big" of WideDivisors)",
+            "/big");
+    expect_rejected<WideDivisors>(
+        R"({"ubig":9007199254740993})",
+        R"(the number is not a multiple of 9007199254740992 at /ubig; reading the key "ubig" of WideDivisors)",
+        "/ubig");
+    expect_accepted<WideDivisors>(R"({"big":18014398509481984,"ubig":18014398509481984})",
+                                  {18014398509481984.0, 18014398509481984U});
+    // a real divisor takes its shortest decimal, with any exponent
+    expect_accepted<WideDivisors>(R"({"tiny":3e-18,"odd":900719925474098.8})", {0, 0, 3e-18, 900719925474098.8});
+    expect_accepted<WideDivisors>(R"({"tiny":1e300})", {0, 0, 1e300});
+    expect_rejected<WideDivisors>(
+        R"({"tiny":3.5e-18})",
+        R"(the number is not a multiple of 1e-18 at /tiny; reading the key "tiny" of WideDivisors)", "/tiny");
+    expect_rejected<WideDivisors>(
+        R"({"odd":900719925474098.9})",
+        R"(the number is not a multiple of 900719925474098.8 at /odd; reading the key "odd" of WideDivisors)", "/odd");
+    // no integer of 64 bits but 0 is a multiple of 1e20
+    expect_accepted<WideDivisors>(R"({"huge":0})", {});
+    expect_rejected<WideDivisors>(
+        R"({"huge":9223372036854775807})",
+        R"(the number is not a multiple of 1e+20 at /huge; reading the key "huge" of WideDivisors)", "/huge");
+}
+
 TEST(Constraints, NaN)
 {
     // NaN is in no bounds
@@ -3564,10 +3911,14 @@ TEST(Constraints, StringLiterals)
 
 TEST(Constraints, ConstAndEnum)
 {
+    // a float with a listed value reads through a document, which keeps the JSON number to compare
     expect_accepted<Listed>(R"({"unit":"mm","version":2,"ratio":0.5,"flag":true,"big":18446744073709551615,"level":2})",
-                            {.unit = "mm", .ratio = 0.5F, .big = 18446744073709551615ULL, .level = 2});
-    // a float equals 0.1 when it holds 0.1F, whatever the JSON writes
-    expect_accepted<Listed>(R"({"ratio":0.100000001,"level":null})", {});
+                            {.unit = "mm", .ratio = 0.5F, .big = 18446744073709551615ULL, .level = 2}, false);
+    expect_accepted<Listed>(R"({"ratio":0.1,"level":null})", {}, false);
+    // the JSON number compares, and not the float that it rounds to
+    expect_rejected<Listed>(R"({"ratio":0.100000001})",
+                            R"(the value is not one of 0.1, 0.5 at /ratio; reading the key "ratio" of Listed)",
+                            "/ratio");
     const auto value = [](std::string_view key) { return std::format(R"(the value of the key "{}" of Listed )", key); };
     expect_rejected<Listed>(R"({"unit":"km"})",
                             R"(the value is not one of "mm", "cm", "m" at /unit; reading the key "unit" of Listed)",
@@ -3589,7 +3940,7 @@ TEST(Constraints, ConstAndEnum)
     // the constant is checked first; keywords that leave no value, as with enum_(2, 3), do not compile
     expect_rejected<Listed>(
         R"({"odd":3})", R"(the value is not equal to the constant 1 at /odd; reading the key "odd" of Listed)", "/odd");
-    expect_accepted<Listed>(R"({"odd":1})", {});
+    expect_accepted<Listed>(R"({"odd":1})", {}, false);
 }
 
 TEST(Constraints, ConstAndEnumNames)
@@ -3730,27 +4081,30 @@ TEST(Constraints, RawExtendedNumbers)
 
 TEST(Constraints, TextUnderStrict)
 {
-    // the policies of the read that first compares the constant do not change it
-    EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2}})", yyjson::reject_unknown_keys).at, (Spot{1, 2}));
-    EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2}})").at, (Spot{1, 2}));
-    expect_rejected<WideText>(
-        R"({"at":{"x":1,"y":3}})",
-        R"(the value is not equal to the constant {"x":1,"y":2,"z":3} at /at; reading the key "at" of WideText)",
-        "/at");
+    // the constant compares the JSON object, with the key that Spot does not have
+    EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2,"z":3}})").at, (Spot{1, 2}));
+    EXPECT_THROW((void)yyjson::read<WideText>(R"({"at":{"x":1,"y":2,"z":3}})", yyjson::reject_unknown_keys),
+                 yyjson::bad_cast);
+    for (const auto* json : {R"({"at":{"x":1,"y":2}})", R"({"at":{"x":1,"y":3,"z":3}})"})
+        expect_rejected<WideText>(
+            json,
+            R"(the value is not equal to the constant {"x":1,"y":2,"z":3} at /at; reading the key "at" of WideText)",
+            "/at");
 }
 
 TEST(Constraints, ConstAndEnumTexts)
 {
+    // the JSON values compare, which only a document keeps
     expect_accepted<ListedTexts>(R"({"at":{"y":1,"x":1},"pair":[1,2],"scale":[2.5,2.5],"mixed":[0]})",
-                                 {.at = {1, 1}, .scale = std::vector{2.5, 2.5}, .mixed = std::vector{0}});
-    // a double reads 1 as 1.0, and an integer is a number of the variant, which reads it into its alternative
-    expect_accepted<ListedTexts>(R"({"scale":[1.0],"mixed":0})", {.scale = std::vector{1.0}});
-    expect_accepted<ListedTexts>("{}", {});
+                                 {.at = {1, 1}, .scale = std::vector{2.5, 2.5}, .mixed = std::vector{0}}, false);
+    // the number 1.0 equals 1, and an integer is a number of the variant, which reads it into its alternative
+    expect_accepted<ListedTexts>(R"({"scale":[1.0],"mixed":0})", {.scale = std::vector{1.0}}, false);
+    expect_accepted<ListedTexts>("{}", {}, false);
     const auto value = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of ListedTexts )", key);
     };
     // the members of an object have no order
-    expect_accepted<ListedTexts>(R"({"order":{"b":1,"a":2}})", {.order = {{"b", 1}, {"a", 2}}});
+    expect_accepted<ListedTexts>(R"({"order":{"b":1,"a":2}})", {.order = {{"b", 1}, {"a", 2}}}, false);
     expect_rejected<ListedTexts>(
         R"({"order":{"a":2}})",
         R"(the value is not equal to the constant {"a":2,"b":1} at /order; reading the key "order" of ListedTexts)",
@@ -3930,8 +4284,9 @@ TEST(Constraints, Differential)
     same(texts, true, R"({"name":"ab","code":"QRS"})");
     same(texts, false, R"({"name":"abcd"})");
     same(texts, false, R"({"code":"Q"})");
+    // a float with a listed value leaves Listed to the document
     const auto listed = [](const char* json) { return expect_direct_read<Listed>(json); };
-    same(listed, true, R"({"unit":"cm","version":2})");
+    same(listed, false, R"({"unit":"cm","version":2})");
     same(listed, false, R"({"unit":"x"})");
     same(listed, false, R"({"ratio":0.2})");
     const auto progress = [](const char* json) { return expect_direct_read<Progress>(json); };
@@ -4048,10 +4403,11 @@ TEST(Constraints, ElementNullables)
     auto expected = ElementNullables();
     expected.ids = {nullptr, std::make_shared<int>(1)};
     expected.steps = {1, 2};
-    expect_accepted<ElementNullables>(R"({"list":null,"ids":[null,1],"steps":[1,2],"counts":null})", expected);
+    // the unique pointers compare their JSON values, which only a document keeps
+    expect_accepted<ElementNullables>(R"({"list":null,"ids":[null,1],"steps":[1,2],"counts":null})", expected, false);
     expected.list = std::make_shared<std::vector<int>>(std::vector{9});
     expected.counts = std::vector{1};
-    expect_accepted<ElementNullables>(R"({"list":[9],"ids":[null,1],"steps":[1,2],"counts":[1]})", expected);
+    expect_accepted<ElementNullables>(R"({"list":[9],"ids":[null,1],"steps":[1,2],"counts":[1]})", expected, false);
 
     const auto element = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of ElementNullables )", key);
@@ -4363,7 +4719,7 @@ TEST(Constraints, UniqueItems)
 {
     expect_accepted<Unique>(R"({"ints":[1,2],"strs":["a","b"],"reals":[0.5,1],"plain":[{"v":1},{"v":2}],)"
                             R"("opts":[null,1],"nested":[[1],[1,2]]})",
-                            {{1, 2}, {"a", "b"}, {0.5, 1.0}, {{1}, {2}}, {std::nullopt, 1}, {{1}, {1, 2}}});
+                            {{1, 2}, {"a", "b"}, {0.5, 1.0}, {{1}, {2}}, {std::nullopt, 1}, {{1}, {1, 2}}}, false);
 
     const auto equal = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of Unique is equal to an earlier element)", key);
@@ -4400,7 +4756,8 @@ TEST(Constraints, UniqueItems)
     }
     expect_accepted<Unique>(strs.substr(0, strs.size() - 1) + "]}",
                             {.strs = {"s19", "s18", "s17", "s16", "s15", "s14", "s13", "s12", "s11", "s10",
-                                      "s9",  "s8",  "s7",  "s6",  "s5",  "s4",  "s3",  "s2",  "s1",  "s0"}});
+                                      "s9",  "s8",  "s7",  "s6",  "s5",  "s4",  "s3",  "s2",  "s1",  "s0"}},
+                            false);
     expect_rejected<Unique>(
         strs + R"("s3","s19"]})",
         R"(the item is equal to an earlier item at /strs/20; reading an element of the value at the key "strs" of Unique)",
@@ -4466,11 +4823,13 @@ TEST(Constraints, UniqueItems)
 
 TEST(Constraints, UniqueReals)
 {
-    // the reals that JSON writes differently but a double holds as the same value are equal
+    // the JSON numbers compare, and not the doubles that they round to
+    expect_accepted<Unusual>(R"({"reals":[9007199254740993,9007199254740992]})",
+                             {.reals = {9007199254740992.0, 9007199254740992.0}}, false);
     expect_rejected<Unusual>(
-        R"({"reals":[9007199254740993,9007199254740992]})",
-        R"(the item is equal to an earlier item at /reals/1; reading an element of the value at the key "reals" of Unusual)",
-        "/reals/1");
+        R"({"reals":[9007199254740992,9007199254740993,9007199254740992]})",
+        R"(the item is equal to an earlier item at /reals/2; reading an element of the value at the key "reals" of Unusual)",
+        "/reals/2");
     // NaN is equal to nothing, also among more than 16 elements, which are sorted
     auto nans = std::string(R"({"reals":[)");
     for (auto i = 0; i < 20; ++i) nans += i % 4 == 0 ? "NaN," : std::format("{},", i);
@@ -4483,6 +4842,238 @@ TEST(Constraints, UniqueReals)
         R"(the item is equal to an earlier item at /reals/22; reading an element of the value at the key "reals" of Unusual)")
         << e.what();
     EXPECT_EQ(e.path(), "/reals/22");
+}
+
+TEST(Constraints, UniqueJsonEquality)
+{
+    using U = UniqueJsonEquality;
+    const auto at = [](std::string_view key, std::string_view path) {
+        return std::format(
+            R"(the item is equal to an earlier item at {}; reading an element of the value at the key "{}" of )"
+            "UniqueJsonEquality",
+            path, key);
+    };
+    // a struct element compares its JSON object, with the keys that the struct ignores
+    expect_accepted<U>(R"({"spots":[{"x":1,"y":0},{"x":1,"y":0,"z":2}]})", {.spots = {{1, 0}, {1, 0}}}, false);
+    expect_rejected<U>(R"({"spots":[{"x":1,"y":0},{"x":1.0,"y":0}]})", at("spots", "/spots/1"), "/spots/1");
+    auto spots = std::string(R"({"spots":[)");
+    for (auto i = 0; i < 19; ++i) spots += std::format(R"({{"x":{},"y":0}},)", i);
+    expect_rejected<U>(spots + R"({"x":18,"y":0}]})", at("spots", "/spots/19"), "/spots/19");
+    // a set compares its JSON array, with its order and its repeats
+    expect_accepted<U>(R"({"sets":[[1,2],[2,1]]})", {.sets = {{1, 2}, {1, 2}}}, false);
+    expect_accepted<U>(R"({"sets":[[1,1],[1]]})", {.sets = {{1}, {1}}}, false);
+    expect_rejected<U>(R"({"sets":[[1,2],[1,2]]})", at("sets", "/sets/1"), "/sets/1");
+    expect_rejected<U>(R"({"mixed":[1,1.0]})", at("mixed", "/mixed/1"), "/mixed/1");
+    // an object compares as a multiset of members, also with repeated keys
+    expect_accepted<U>(R"({"maps":[{"a":1,"a":2},{"a":1}]})", {.maps = {{{"a", 1}}, {{"a", 1}}}}, false);
+    expect_rejected<U>(R"({"maps":[{"a":1,"a":2},{"a":2,"a":1}]})", at("maps", "/maps/1"), "/maps/1");
+    // a range of pairs compares the JSON that it was read from, an object or an array
+    expect_accepted<U>(R"({"pairs":[[["a",1]],{"a":1}],"colors":["red",1]})",
+                       {.pairs = {{{"a", 1}}, {{"a", 1}}}, .colors = {UjColor::red, UjColor::green}}, false);
+    expect_accepted<U>(R"({"kv":[{"a":"b"},[["a","b"]]]})", {.kv = {{{"a", "b"}}, {{"a", "b"}}}}, false);
+    expect_rejected<U>(R"({"kv":[{"a":"b"},{"a":"b"}]})", at("kv", "/kv/1"), "/kv/1");
+    expect_accepted<U>(R"({"colors":["red",0]})", {.colors = {UjColor::red, UjColor::red}}, false);
+    expect_accepted<U>(R"({"twins":[{"x":1,"y":0},{"x":1,"y":0,"z":0}]})", {.twins = {Spot{1, 0}, Spot{1, 0}}}, false);
+    expect_rejected<U>(R"({"twins":[{"x":1,"y":0},{"y":0,"x":1}]})", at("twins", "/twins/1"), "/twins/1");
+    expect_rejected<U>(R"({"nested":[[{"x":0,"y":0},{"y":0,"x":0}]]})", at("nested", "/nested/0/1"), "/nested/0/1");
+    // the forms of read with a flag, with a policy and into a value take the document too
+    const auto json = std::string(R"({"spots":[{"x":1,"y":0},{"x":1,"y":0,"z":2}]})");
+    EXPECT_EQ(yyjson::read<U>(json, yyjson::ReadFlag::AllowComments).spots.size(), 2);
+    EXPECT_EQ(bad_cast_of([&] { (void)yyjson::read<U>(R"({"mixed":[1,1.0]})", yyjson::reject_unknown_keys); }).path(),
+              "/mixed/1");
+    auto into = U();
+    EXPECT_EQ(bad_cast_of([&] { yyjson::read_into(R"({"mixed":[1,1.0]})", into); }).path(), "/mixed/1");
+
+    // validate compares the JSON values that write gives
+    expect_invalid(U{.mixed = {1, 1.0}}, at("mixed", "/mixed/1"), "/mixed/1");
+    expect_invalid(U{.sets = {{1, 2}, {2, 1}}}, at("sets", "/sets/1"), "/sets/1");
+}
+
+TEST(Constraints, FastUnique)
+{
+    // the C++ values compare as their JSON values, so that the struct reads directly
+    static_assert(!yyjson::detail::compares_json_values<FastUnique>);
+    static_assert(yyjson::detail::compares_json_values<UniqueJsonEquality>);
+    expect_accepted<FastUnique>(
+        R"({"ints":[1,2],"strs":["a","b"],"rows":[[1],[1,2]],"two":[1,2],"opts":[null,1],"named":["a","b"],"si":[1,2]})",
+        {{1, 2}, {"a", "b"}, {{1}, {1, 2}}, {1, 2}, {std::nullopt, 1}, {FastColor::a, FastColor::b}, {1, 2}});
+    for (const auto [key, json] : {std::pair{"ints", "[1,1]"},
+                                   {"strs", R"(["a","a"])"},
+                                   {"rows", "[[1],[1]]"},
+                                   {"two", "[1,1]"},
+                                   {"opts", "[null,null]"},
+                                   {"named", R"(["a","a"])"},
+                                   {"si", "[1,1]"}})
+        expect_rejected<FastUnique>(
+            std::format(R"({{"{}":{}}})", key, json),
+            std::format(R"(the item is equal to an earlier item at /{}/1; reading an element of the value at the )"
+                        R"(key "{}" of FastUnique)",
+                        key, key),
+            std::format("/{}/1", key));
+}
+
+TEST(Constraints, UniqueReals2)
+{
+    constexpr auto big = 9007199254740992.0;
+    expect_accepted<UniqueReals2>(
+        R"({"v":[9007199254740992,9007199254740993],"s":[9007199254740992,9007199254740993]})",
+        {.v = {big, big}, .s = {big}}, false);
+    expect_rejected<UniqueReals2>(
+        R"({"v":[9007199254740992,9007199254740993,9007199254740992]})",
+        R"(the item is equal to an earlier item at /v/2; reading an element of the value at the key "v" of UniqueReals2)",
+        "/v/2");
+    expect_rejected<UniqueReals2>(
+        R"({"n":[9007199254740992,9007199254740993]})",
+        R"(the value satisfies the subschema of not at /n; reading the key "n" of UniqueReals2)", "/n");
+}
+
+TEST(Constraints, ListedJsonEquality)
+{
+    using L = ListedJsonEquality;
+    expect_rejected<L>(R"({"at":{"x":1,"y":0,"z":2}})",
+                       R"(the value is not equal to the constant {"x":1,"y":0} at /at; reading the key "at" of )"
+                       "ListedJsonEquality",
+                       "/at");
+    expect_accepted<L>(R"({"at":{"y":0.0,"x":1}})", {}, false);
+    expect_accepted<L>(R"({"not_at":{"x":1,"y":0,"z":2}})", {.not_at = {1, 0}}, false);
+    expect_rejected<L>(R"({"not_at":{"x":1,"y":0}})",
+                       R"(the value satisfies the subschema of not at /not_at; reading the key "not_at" of )"
+                       "ListedJsonEquality",
+                       "/not_at");
+    expect_rejected<L>(R"({"any_at":{"x":2,"y":0,"k":1}})",
+                       R"(the value satisfies none of the subschemas of anyOf at /any_at; reading the key "any_at" )"
+                       "of ListedJsonEquality",
+                       "/any_at");
+
+    // a constant that the type cannot read throws at its first use
+    try
+    {
+        (void)yyjson::read<BadLiteral>(R"({"at":{"x":1,"y":0}})");
+        ADD_FAILURE();
+    }
+    catch (const std::invalid_argument& e)
+    {
+        EXPECT_TRUE(std::string_view(e.what()).starts_with(
+            R"(the JSON text {"x":"a"} of yyjson::const_ or yyjson::enum_ cannot be read as Spot: )"))
+            << e.what();
+    }
+    // a constant that no alternative reads equals no value of the variant
+    for (const auto json : {R"({"v":1})", R"({"v":"a"})"})
+        expect_rejected<VariantLiteral>(
+            json, R"(the value is not equal to the constant {"x":1} at /v; reading the key "v" of VariantLiteral)",
+            "/v");
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<VariantLiteral>(R"({"v":{"x":1}})"); }).path(), "/v");
+
+    // the keyword of the values of a key map alone takes the document
+    static_assert(yyjson::detail::compares_json_values<KeyMapOnly>);
+    expect_accepted<KeyMapOnly>(R"({"k":[{"x":1,"y":0},{"x":1,"y":0,"z":1}]})", {{{"k", {{1, 0}, {1, 0}}}}}, false);
+    expect_rejected<KeyMapOnly>(R"({"k":[{"x":1,"y":0},{"x":1,"y":0}]})",
+                                "the array has duplicate items at /k; reading a member value of KeyMapOnly", "/k");
+}
+
+TEST(Constraints, ListedNumbersExact)
+{
+    using N = ListedNumbersExact;
+    expect_rejected<N>(R"({"d":9007199254740993})",
+                       R"(the value is not equal to the constant 9007199254740992 at /d; reading the key "d" of )"
+                       "ListedNumbersExact",
+                       "/d");
+    expect_accepted<N>(R"({"d":9007199254740992})", {}, false);
+    expect_rejected<N>(R"({"e":18446744073709551616})",
+                       R"(the value is not one of 0, 18446744073709551615 at /e; reading the key "e" of )"
+                       "ListedNumbersExact",
+                       "/e");
+    expect_rejected<N>(R"({"f":0.100000001})",
+                       R"(the value is not equal to the constant 0.1 at /f; reading the key "f" of ListedNumbersExact)",
+                       "/f");
+    // the combinator takes the JSON number too
+    expect_accepted<N>(R"({"n":9007199254740993})", {.n = 9007199254740992.0}, false);
+    expect_rejected<N>(R"({"n":9007199254740992})",
+                       R"(the value satisfies the subschema of not at /n; reading the key "n" of ListedNumbersExact)",
+                       "/n");
+    // the maximum checks the JSON number before the float rounds it
+    expect_rejected<N>(R"({"g":16777217})",
+                       R"(the number is greater than the maximum 16777216 at /g; reading the key "g" of )"
+                       "ListedNumbersExact",
+                       "/g");
+    expect_accepted<N>(R"({"g":16777216})", {}, false);
+    // validate compares the number that write gives
+    expect_invalid(
+        N{.e = 0x1p64},
+        R"(the value is not one of 0, 18446744073709551615 at /e; reading the key "e" of ListedNumbersExact)", "/e");
+    EXPECT_NO_THROW(yyjson::validate(N{}));
+}
+
+TEST(Constraints, MergedExact)
+{
+    // the merge compares the number of the patch, which the double cannot hold
+    auto t = MergedExact{};
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"d":9007199254740993})", t); });
+    EXPECT_EQ(e.path(), "/d");
+    EXPECT_EQ(t, MergedExact{});
+    yyjson::merge_into(R"({"d":9007199254740992})", t);
+    EXPECT_EQ(t, MergedExact{});
+}
+
+TEST(Constraints, ReviewedJsonEquality)
+{
+    constexpr auto big = 9007199254740992.0;
+    // the fields of a struct annotated with `yyjson::as_array` compare the JSON numbers
+    static_assert(yyjson::detail::compares_json_values<ArrayExact>);
+    expect_rejected<ArrayExact>(
+        "[9007199254740993]",
+        "the value is not equal to the constant 9007199254740992 at /0; reading an element of ArrayExact", "/0");
+    expect_accepted<ArrayExact>("[9007199254740992]", {big}, false);
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<ArrayExactRest>("[0,9007199254740993]"); }).path(), "/1");
+    expect_accepted<ArrayExactRest>("[0,9007199254740992]", {0, {big}}, false);
+
+    // a caster that reads a struct with such a keyword reads it from a document
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<ExactWrap>(R"({"d":9007199254740993})"); }).path(), "/d");
+    EXPECT_EQ(yyjson::read<ExactWrap>(R"({"d":9007199254740992})"), ExactWrap{{big}});
+
+    // the maximum of the double compares the JSON integer 9007199254740993, so only the integer matches
+    EXPECT_EQ(yyjson::read<RoundedOneOf>("9007199254740993").index(), 1);
+    EXPECT_EQ(yyjson::value(yyjson::read("9007199254740993")).cast<RoundedOneOf>().index(), 1);
+    // both alternatives match: the set reads the two distinct JSON numbers as one double
+    const auto ambiguous = []<typename V>(std::type_identity<V>, const std::string& json) {
+        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<V>(json); }),
+                              bad_cast_of([&] { (void)yyjson::value(yyjson::read(json)).cast<V>(); })})
+            EXPECT_NE(std::string_view(e.what()).find("the alternatives 0 and 1 match"), std::string_view::npos)
+                << e.what();
+    };
+    ambiguous(std::type_identity<RealSetOneOf>(), "[9007199254740992,9007199254740993]");
+    // the set rejects a repeated JSON number
+    EXPECT_EQ(yyjson::read<RealSetOneOf>("[1,1.0]").index(), 1);
+    EXPECT_EQ(yyjson::value(yyjson::read("[1,1.0]")).cast<RealSetOneOf>().index(), 1);
+
+    // the merge reads the member as the variant, which cannot read {} under the policies of the subschema
+    expect_accepted<MergedVariantLiteral>(R"({"p":{}})", {Spot{}}, false);
+    auto merged = MergedVariantLiteral{};
+    yyjson::merge_into(R"({"p":{}})", merged);
+    EXPECT_EQ(merged, MergedVariantLiteral{Spot{}});
+
+    // a set of keys of a caster compares the JSON elements, whether the set grows or not
+    ambiguous(std::type_identity<OneKeyOneOf>(), R"(["a","b"])");
+    EXPECT_EQ(yyjson::read<KindKeyOneOf>("[1,1.0]").index(), 1);
+    EXPECT_EQ(yyjson::value(yyjson::read("[1,1.0]")).cast<KindKeyOneOf>().index(), 1);
+    EXPECT_EQ(yyjson::read<KindKeyOneOf>("[1,1.5,2]").index(), 0);
+
+    // the merge into a member keeps the types of its fields
+    auto nested = NestedVariantLiteral{};
+    yyjson::merge_into(R"({"c":{"p":{}}})", nested);
+    EXPECT_EQ(nested, NestedVariantLiteral{{Spot{}}});
+    nested = NestedVariantLiteral{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::merge_into(R"({"c":{"p":{"x":1,"y":0}}})", nested); }).path(), "");
+    EXPECT_EQ(nested, NestedVariantLiteral{});
+
+    // pairs of integers compare as arrays and read directly
+    static_assert(!yyjson::detail::compares_json_values<UniqueIntPairs>);
+    expect_accepted<UniqueIntPairs>(R"({"v":[[1,2],[2,1]]})", {{{1, 2}, {2, 1}}});
+    expect_rejected<UniqueIntPairs>(
+        R"({"v":[[1,2],[1.0,2]]})",
+        R"(the item is equal to an earlier item at /v/1; reading an element of the value at the key "v" of )"
+        "UniqueIntPairs",
+        "/v/1");
 }
 
 TEST(Constraints, PrefixItems)
@@ -4784,7 +5375,8 @@ TEST(Constraints, UnusualElements)
                               .kv = {{"a", 1}},
                               .dq = {0, -1, 9},
                               .ls = {0, 1, 9},
-                              .pm = {{1, 2}, {1, 3}}});
+                              .pm = {{1, 2}, {1, 3}}},
+                             false);
     // the elements that a user caster reads are converted again to find the equal one
     expect_rejected<Unusual>(
         R"({"pts":[[0,1],[0,1]]})",
@@ -4845,8 +5437,9 @@ TEST(Constraints, ElementsDifferential)
     for (const auto* json : {R"({"scores":[-1]})", R"({"limits":{"a":101}})", R"({"by_id":[[1,6]]})",
                              R"({"nested":[[]]})", R"({"groups":{"g":[]}})"})
         same(elements, false, json);
+    // the unique reals leave Unique to the document
     const auto unique = [](const char* json) { return expect_direct_read<Unique>(json); };
-    same(unique, true, R"({"ints":[1,2],"reals":[0.5]})");
+    same(unique, false, R"({"ints":[1,2],"reals":[0.5]})");
     same(unique, false, R"({"ints":[1,1]})");
     same(unique, false, R"({"reals":[0,-0.0]})");
     const auto keyed = [](const char* json) { return expect_direct_read<Keyed>(json); };
@@ -5198,14 +5791,16 @@ namespace
             }
         }
 #if YYJSON_VERSION_HEX >= 0x000C00
-        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.text.empty()) << json;
-        EXPECT_TRUE(expect_direct_read<T>(json) || !message.text.empty()) << json;
-        EXPECT_TRUE(expect_read_into(T(), json) || !message.text.empty()) << json;
+        // a type whose keywords compare JSON values reads through a document
+        constexpr bool direct = !yyjson::detail::compares_json_values<T>;
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), direct && message.text.empty()) << json;
+        EXPECT_TRUE(expect_direct_read<T>(json) == direct || !message.text.empty()) << json;
+        EXPECT_TRUE(expect_read_into(T(), json) == direct || !message.text.empty()) << json;
         auto merged_directly = false;
         static_cast<void>(expect_merge_into(T(), json, &merged_directly));
         if (merged)
         {
-            EXPECT_EQ(merged_directly, message.text.empty()) << json;
+            EXPECT_EQ(merged_directly, direct && message.text.empty()) << json;
         }
 #endif
     }
@@ -6104,6 +6699,8 @@ TEST(Constraints, MultiKindValues)
           R"("list":[1,2],"w":5)", R"("list":true)", R"("elements":[1,"a",null,{},[]])", R"("c":[1])", R"("c":{"k":1})",
           R"("c":false)", R"("u":2.5)"})
         expect_conditions<MultiKind>(json(members), "");
+    // the listed values on the variants compare JSON values
+    static_assert(yyjson::detail::compares_json_values<MultiKind>);
     expect_conditions<MultiKind>(
         json(R"("v":2)"), R"(the value is not one of 1, "x", null at /v; reading the key "v" of MultiKind)", "/v");
     expect_conditions<MultiKind>(
@@ -7624,7 +8221,7 @@ TEST(Constraints, CasterJson)
          CasterDom({3}),
          CasterName("o"),
          {}},
-        true);
+        false);
     const auto value = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of CasterFields )", key);
     };
@@ -7692,7 +8289,7 @@ TEST(Constraints, CasterJsonSameKind)
     const auto check = []<typename T>(std::type_identity<T>) {
         const auto message = std::format(R"(the value is not one of ["a","b"] at /h; reading the key "h" of {})",
                                          yyjson::detail::type_name<T>());
-        expect_accepted<T>(R"({"h":["a","b"]})", {CasterSorted({"a", "b"})});
+        expect_accepted<T>(R"({"h":["a","b"]})", {CasterSorted({"a", "b"})}, false);
         expect_rejected<T>(R"({"h":["b","a"]})", message, "/h");
         expect_rejected<T>(R"({"h":["c"]})", message, "/h");
         EXPECT_TRUE(expect_merge_rule(T(), R"({"h":["b","a"]})").starts_with("bad cast"));
@@ -7707,8 +8304,8 @@ TEST(Constraints, CasterJsonText)
     // the strings of the JSON value compare after the escapes are read
     using T = CasterSortedText;
     const auto good = T{CasterSorted({"a", "bc"}), CasterSorted({"a\"b", "\u00e9\n"})};
-    expect_accepted<T>(R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9\n"]})", {good});
-    expect_accepted<T>(R"({"plain":["\u0061","b\u0063"],"quoted":["\u0061\"b","\u00e9\u000a"]})", {good});
+    expect_accepted<T>(R"({"plain":["a","bc"],"quoted":["a\"b","\u00e9\n"]})", {good}, false);
+    expect_accepted<T>(R"({"plain":["\u0061","b\u0063"],"quoted":["\u0061\"b","\u00e9\u000a"]})", {good}, false);
     expect_rejected<T>(R"({"plain":["a","b"],"quoted":["a\"b","\u00e9\n"]})",
                        R"(the value is not one of ["a","bc"] at /plain; reading the key "plain" of CasterSortedText)",
                        "/plain");
@@ -7755,9 +8352,9 @@ TEST(Constraints, CasterJsonViews)
     auto bag = CasterBag();
     bag.set("k", 1);
     expect_accepted<CasterViews>(R"({"tags":["a","b"],"mixed":"ab","first":[7,8],"bag":{"k":1}})",
-                                 {T({"a", "b"}), T({"ab"}), CasterFirst(7), bag, {}, {}, {}});
+                                 {T({"a", "b"}), T({"ab"}), CasterFirst(7), bag, {}, {}, {}}, false);
     expect_accepted<CasterViews>(R"({"mixed":["abc"],"opt":["a"],"xy":{"x":1,"y":2},"xys":[{"x":3,"y":4}]})",
-                                 {{}, T({"abc"}), {}, {}, T({"a"}), {1, 2}, {{3, 4}}});
+                                 {{}, T({"abc"}), {}, {}, T({"a"}), {1, 2}, {{3, 4}}}, false);
     const auto element = [](std::string_view key) {
         return std::format(R"(an element of the value of the key "{}" of CasterViews )", key);
     };
@@ -7856,7 +8453,8 @@ TEST(Constraints, CasterJsonNull)
     for (const auto json : {R"({})", R"({"opt":null,"text":null,"one":null})", R"({"opt":["a"]})"})
     {
         EXPECT_NO_THROW((void)yyjson::read<CasterNulls>(json)) << json;
-        EXPECT_TRUE(expect_direct_read<CasterNulls>(json)) << json;
+        // the listed JSON texts leave CasterNulls to the document, which gives the same value
+        static_cast<void>(expect_direct_read<CasterNulls>(json));
     }
     EXPECT_FALSE(yyjson::read<CasterNulls>(R"({})").opt.has_value());
     EXPECT_EQ(yyjson::read<CasterNulls>(R"({"opt":null})").opt, std::optional(T()));
@@ -8210,7 +8808,8 @@ TEST(Constraints, PatternAnnotations)
 
 TEST(Constraints, CasterAnnotations)
 {
-    expect_accepted<CasterAnnotated>(R"({"list":[1,2],"name":"abc"})", {CasterList({1, 2}), CasterName("abc")});
+    // `yyjson::unique_items` on a caster reads the type through the document
+    expect_accepted<CasterAnnotated>(R"({"list":[1,2],"name":"abc"})", {CasterList({1, 2}), CasterName("abc")}, false);
     expect_rejected<CasterAnnotated>(
         R"({"list":[1,1]})",
         R"(the item is equal to an earlier item at /list/1; reading an element of the value at the key "list" of CasterAnnotated)",
@@ -8347,7 +8946,8 @@ TEST(Constraints, JsonKindScalars)
 
 TEST(Constraints, JsonKindArrays)
 {
-    expect_accepted<KjArrays>(R"({"a":[1,2,3],"t":[1,2,"x"],"s":[1,2]})", {{1, 2, 3}, {1, 2.0, "x"}, {1, 2}});
+    // the unique elements of a tuple of several types compare their JSON values
+    expect_accepted<KjArrays>(R"({"a":[1,2,3],"t":[1,2,"x"],"s":[1,2]})", {{1, 2, 3}, {1, 2.0, "x"}, {1, 2}}, false);
     expect_rejected<KjArrays>(
         R"({"a":[1,2,101]})",
         R"(the number is greater than the maximum 100 at /a/2; reading an element of the value at the key "a" of KjArrays)",
@@ -8732,7 +9332,8 @@ struct CtHolder
 
 TEST(Constraints, CasterTypeKeywords)
 {
-    expect_accepted<CtList>("[1,2]", {{1, 2}});
+    // the unique items of the JSON of a caster leave the type to the document
+    expect_accepted<CtList>("[1,2]", {{1, 2}}, false);
     expect_rejected<CtList>("[1,5]", "the value satisfies the subschema of not; reading CtList", "");
     expect_rejected<CtList>("[4]", "the array has an item that does not satisfy prefixItems; reading CtList", "");
     expect_rejected<CtList>("[1,1]", "the array has duplicate items; reading CtList", "");

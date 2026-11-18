@@ -2088,7 +2088,7 @@ inline constexpr satisfies_t satisfies;
 
 They are settings of [`yyjson::field`](#yyjsonfield), and of the subschemas of the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). With the reflection of C++26, they can also be written on the member, as `[[=yyjson::minimum(0)]] int age;`.
 
-*   `yyjson::const_` and `yyjson::enum_` take strings, numbers, `bool`, and `nullptr` for `null`. An enumeration written by name takes the JSON names of its enumerators. Another value, such as an object or an array, is a `yyjson::json_text`. The compiler checks the text. `yyjson::enum_` takes JSON texts only or C++ values only.
+*   `yyjson::const_` and `yyjson::enum_` take strings, numbers, `bool`, and `nullptr` for `null`. An enumeration written by name takes the JSON names of its enumerators. Another value, such as an object or an array, is a `yyjson::json_text`. The compiler checks the text. `yyjson::enum_` takes JSON texts only or C++ values only. The keywords compare JSON values, as the [`operator==`](#comparison) of the DOM does, also on a field of a C++ type. A raw number is the exception.
 *   The bounds and `yyjson::multiple_of` take any arithmetic value other than `bool`.
 *   `yyjson::format` checks nothing. `yyjson::format_assertion` checks the [formats](validation.md#formats). `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher-yyjsonformat_checker).
 *   `f` of `yyjson::satisfies<f>` takes the value of the field, and returns `false` to reject it.
@@ -2141,7 +2141,7 @@ inline constexpr unique_items_t unique_items{};
 | `yyjson::prefix_items(p...)` | a tuple, or a range that keeps the order of the array | the element at each position. Each `p` is a braced list of settings, `{}` or one setting |
 | `yyjson::contains(s...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | a range written as a JSON array | the number of elements that satisfy `s`: 1 or more by default |
 | `yyjson::property_names(s...)` | a map written as a JSON object, the field of [`yyjson::extra_keys`](#yyjsonextra_keys), a field of [`yyjson::pattern_properties`](#yyjsonpattern_properties), or a struct | each key, by the constraints of a string and the combinators |
-| `yyjson::unique_items` | a range whose elements can be equal | no two elements are written as the same JSON value |
+| `yyjson::unique_items` | a range whose elements can be equal | no two elements are equal as JSON values |
 
 The settings `s...` and `p` are the [constraints](#constraints), the settings of this table and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). `yyjson::min_items` and `yyjson::max_items` constrain the number of elements, and `yyjson::min_properties` and `yyjson::max_properties` the number of members of a map. `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains` is a compile error. `yyjson::unique_items` on a set or a map checks the JSON array that the read reads. A struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) takes `yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items` and the settings of `yyjson::contains` as settings of its own. See [Constraints of elements](validation.md#constraints-of-elements).
 
