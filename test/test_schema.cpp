@@ -4028,3 +4028,56 @@ TEST(Schema, ExampleCasterExceptions)
 }
 
 // NOLINTEND
+
+#if FIELD_RFL_ANNOTATIONS
+namespace schema_test::member_annotations
+{
+    struct Inner
+    {
+        int a = 0;
+        std::optional<int> b;
+    };
+    // the metadata and the keywords of an object as the annotations of a member, and in `yyjson::field`
+    struct Annotated
+    {
+        [[
+            = yyjson::title("T"), = yyjson::description("D"), = yyjson::deprecated, = yyjson::examples(R"({"a":1})")
+        ]] Inner described;
+        [[
+            = yyjson::schema_extend(R"({"$comment":"c"})"), = yyjson::property("a", yyjson::minimum(1)),
+            = yyjson::additional_properties(false)
+        ]] Inner closed;
+        [[ = yyjson::dependent_required("a", {"b"}), = yyjson::read_only ]] Inner dep;
+        [[= yyjson::schema(R"({"type":"integer"})")]] int declared = 0;
+        [[= yyjson::adjacent_tag("kind", {"i", "s"})]] std::variant<int, std::string> data;
+    };
+    struct Field
+    {
+        Inner described;
+        Inner closed;
+        Inner dep;
+        int declared = 0;
+        std::variant<int, std::string> data;
+    };
+}  // namespace schema_test::member_annotations
+template <>
+inline constexpr auto yyjson::annotations<schema_test::member_annotations::Field> =
+    yyjson::annotate(yyjson::field("described", yyjson::title("T"), yyjson::description("D"), yyjson::deprecated,
+                                   yyjson::examples(R"({"a":1})")),
+                     yyjson::field("closed", yyjson::schema_extend(R"({"$comment":"c"})"),
+                                   yyjson::property("a", yyjson::minimum(1)), yyjson::additional_properties(false)),
+                     yyjson::field("dep", yyjson::dependent_required("a", {"b"}), yyjson::read_only),
+                     yyjson::field("declared", yyjson::schema(R"({"type":"integer"})")),
+                     yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})));
+
+TEST(Schema, MemberAnnotationsAsField)
+{
+    namespace ma = schema_test::member_annotations;
+    for (const bool writing : {false, true})
+        EXPECT_EQ(definition<ma::Annotated>(writing), definition<ma::Field>(writing)) << writing;
+    EXPECT_EQ(definition<ma::Annotated>(false)["properties"]["described"]["title"], json("T"));
+    check<ma::Annotated>({R"({"closed":{"a":1},"dep":{"a":0,"b":1},"kind":"i","data":1})", R"({"closed":{"a":0}})",
+                          R"({"closed":{"a":1,"b":1}})", R"({"dep":{"a":0}})",
+                          R"({"kind":"s","data":"x","declared":2})"});
+}
+#endif

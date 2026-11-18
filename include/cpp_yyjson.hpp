@@ -4956,7 +4956,6 @@ namespace yyjson
             emit_defaults_twice,
             pattern_twice,
             unknown_property_key,
-            member_property,
             skipped_with_setting,
             skip_visitable,
             annotated_visitable,
@@ -5503,31 +5502,18 @@ namespace yyjson
             for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
             {
                 const auto type = std::meta::remove_cvref(std::meta::type_of(a));
-                if (!std::meta::has_template_arguments(type) || type == ^^yyjson::items<bool> ||
-                    type == ^^yyjson::additional_properties<bool>)
-                    continue;
+                if (!std::meta::has_template_arguments(type) || type == ^^yyjson::items<bool>) continue;
                 const auto t = std::meta::template_of(type);
                 if (t == ^^yyjson::enum_ || t == ^^yyjson::items || t == ^^yyjson::additional_properties ||
                     t == ^^yyjson::contains || t == ^^yyjson::property_names || t == ^^yyjson::prefix_items_t ||
                     t == ^^yyjson::matches_t || t == ^^yyjson::not_ || t == ^^yyjson::if_then_else_t ||
                     t == ^^yyjson::all_of_t || t == ^^yyjson::any_of_t || t == ^^yyjson::one_of_t ||
-                    t == ^^yyjson::detail::required_keys)
+                    t == ^^yyjson::detail::required_keys || t == ^^yyjson::detail::member_schema ||
+                    t == ^^yyjson::dependent_required_t)
                     result.push_back(a);
             }
             return result;
         }
-        // Whether the member I of T is annotated with `yyjson::property`, which annotates a struct.
-        template <typename T, std::size_t I>
-        inline constexpr bool property_annotated = [] {
-            for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
-            {
-                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
-                if (std::meta::has_template_arguments(type) &&
-                    std::meta::template_of(type) == ^^yyjson::detail::member_schema)
-                    return true;
-            }
-            return false;
-        }();
         template <typename T, std::size_t I>
         inline constexpr std::span<const std::meta::info> template_annotations =
             std::define_static_array(template_annotations_of<T, I>());
@@ -5586,6 +5572,140 @@ namespace yyjson
         inline constexpr bool constraint_annotated =
             value_keyword_annotated<T, I> || !template_annotations<T, I>.empty();
 
+        // The kind of the metadata `type` in the order of `metadata_once`, or 8 if it is not metadata.
+        consteval std::size_t metadata_kind(std::meta::info type)
+        {
+            const auto t = std::meta::has_template_arguments(type) ? std::meta::template_of(type) : type;
+            if (t == ^^yyjson::title) return 0;
+            if (t == ^^yyjson::description) return 1;
+            if (t == ^^yyjson::deprecated_t) return 2;
+            if (t == ^^yyjson::read_only_t) return 3;
+            if (t == ^^yyjson::write_only_t) return 4;
+            if (t == ^^yyjson::examples_t) return 5;
+            if (t == ^^yyjson::schema) return 6;
+            if (t == ^^yyjson::schema_extend) return 7;
+            return 8;
+        }
+
+        // The annotations of the member I of T that are metadata, which cpp_yyjson_schema.hpp reads.
+        template <typename T, std::size_t I>
+        consteval std::vector<std::meta::info> member_metadata_of()
+        {
+            auto result = std::vector<std::meta::info>{};
+            for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
+                if (metadata_kind(std::meta::remove_cvref(std::meta::type_of(a))) != 8) result.push_back(a);
+            return result;
+        }
+        template <typename T, std::size_t I>
+        inline constexpr std::span<const std::meta::info> member_metadata =
+            std::define_static_array(member_metadata_of<T, I>());
+        // In static storage, as `yyjson::schema` in the metadata is kept by its address.
+        template <typename T, std::size_t I, std::size_t K>
+        inline constexpr auto member_metadata_value =
+            std::meta::extract<typename[:std::meta::remove_cvref(std::meta::type_of(member_metadata<T, I>[K])):]>(
+                member_metadata<T, I>[K]);
+
+        // The name of a setting of a type, or `yyjson::field`, that annotates the member I of T, or empty.
+        template <typename T, std::size_t I>
+        consteval std::string_view member_type_setting_of()
+        {
+            for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (type == ^^transparent_t) return "yyjson::transparent";
+                if (type == ^^as_array_t) return "yyjson::as_array";
+                if (type == ^^yyjson::items<bool>) return "yyjson::items(false)";
+                if (type == ^^reject_unknown_keys_t) return "yyjson::reject_unknown_keys";
+                if (type == ^^reject_missing_keys_t) return "yyjson::reject_missing_keys";
+                if (type == ^^reject_null_as_missing_t) return "yyjson::reject_null_as_missing";
+                if (type == ^^reject_duplicates_t) return "yyjson::reject_duplicates";
+                if (type == ^^strict_t) return "yyjson::strict";
+                if (type == ^^yyjson::schema_name) return "yyjson::schema_name";
+                if (type == ^^yyjson::enum_format) return "yyjson::enum_format";
+                if (type == ^^variant_tag_spec<variant_tagging::internal>) return "yyjson::internal_tag";
+                if (std::meta::has_template_arguments(type) && std::meta::template_of(type) == ^^field_annotation)
+                    return "yyjson::field";
+            }
+            return {};
+        }
+        template <typename T, std::size_t I>
+        inline constexpr bool member_settings_annotated =
+            !member_metadata<T, I>.empty() || !member_type_setting_of<T, I>().empty();
+
+        // The name of a setting of a member that annotates the class T, or empty.
+        template <typename T>
+        consteval std::string_view type_member_setting_of()
+        {
+            for (const auto a : std::meta::annotations_of(std::meta::dealias(^^T)))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (type == ^^rename) return "yyjson::rename";
+                if (type == ^^skip_t) return "yyjson::skip";
+                if (type == ^^required_t) return "yyjson::required";
+                if (type == ^^default_from_t) return "yyjson::default_from";
+                if (type == ^^emit_defaults_t) return "yyjson::emit_defaults";
+                if (type == ^^extra_items_t) return "yyjson::extra_items";
+                if (type == ^^extra_keys_t) return "yyjson::extra_keys";
+                if (type == ^^pattern_properties) return "yyjson::pattern_properties";
+                if (type == ^^variant_tag_spec<variant_tagging::adjacent>) return "yyjson::adjacent_tag";
+            }
+            return {};
+        }
+
+        // The first error of the annotations of the member I of T that the keys of the fields do not tell.  Its
+        // metadata join those of `yyjson::field` for the member, as `check_field_settings` checks them.
+        template <typename T, std::size_t I>
+        consteval std::string_view member_annotation_error_of()
+        {
+            const auto name = member_type_setting_of<T, I>();
+            if (name == "yyjson::field")
+                return "yyjson::field names a member only in yyjson::annotate: annotate the member with its settings "
+                       "instead";
+            if (!name.empty())
+                return std::define_static_string(std::string(name) +
+                                                 " is not a member setting; annotate the member's type instead");
+            auto own = std::array<std::size_t, 9>{};
+            auto given = std::array<std::size_t, 9>{};
+            for (const auto a : member_metadata<T, I>)
+                ++own[metadata_kind(std::meta::remove_cvref(std::meta::type_of(a)))];
+            if constexpr (requires { annotations<T>.metadata; })
+                for_each_annotation(
+                    [&]<typename E>(const E& entry) {
+                        if constexpr (is_field_annotation<E>::value)
+                            if (entry.member() == std::string_view(field_reflection::field_name<T, I>))
+                                for_each_annotation([&]<typename A>(const A&) { ++given[metadata_kind(^^A)]; },
+                                                    entry.values);
+                    },
+                    annotations<T>.metadata);
+            for (std::size_t k = 0; k < 8; ++k)
+                if (own[k] > 1 || (own[k] != 0 && given[k] != 0))
+                    return "a member takes each of its metadata once, in its annotations and yyjson::field together";
+            if (own[6] + own[7] != 0 && own[6] + given[6] != 0 && own[7] + given[7] != 0)
+                return "yyjson::schema replaces the schema that yyjson::schema_extend extends: give one of them";
+            return {};
+        }
+
+        // The first error of the annotations of the reflected struct T and of its members that the keys of the
+        // fields do not tell, or empty.
+        template <typename T>
+        consteval std::string_view type_annotation_error_of()
+        {
+            if (const auto name = type_member_setting_of<T>(); !name.empty())
+                return std::define_static_string(std::string(name) +
+                                                 " is not a type setting; annotate a member of the struct instead");
+            return {};
+        }
+        template <typename T>
+        consteval std::string_view annotation_error_of()
+        {
+            if (const auto error = type_annotation_error_of<T>(); !error.empty()) return error;
+            auto error = std::string_view();
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                ((error = error.empty() ? member_annotation_error_of<T, Is>() : error), ...);
+            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            return error;
+        }
+
         // Whether a field of T has an annotation of this library, which gives it a key, skips it, tags it or
         // constrains its value.
         template <typename T>
@@ -5602,12 +5722,31 @@ namespace yyjson
                              !field_reflection::field_annotations<T, Is, extra_items_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, extra_keys_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, pattern_properties>.empty() ||
-                             property_annotated<T, Is> || constraint_annotated<T, Is>) ||
+                             constraint_annotated<T, Is> || member_settings_annotated<T, Is>) ||
                             ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             else
                 return false;
         }();
+
+        // Whether a member of the class `type` or of its bases has an annotation whose type this library declares.
+        // It does not need the reflection of the fields, which a `VISITABLE_STRUCT` that is not an aggregate lacks.
+        consteval bool library_annotated_members(std::meta::info type)
+        {
+            const auto context = std::meta::access_context::unchecked();
+            for (const auto base : std::meta::bases_of(type, context))
+                if (library_annotated_members(std::meta::type_of(base))) return true;
+            for (const auto member : std::meta::nonstatic_data_members_of(type, context))
+                for (const auto a : std::meta::annotations_of(member))
+                {
+                    auto t = std::meta::remove_cvref(std::meta::type_of(a));
+                    if (!std::meta::is_class_type(t) && !std::meta::is_enum_type(t)) continue;
+                    if (std::meta::has_template_arguments(t)) t = std::meta::template_of(t);
+                    for (auto p = std::meta::parent_of(t); p != ^^::; p = std::meta::parent_of(p))
+                        if (p == ^^yyjson) return true;
+                }
+            return false;
+        }
 
         // Applies the annotations of the fields of a reflected struct.
         template <typename T, std::size_t N>
@@ -5620,9 +5759,11 @@ namespace yyjson
                             builder.rename_field(Is, r.key());
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, skip_t>.size(); ++k)
                             builder.skip_field(Is);
-                        for (std::size_t k = 0;
-                             k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
+                        for (const auto& a : field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>)
+                        {
                             builder.tag_field(Is);
+                            builder.adjacent_keys[Is] = a.key();
+                        }
                         for (const auto& a : field_reflection::field_annotations<T, Is, required_t>)
                             builder.set_presence(Is, a);
                         for (const auto& a : field_reflection::field_annotations<T, Is, default_t>)
@@ -5640,7 +5781,6 @@ namespace yyjson
                         for (const pattern_properties& p :
                              field_reflection::field_annotations<T, Is, pattern_properties>)
                             builder.set_pattern(Is, p.regex());
-                        if constexpr (property_annotated<T, Is>) builder.fail(field_key_error::member_property);
                         if constexpr (constraint_annotated<T, Is>)
                             builder.constrain_field(
                                 Is, !value_keyword_annotated<T, Is> && items_annotated_only<T, Is>(),
@@ -5927,7 +6067,8 @@ namespace yyjson
                                !field_reflection::type_annotations<T, items<bool>>.empty() ||
                                !field_reflection::type_annotations<T, additional_properties<bool>>.empty() ||
                                struct_property_counts<T> || struct_property_names<T> ||
-                               type_array_keywords_annotated<T> || !type_keys<T>.empty())
+                               type_array_keywords_annotated<T> || !type_keys<T>.empty() ||
+                               !type_member_setting_of<T>().empty())
                 return true;
             else if constexpr (!visitable<T>)
                 return annotated_members<T>;
@@ -5944,6 +6085,16 @@ namespace yyjson
             }(std::make_index_sequence<field_reflection::field_count<T>>{});
             static constexpr auto keys = members;
         };
+
+#if FIELD_RFL_ANNOTATIONS
+        template <typename T, typename Source>
+        inline constexpr std::string_view annotation_error = [] {
+            if constexpr (std::same_as<Source, reflected_field_names<T>>)
+                return annotation_error_of<T>();
+            else
+                return type_annotation_error_of<T>();
+        }();
+#endif
 
         // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
         // keys that `VISITABLE_STRUCT` gives them, which differ from the member names only for a pair
@@ -5965,7 +6116,7 @@ namespace yyjson
 #if FIELD_RFL_ANNOTATIONS
                 if constexpr (reflected)
                     annotate_reflected_fields<T>(builder);
-                else if constexpr (annotated_members<T>)
+                else if constexpr (library_annotated_members(^^T))
                     builder.fail(field_key_error::annotated_visitable);
                 for (std::size_t k = 0; k < field_reflection::type_annotations<T, transparent_t>.size(); ++k)
                     builder.make_transparent();
@@ -6011,6 +6162,9 @@ namespace yyjson
                     return user_caster_type<T>;
             }
             static constexpr auto table = caster_json() ? make_table(true) : plain_table;
+#if FIELD_RFL_ANNOTATIONS
+            static_assert(annotation_error<T, Source>.empty(), annotation_error<T, Source>);
+#endif
             static_assert(table.error != field_key_error::unknown_member,
                           "yyjson::field names a member that does not exist");
             static_assert(table.error != field_key_error::renamed_twice,
@@ -6027,10 +6181,6 @@ namespace yyjson
                           "a field is given yyjson::emit_defaults twice");
             static_assert(table.error != field_key_error::pattern_twice,
                           "a field is given yyjson::pattern_properties twice");
-            static_assert(table.error != field_key_error::member_property,
-                          "[[=yyjson::property(\"key\", ...)]] annotates a struct, not a member: the annotations of "
-                          "a member constrain its value, and yyjson::field(\"member\", yyjson::property(...)) the "
-                          "keys of the struct of its value");
             static_assert(table.error != field_key_error::unknown_property_key,
                           "yyjson::property and yyjson::required(\"key\", ...) on a struct, and in the subschemas of "
                           "its yyjson::all_of, name a key that the struct writes: the key of a field or of "

@@ -8054,6 +8054,87 @@ TEST(Constraints, Annotations)
                                        "/list");
 }
 
+// The settings of a member as its annotations, and the same settings in `yyjson::field`
+struct ParityInner
+{
+    int a = 0;
+    std::optional<int> b;
+    bool operator==(const ParityInner&) const = default;
+};
+struct[[= yyjson::required("kind")]] AnnotatedParity
+{
+    [[= yyjson::property("a", yyjson::minimum(1))]] ParityInner low;
+    [[ = yyjson::property("a"), = yyjson::additional_properties(false) ]] ParityInner closed;
+    [[= yyjson::dependent_required("a", {"b"})]] ParityInner dep;
+    [[= yyjson::adjacent_tag("kind", {"i", "s"})]] std::variant<int, std::string> data;
+};
+struct FieldParity
+{
+    ParityInner low;
+    ParityInner closed;
+    ParityInner dep;
+    std::variant<int, std::string> data;
+};
+template <>
+inline constexpr auto yyjson::annotations<FieldParity> =
+    yyjson::annotate(yyjson::field("low", yyjson::property("a", yyjson::minimum(1))),
+                     yyjson::field("closed", yyjson::property("a"), yyjson::additional_properties(false)),
+                     yyjson::field("dep", yyjson::dependent_required("a", {"b"})),
+                     yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})), yyjson::required("kind"));
+
+namespace
+{
+    // What the read of `json` gives: the JSON that the value writes, or the error with its path
+    template <typename T>
+    std::string parity_outcome(std::string_view json)
+    {
+        try
+        {
+            auto t = yyjson::read<T>(json);
+            try
+            {
+                yyjson::validate(t);
+            }
+            catch (const yyjson::bad_cast& e)
+            {
+                return "invalid at " + std::string(e.path());
+            }
+            return std::string(yyjson::write(t));
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            auto message = message_of(e);
+            if (const auto i = message.find("AnnotatedParity"); i != std::string::npos)
+                message.replace(i, std::string_view("AnnotatedParity").size(), "FieldParity");
+            return message + " at " + std::string(e.path());
+        }
+    }
+}  // namespace
+
+TEST(Constraints, MemberAnnotationsAsField)
+{
+    for (const std::string_view json :
+         {R"({"low":{"a":1},"closed":{"a":0},"dep":{"a":0,"b":1},"kind":"i","data":1})",
+          R"({"low":{"a":0},"closed":{"a":0},"dep":{"a":0,"b":1},"kind":"i","data":1})",
+          R"({"low":{"a":1},"closed":{"a":0,"b":2},"dep":{"a":0,"b":1},"kind":"i","data":1})",
+          R"({"low":{"a":1},"closed":{"a":0},"dep":{"a":0},"kind":"i","data":1})",
+          R"({"low":{"a":1},"closed":{"a":0},"dep":{"a":0,"b":1},"data":1})",
+          R"({"low":{"a":1},"closed":{"a":0},"dep":{"a":0,"b":1},"kind":"s","data":"x"})"})
+    {
+        EXPECT_EQ(parity_outcome<AnnotatedParity>(json), parity_outcome<FieldParity>(json)) << json;
+    }
+    EXPECT_EQ(parity_outcome<AnnotatedParity>(R"({"low":{"a":0},"kind":"i","data":1})"),
+              R"(the object does not satisfy properties at /low; reading the key "low" of FieldParity at /low)");
+    // validate checks the members of a value that no read made
+    auto t = AnnotatedParity{{1, {}}, {0, {}}, {0, 1}, 1};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.closed.b = 2;
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
+    t.closed.b.reset();
+    t.dep.b.reset();
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
+}
+
 TEST(Constraints, ElementAnnotations)
 {
     expect_accepted<ElementsAnnotated>(

@@ -448,6 +448,30 @@ namespace yyjson
                 yyjson::annotations<T>.metadata);
             return all;
         }
+#if FIELD_RFL_ANNOTATIONS
+        // Whether each member of the reflected struct T with metadata in its annotations has a schema of its own.
+        template <typename T>
+        consteval bool members_described()
+        {
+            namespace yd = yyjson::detail;
+            if constexpr (!struct_type<T> || yd::visitable<T>)
+                return true;
+            else
+            {
+                auto described = std::array<bool, field_reflection::field_count<T>>{};
+                yd::all_indices<described_fields<T>>([&](auto k) {
+                    described[yd::struct_declared_index<T, k()>] = true;
+                    return true;
+                });
+                bool all = true;
+                yd::all_indices<field_reflection::field_count<T>>([&](auto i) {
+                    all = all && (described[i()] || yd::member_metadata<T, i()>.empty());
+                    return true;
+                });
+                return all;
+            }
+        }
+#endif
 
         // The metadata that `yyjson::annotate` gives T.
         template <typename T>
@@ -455,6 +479,12 @@ namespace yyjson
         {
             namespace yd = yyjson::detail;
             auto m = metadata();
+#if FIELD_RFL_ANNOTATIONS
+            static_assert(members_described<T>(),
+                          "metadata, such as yyjson::title, annotates a member of the struct that is read and "
+                          "written by its key or by its position, not the map of yyjson::extra_keys, "
+                          "yyjson::pattern_properties or yyjson::extra_items");
+#endif
             if constexpr (described_type<T>)
             {
                 static_assert(fields_described<T>(),
@@ -491,6 +521,17 @@ namespace yyjson
                     yyjson::annotations<S>.metadata);
                 m.owner = std::string(yd::type_name<S>()) + "::" + std::string(member);
             }
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (!yd::visitable<S>)
+            {
+                constexpr auto R = yd::struct_declared_index<S, K>;
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (add_metadata<field_example<S, K>>(m, yd::member_metadata_value<S, R, Is>), ...);
+                }(std::make_index_sequence<yd::member_metadata<S, R>.size()>{});
+                if constexpr (!yd::member_metadata<S, R>.empty())
+                    m.owner = std::string(yd::type_name<S>()) + "::" + std::string(yd::declared_member_name<S, R>);
+            }
+#endif
             return m;
         }
 

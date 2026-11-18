@@ -1653,7 +1653,7 @@ consteval member_schema<As...> property(std::string_view key, As... values);
 `key` is the JSON key of a field: the key after [`yyjson::rename`](#yyjsonrename). `values` are the [constraints](#constraints), the [constraints of elements](#constraints-of-elements), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), and the keywords of an object when the value is a struct. `yyjson::property("key")` without settings only names the key. [`yyjson::additional_properties(false)`](#constraints-of-elements) at the same position allows the key.
 
 *   On the struct, in `yyjson::annotate` or as `struct [[=yyjson::property("key", s...)]] S` with the reflection of C++26, `yyjson::property` gives settings to the field of the key. They join the settings that `yyjson::field` gives to that field. The same keyword from the two is a compile error.
-*   `yyjson::property` can also be in a combinator, in `yyjson::alt` and at a field that holds a struct. There it gives the subschema of the value of the key at that position.
+*   `yyjson::property` can also be in a combinator, in `yyjson::alt` and at a field that holds a struct. There it gives the subschema of the value of the key at that position. With the reflection of C++26, `[[=yyjson::property("zip", s...)]] Address address;` on a member is the same as `yyjson::field("address", yyjson::property("zip", s...))`.
 
 These are compile errors:
 
@@ -1661,7 +1661,7 @@ These are compile errors:
 *   On the struct, the key of the [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) of a variant that holds the struct, because the struct does not know that variant. At a field that holds the variant, the key is not an error.
 *   The key of the field of [`yyjson::extra_keys`](#yyjsonextra_keys) or of [`yyjson::pattern_properties`](#yyjsonpattern_properties).
 *   A setting of a member in `values`, such as `yyjson::rename`, `yyjson::skip`, `yyjson::required` or `yyjson::default_`.
-*   `yyjson::property` on a map, on a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) or [`yyjson::transparent`](#yyjsontransparent), and on a member with the reflection of C++26.
+*   `yyjson::property` on a map, and on a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) or [`yyjson::transparent`](#yyjsontransparent).
 
 ```cpp
 struct Address
@@ -2275,6 +2275,7 @@ consteval examples_t<...> examples(const Ss&... texts);
 *   `yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::read_only` and `yyjson::write_only` give `title`, `description`, `"deprecated": true`, `"readOnly": true` and `"writeOnly": true`.
 *   `yyjson::examples` takes the JSON text of each example and gives `examples`. `yyjson::json_schema` throws `std::invalid_argument` when the read rejects an example.
 *   In `yyjson::annotate`, they are settings of a struct, an enumeration, a variant and a type with a caster. They are also settings of [`yyjson::field`](#yyjsonfield) and of an alternative of [`yyjson::alt`](#yyjsonany_of_variant-yyjsonalt). On a field of `yyjson::extra_keys` or `yyjson::pattern_properties`, and in a subschema, they are a compile error.
+*   With the reflection of C++26, they can also be written on a member, as `[[=yyjson::title("Name")]] std::string name;`. A member takes each of them once, in its annotations and in its `yyjson::field` together. Otherwise it is a compile error. So are `yyjson::schema` and `yyjson::schema_extend` on one member.
 
 ```cpp
 template <>
