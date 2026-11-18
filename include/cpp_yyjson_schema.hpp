@@ -586,7 +586,7 @@ namespace yyjson
         consteval std::size_t matched_index(const yyjson::detail::type_test& test, std::tuple<Ts...>*)
         {
             std::size_t i = 0;
-            ((test.test == &yyjson::detail::test_type<Ts> || (++i, false)) || ...);
+            (void)((test.test == &yyjson::detail::test_type<Ts> || (++i, false)) || ...);
             return i;
         }
 
@@ -2541,9 +2541,8 @@ namespace yyjson
             const auto within = std::exchange(within_, {});
             using B = yd::variant_base_t<V>;
             constexpr auto size = std::variant_size_v<B>;
-            constexpr bool constrained = []<std::size_t... Is>(std::index_sequence<Is...>) {
-                return (yd::constrained_union_alternative<V, Is> || ...);
-            }(std::make_index_sequence<size>{});
+            constexpr bool constrained =
+                !yd::all_indices<size>([]<typename K>(K) { return !yd::constrained_union_alternative<V, K::value>; });
             if constexpr (size == 1)
             {
                 tags_ = tags;
@@ -2554,29 +2553,27 @@ namespace yyjson
                                bare_alternatives<V>())
             {
                 auto types = out.emplace("type", empty_array);
-                [&]<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
-                    (
-                        [&] {
-                            using U = std::remove_cv_t<Ts>;
-                            if constexpr (primitive_type<U>)
-                            {
-                                types.emplace_back(type_keyword<U>());
-                                emit_number_format<U>(out);
-                                emit_primitive_keywords<U>(out);
-                            }
-                            else
-                                types.emplace_back("null");
-                        }(),
-                        ...);
-                }(std::type_identity<B>{});
+                for (std::size_t i = 0; i < size; ++i)
+                    yd::call_at_index<size>(i, [&]<typename K>(K) {
+                        using U = std::remove_cv_t<std::variant_alternative_t<K::value, B>>;
+                        if constexpr (primitive_type<U>)
+                        {
+                            types.emplace_back(type_keyword<U>());
+                            emit_number_format<U>(out);
+                            emit_primitive_keywords<U>(out);
+                        }
+                        else
+                            types.emplace_back("null");
+                    });
             }
             else
             {
                 const auto keyword = yd::is_one_of_variant<V> ? "oneOf" : "anyOf";
                 auto each = out.emplace(keyword, empty_array);
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emit_untagged_alternative<V, Is>(each.emplace_back(empty_object), tags, within), ...);
-                }(std::make_index_sequence<size>{});
+                for (std::size_t i = 0; i < size; ++i)
+                    yd::call_at_index<size>(i, [&]<typename K>(K) {
+                        emit_untagged_alternative<V, K::value>(each.emplace_back(empty_object), tags, within);
+                    });
             }
         }
 
@@ -2603,9 +2600,9 @@ namespace yyjson
         void generator::emit_untagged_alternative(object_ref out, const registry::tag_keys& tags,
                                                   const std::vector<const void*>& within)
         {
-            constexpr bool read_back = []<std::size_t... Js>(std::index_sequence<Js...>) {
-                return ((Js != I && walk_may_fail<V, Js>()) || ...);
-            }(std::make_index_sequence<std::variant_size_v<yyjson::detail::variant_base_t<V>>>{});
+            constexpr bool read_back =
+                !yyjson::detail::all_indices<std::variant_size_v<yyjson::detail::variant_base_t<V>>>(
+                    []<typename K>(K) { return K::value == I || !walk_may_fail<V, K::value>(); });
             if constexpr (read_back || yyjson::detail::is_one_of_variant<V>)
             {
                 if (writing_)

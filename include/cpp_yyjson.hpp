@@ -3084,6 +3084,17 @@ namespace yyjson
 
     namespace detail
     {
+        // The number of the values in Bs that are true.  The settings of an `annotate(...)` can be more than 256,
+        // and clang before 22 takes no more operands in a fold expression, so the functions over them expand their
+        // packs in an array.
+        template <bool... Bs>
+        inline constexpr std::size_t count_true = [] {
+            constexpr bool values[] = {false, Bs...};
+            auto n = std::size_t{0};
+            for (const auto value : values) n += value ? 1 : 0;
+            return n;
+        }();
+
         template <typename T>
         constexpr std::string_view type_name() noexcept;
 
@@ -3224,15 +3235,12 @@ namespace yyjson
         concept type_metadata_setting = metadata_setting<A> || std::same_as<A, schema_name>;
         // Whether the settings As give each kind of metadata at most once.
         template <typename... As>
-        inline constexpr bool metadata_once = ((setting_of<As, title<>> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((setting_of<As, description<>> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((std::same_as<As, deprecated_t> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((std::same_as<As, read_only_t> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((std::same_as<As, write_only_t> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((setting_of<As, examples_t<0>> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((std::same_as<As, schema> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((setting_of<As, schema_extend<>> ? 1 : 0) + ... + 0) <= 1 &&
-                                              ((std::same_as<As, schema_name> ? 1 : 0) + ... + 0) <= 1;
+        inline constexpr bool metadata_once =
+            count_true<setting_of<As, title<>>...> <= 1 && count_true<setting_of<As, description<>>...> <= 1 &&
+            count_true<std::same_as<As, deprecated_t>...> <= 1 && count_true<std::same_as<As, read_only_t>...> <= 1 &&
+            count_true<std::same_as<As, write_only_t>...> <= 1 && count_true<setting_of<As, examples_t<0>>...> <= 1 &&
+            count_true<std::same_as<As, schema>...> <= 1 && count_true<setting_of<As, schema_extend<>>...> <= 1 &&
+            count_true<std::same_as<As, schema_name>...> <= 1;
 
         // The constraints of the value of a field, one bit each.
         template <typename A>
@@ -3413,11 +3421,11 @@ namespace yyjson
         template <typename... As>
         consteval bool check_subschema_forms()
         {
-            static_assert(!(std::same_as<As, required_t> || ...),
+            static_assert(count_true<std::same_as<As, required_t>...> == 0,
                           "the tag yyjson::required marks a field only in yyjson::field(\"member\", ...) and on a "
                           "member: yyjson::required(\"key\") tells that an object has the key, and "
                           "yyjson::reject_missing_keys that it has the keys of all the fields");
-            static_assert(!(is_field_annotation<As>::value || ...),
+            static_assert(count_true<is_field_annotation<As>::value...> == 0,
                           "yyjson::field names a member only directly in yyjson::annotate: elsewhere, "
                           "yyjson::property(\"key\", ...) gives the keywords of the value of a key, and "
                           "yyjson::required(\"key\") tells that an object has the key");
@@ -4140,7 +4148,7 @@ namespace yyjson
         template <typename... As>
         consteval bool check_field_settings()
         {
-            static_assert(!(is_field_annotation<As>::value || ...),
+            static_assert(count_true<is_field_annotation<As>::value...> == 0,
                           "yyjson::field names a member only directly in yyjson::annotate: in it, "
                           "yyjson::property(\"key\", ...) gives the keywords of the value of a key of the field, and "
                           "yyjson::required(\"key\") tells that its object has the key");
@@ -4242,16 +4250,6 @@ namespace yyjson
 
     namespace detail
     {
-        // The number of the values in Bs that are true.  The settings of an `annotate(...)` can be more than 256,
-        // and clang before 22 takes no more operands in a fold expression, so the functions over them expand their
-        // packs in an array.
-        template <bool... Bs>
-        inline constexpr std::size_t count_true = [] {
-            constexpr bool values[] = {false, Bs...};
-            auto n = std::size_t{0};
-            for (const auto value : values) n += value ? 1 : 0;
-            return n;
-        }();
         // Whether any or all of `values` are true, for packs as long as the fields of a struct, which can be more
         // than the 256 operands of a fold expression too.  Every value is evaluated.
         constexpr bool any_true(std::initializer_list<bool> values) noexcept
@@ -4411,11 +4409,11 @@ namespace yyjson
     template <typename... As>
     consteval auto annotate(As... values)
     {
-        static_assert(!(std::same_as<As, required_t> || ...),
+        static_assert(detail::count_true<std::same_as<As, required_t>...> == 0,
                       "the tag yyjson::required marks a field only in yyjson::field(\"member\", ...): "
                       "yyjson::required(\"key\") tells that an object has the key, and yyjson::reject_missing_keys "
                       "that it has the keys of all the fields");
-        static_assert(detail::annotate_settings<As...> || (std::same_as<As, required_t> || ...),
+        static_assert(detail::annotate_settings<As...> || detail::count_true<std::same_as<As, required_t>...> != 0,
                       "yyjson::annotate takes yyjson::field(...), yyjson::transparent, yyjson::as_array, "
                       "yyjson::items(false), yyjson::default_ and the read policies yyjson::reject_unknown_keys, "
                       "yyjson::reject_missing_keys, yyjson::reject_null_as_missing, yyjson::reject_duplicates and "
@@ -4432,7 +4430,7 @@ namespace yyjson
                           detail::count_true<detail::setting_of<As, schema_extend<>>...> == 0,
                       "yyjson::schema replaces the schema that yyjson::schema_extend extends: give one of them");
         static_assert(detail::metadata_once<As...>, "yyjson::annotate takes each metadata of the type once");
-        if constexpr (!(detail::holds_metadata<As> || ...))
+        if constexpr (detail::count_true<detail::holds_metadata<As>...> == 0)
             return detail::annotation_list<As...>{
                 detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
         else
@@ -7200,7 +7198,7 @@ namespace yyjson
             static constexpr auto index = []<typename... As>(std::type_identity<std::tuple<As...>>) {
                 static_assert((0 + ... + internal_tag_annotation<As>) <= 1,
                               "yyjson::annotations of a variant has yyjson::internal_tag twice");
-                static_assert(!(is_field_annotation<As>::value || ...),
+                static_assert(count_true<is_field_annotation<As>::value...> == 0,
                               "yyjson::field annotates a struct, not a variant");
                 static_assert(!(enum_annotation<As> || ...),
                               "yyjson::enumerator and yyjson::enum_format annotate an enumeration, not a variant");
@@ -15134,17 +15132,27 @@ namespace yyjson
             template <typename DocType>
             class object_iter;
 
-            template <class Derived>
-            concept base_of_value = requires(Derived d) { []<typename X>(const abstract_value<X>&) {}(d); };
+            // Declared functions, not lambdas: Clang before 19 can keep a wrong result of a lambda in a concept.
+            template <typename X>
+            void derives_from_value(const abstract_value<X>&);
+            template <typename X>
+            void derives_from_const_value(const const_value_base<X>&);
+            template <typename X>
+            void derives_from_array(const const_array_base<X>&);
+            template <typename X>
+            void derives_from_object(const const_object_base<X>&);
 
             template <class Derived>
-            concept base_of_const_value = requires(Derived d) { []<typename X>(const const_value_base<X>&) {}(d); };
+            concept base_of_value = requires(Derived d) { detail::derives_from_value(d); };
 
             template <class Derived>
-            concept base_of_array = requires(Derived d) { []<typename X>(const const_array_base<X>&) {}(d); };
+            concept base_of_const_value = requires(Derived d) { detail::derives_from_const_value(d); };
 
             template <class Derived>
-            concept base_of_object = requires(Derived d) { []<typename X>(const const_object_base<X>&) {}(d); };
+            concept base_of_array = requires(Derived d) { detail::derives_from_array(d); };
+
+            template <class Derived>
+            concept base_of_object = requires(Derived d) { detail::derives_from_object(d); };
 
 #pragma region caster
             template <typename T>
@@ -24762,22 +24770,20 @@ namespace yyjson
                     };
                     for (const auto& e : *elements)
                     {
-                        const auto held = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        auto held = false;
+                        if (j < n)
+                        {
                             auto kind = constraint_kind::none;
-                            if (j >= n)
-                            {
-                                if constexpr (has_extra_items<S>)
-                                {
-                                    using E = constrained_element_t<extra_items_type<S>>;
-                                    kind = violation(static_cast<const E&>(*extra++), e);
-                                }
-                                else
-                                    return false;
-                            }
-                            else
-                                ((j == Ks ? (kind = violation(struct_field<Ks>(t), e), true) : false) || ...);
-                            return kind == constraint_kind::none;
-                        }(std::make_index_sequence<n>{});
+                            call_at_index<n>(j, [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+                                kind = violation(struct_field<K>(t), e);
+                            });
+                            held = kind == constraint_kind::none;
+                        }
+                        else if constexpr (has_extra_items<S>)
+                        {
+                            using E = constrained_element_t<extra_items_type<S>>;
+                            held = violation(static_cast<const E&>(*extra++), e) == constraint_kind::none;
+                        }
                         found += held ? 1 : 0;
                         ++j;
                     }
@@ -41963,7 +41969,7 @@ namespace yyjson
                 return true;
             else
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return ((constrained_field<T, Ks> || (Guarded && may_read_back_value<T, Ks>)) || ...);
+                    return count_true<(constrained_field<T, Ks> || (Guarded && may_read_back_value<T, Ks>))...> != 0;
                 }(std::make_index_sequence<struct_field_count<T>>{}) ||
                        checks_written_object<T> || checks_missing_keys<T> || checks_written_array<T>() ||
                        has_key_maps<T> || checks_adjacent_tag_fields<T>();
