@@ -2276,6 +2276,7 @@ consteval examples_t<...> examples(const Ss&... texts);
 *   `yyjson::examples` takes the JSON text of each example and gives `examples`. `yyjson::json_schema` throws `std::invalid_argument` when the read rejects an example.
 *   In `yyjson::annotate`, they are settings of a struct, an enumeration, a variant and a type with a caster. They are also settings of [`yyjson::field`](#yyjsonfield) and of an alternative of [`yyjson::alt`](#yyjsonany_of_variant-yyjsonalt). On a field of `yyjson::extra_keys` or `yyjson::pattern_properties`, and in a subschema, they are a compile error.
 *   With the reflection of C++26, they can also be written on a member, as `[[=yyjson::title("Name")]] std::string name;`. A member takes each of them once, in its annotations and in its `yyjson::field` together. Otherwise it is a compile error. So are `yyjson::schema` and `yyjson::schema_extend` on one member.
+*   With the reflection of C++26, they can also be written on the declaration of a class or an enumeration, as `struct [[=yyjson::title("Box")]] Box`. A type takes each of them once, in its annotations and in `yyjson::annotate` together. Otherwise it is a compile error. So are `yyjson::schema` and `yyjson::schema_extend` on one type.
 
 ```cpp
 template <>
@@ -2307,7 +2308,7 @@ consteval explicit schema_name(std::string_view text);
 *   `yyjson::schema_extend(text)` adds the members of a JSON object to the generated schema. A member replaces the keyword of the same key.
 *   On a field, `yyjson::schema` also replaces the generated `default`. `yyjson::schema_extend` keeps it, unless the text has a `default`.
 *   A field takes `yyjson::schema` or `yyjson::schema_extend`, but not both. They are settings of a type in `yyjson::annotate`, of [`yyjson::field`](#yyjsonfield) and of an alternative of `yyjson::alt`.
-*   `yyjson::schema_name(text)` gives the name of a struct, an enumeration, a variant or a type with a caster in `$defs`. It is a setting of `yyjson::annotate` only. A name that is empty or has a character other than `[A-Za-z0-9._-]` is a compile error.
+*   `yyjson::schema_name(text)` gives the name of a struct, an enumeration, a variant or a type with a caster in `$defs`. It is a setting of `yyjson::annotate`. With the reflection of C++26, it can also be written on the declaration of the type, as `struct [[=yyjson::schema_name("Box")]] Box`. A name that is empty or has a character other than `[A-Za-z0-9._-]` is a compile error.
 *   The library does not check the text against the type. A schema that accepts more than the read is an [exception to the guarantees](json-schema.md#exceptions).
 
 ```cpp

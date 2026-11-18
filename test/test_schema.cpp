@@ -4080,4 +4080,52 @@ TEST(Schema, MemberAnnotationsAsField)
                           R"({"closed":{"a":1,"b":1}})", R"({"dep":{"a":0}})",
                           R"({"kind":"s","data":"x","declared":2})"});
 }
+
+namespace schema_test::type_annotations
+{
+    // the metadata and the name of a type as the annotations of its declaration, and in `yyjson::annotate`
+    enum class[[ = yyjson::title("Color"), = yyjson::schema_name("Color") ]] AnnotatedColor
+    {
+        red,
+        blue
+    };
+    struct[[
+        = yyjson::title("Box"), = yyjson::description("D"), = yyjson::deprecated,
+        = yyjson::examples(R"({"a":1,"color":"red"})"), = yyjson::schema_extend(R"({"$comment":"c"})"),
+        = yyjson::schema_name("Box")
+    ]] AnnotatedBox
+    {
+        int a = 0;
+        AnnotatedColor color{};
+    };
+    enum class AnnotateColor
+    {
+        red,
+        blue
+    };
+    struct AnnotateBox
+    {
+        int a = 0;
+        AnnotateColor color{};
+    };
+}  // namespace schema_test::type_annotations
+template <>
+inline constexpr auto yyjson::annotations<schema_test::type_annotations::AnnotateColor> =
+    yyjson::annotate(yyjson::title("Color"), yyjson::schema_name("Color"));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::type_annotations::AnnotateBox> = yyjson::annotate(
+    yyjson::title("Box"), yyjson::description("D"), yyjson::deprecated, yyjson::examples(R"({"a":1,"color":"red"})"),
+    yyjson::schema_extend(R"({"$comment":"c"})"), yyjson::schema_name("Box"));
+
+TEST(Schema, TypeAnnotationsAsAnnotate)
+{
+    namespace ta = schema_test::type_annotations;
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<ta::AnnotatedBox>()),
+              to_jsoncons(yyjson::json_schema<ta::AnnotateBox>()));
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<ta::AnnotatedBox>(yyjson::write_direction)),
+              to_jsoncons(yyjson::json_schema<ta::AnnotateBox>(yyjson::write_direction)));
+    const auto s = to_jsoncons(yyjson::json_schema<ta::AnnotatedBox>());
+    EXPECT_EQ(s["$defs"]["Box"]["title"], json("Box"));
+    EXPECT_EQ(s["$defs"]["Color"]["title"], json("Color"));
+}
 #endif

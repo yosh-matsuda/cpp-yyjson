@@ -402,6 +402,7 @@ namespace yyjson
         // The name of T in `$defs` that `yyjson::schema_name` gives, or none.
         template <typename T>
         inline constexpr std::string_view schema_name_of = [] {
+            namespace yd = yyjson::detail;
             auto name = std::string_view();
             if constexpr (described_type<T>)
                 yyjson::detail::for_each_annotation(
@@ -409,6 +410,17 @@ namespace yyjson
                         if constexpr (std::same_as<A, yyjson::schema_name>) name = a.text();
                     },
                     yyjson::annotations<T>.metadata);
+#if FIELD_RFL_ANNOTATIONS
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (
+                    [&] {
+                        if constexpr (std::same_as<std::remove_cvref_t<decltype(yd::type_metadata_value<T, Ks>)>,
+                                                   yyjson::schema_name>)
+                            name = yd::type_metadata_value<T, Ks>.text();
+                    }(),
+                    ...);
+            }(std::make_index_sequence<yd::type_metadata_annotations<T>.size()>{});
+#endif
             return name;
         }();
 
@@ -484,6 +496,11 @@ namespace yyjson
                           "metadata, such as yyjson::title, annotates a member of the struct that is read and "
                           "written by its key or by its position, not the map of yyjson::extra_keys, "
                           "yyjson::pattern_properties or yyjson::extra_items");
+            static_assert(yd::type_metadata_error<T>.empty(), yd::type_metadata_error<T>);
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (add_metadata<value_example<T, no_check>>(m, yd::type_metadata_value<T, Ks>), ...);
+            }(std::make_index_sequence<yd::type_metadata_annotations<T>.size()>{});
+            if constexpr (!yd::type_metadata_annotations<T>.empty()) m.owner = yd::type_name<T>();
 #endif
             if constexpr (described_type<T>)
             {

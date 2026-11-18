@@ -5605,6 +5605,54 @@ namespace yyjson
             std::meta::extract<typename[:std::meta::remove_cvref(std::meta::type_of(member_metadata<T, I>[K])):]>(
                 member_metadata<T, I>[K]);
 
+        // The annotations of the class or the enumeration T that are metadata or `yyjson::schema_name`, which join
+        // those of `yyjson::annotate`.
+        template <typename T>
+        consteval std::vector<std::meta::info> type_metadata_annotations_of()
+        {
+            auto result = std::vector<std::meta::info>{};
+            const auto type = std::meta::dealias(^^T);
+            if (!std::meta::is_class_type(type) && !std::meta::is_union_type(type) && !std::meta::is_enum_type(type))
+                return result;
+            for (const auto a : std::meta::annotations_of(type))
+            {
+                const auto t = std::meta::remove_cvref(std::meta::type_of(a));
+                if (metadata_kind(t) != 8 || t == ^^yyjson::schema_name) result.push_back(a);
+            }
+            return result;
+        }
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> type_metadata_annotations =
+            std::define_static_array(type_metadata_annotations_of<T>());
+        template <typename T, std::size_t K>
+        inline constexpr auto type_metadata_value = std::meta::extract<
+            typename[:std::meta::remove_cvref(std::meta::type_of(type_metadata_annotations<T>[K])):]>(
+            type_metadata_annotations<T>[K]);
+
+        // The first error of the metadata that annotate the type T, which join those of `yyjson::annotate`, or empty.
+        template <typename T>
+        consteval std::string_view type_metadata_error_of()
+        {
+            // The kinds of `metadata_kind`, where 8 is `yyjson::schema_name`.
+            auto count = std::array<std::size_t, 9>{};
+            for (const auto a : type_metadata_annotations<T>)
+                ++count[metadata_kind(std::meta::remove_cvref(std::meta::type_of(a)))];
+            if constexpr (requires { annotations<T>.metadata; })
+                for_each_annotation(
+                    [&]<typename A>(const A&) {
+                        if constexpr (!is_field_annotation<A>::value) ++count[metadata_kind(^^A)];
+                    },
+                    annotations<T>.metadata);
+            for (const auto n : count)
+                if (n > 1)
+                    return "a type takes each of its metadata once, in its annotations and yyjson::annotate together";
+            if (count[6] != 0 && count[7] != 0)
+                return "yyjson::schema replaces the schema that yyjson::schema_extend extends: give one of them";
+            return {};
+        }
+        template <typename T>
+        inline constexpr std::string_view type_metadata_error = type_metadata_error_of<T>();
+
         // The name of a setting of a type, or `yyjson::field`, that annotates the member I of T, or empty.
         template <typename T, std::size_t I>
         consteval std::string_view member_type_setting_of()
@@ -5693,6 +5741,13 @@ namespace yyjson
             if (const auto name = type_member_setting_of<T>(); !name.empty())
                 return std::define_static_string(std::string(name) +
                                                  " is not a type setting; annotate a member of the struct instead");
+            for (const auto a : std::meta::annotations_of(std::meta::dealias(^^T)))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (type == ^^yyjson::enum_format || type == ^^variant_tag_spec<variant_tagging::internal>)
+                    return "yyjson::internal_tag annotates a variant, and yyjson::enum_format an enumeration, not a "
+                           "struct";
+            }
             return {};
         }
         template <typename T>
@@ -6068,7 +6123,7 @@ namespace yyjson
                                !field_reflection::type_annotations<T, additional_properties<bool>>.empty() ||
                                struct_property_counts<T> || struct_property_names<T> ||
                                type_array_keywords_annotated<T> || !type_keys<T>.empty() ||
-                               !type_member_setting_of<T>().empty())
+                               !type_annotation_error_of<T>().empty())
                 return true;
             else if constexpr (!visitable<T>)
                 return annotated_members<T>;
