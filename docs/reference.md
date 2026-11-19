@@ -2448,6 +2448,9 @@ public:
 
 `json_view` has the reading functions of [`yyjson::reader::value`](#yyjsonreadervalue): `is_*`, `as_*` and `cast<U>()`. The views of an array and an object, `json_array_view` and `json_object_view`, iterate and have `size()`, `empty()`, `operator[]` and `cast<U>()`; the view of an object also has `find(key)` and `contains(key)`. `operator[]` throws `std::out_of_range` for an index or a key that is not there. The view, and the strings that it gives, are valid until the caster returns. See [Reading a JSON value in a caster](conversions.md#reading-a-json-value-in-a-caster).
 
+> [!NOTE]
+> With an external yyjson, this class requires yyjson 0.12.0 or later.
+
 ## Concepts
 
 ### `yyjson::readable<T>`, `yyjson::writable<T>`

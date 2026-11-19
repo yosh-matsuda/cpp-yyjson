@@ -191,11 +191,13 @@ TEST(Validate, FloatNumberKeywords)
         EXPECT_EQ(std::string(wide.what()), "expected a number, got null at /w; reading long double");
         EXPECT_EQ(wide.path(), "/w");
     }
+#if YYJSON_VERSION_HEX >= 0x000B00
     expect_valid(VdFloat{});
     expect_invalid(
         with<VdFloat>([](auto& t) { t.v = {0.1F, std::nextafter(0.1F, 1.0F)}; }),
         R"(the number is greater than the maximum 0.1 at /v/1; reading an element of the value at the key "v" of VdFloat)",
         "/v/1");
+#endif
     expect_valid(VdFloatBelow{std::nextafter(0.1F, 0.0F)});
     expect_invalid(VdFloatBelow{},
                    R"(the number is greater than the maximum 0.099999999 at /f; reading the key "f" of VdFloatBelow)",
@@ -3398,6 +3400,7 @@ struct yyjson::caster<VdWrapReal>
     static VdWrapReal from_json(const VdWireReal& w) { return {w.d, w.k}; }
     static VdWireReal to_json(const VdWrapReal& w) { return {w.d, w.k}; }
 };
+#if YYJSON_VERSION_HEX >= 0x000C00
 // reads any JSON, also null for `d`
 struct VdWrapLoose
 {
@@ -3410,6 +3413,7 @@ struct yyjson::caster<VdWrapLoose>
     static VdWrapLoose from_json(yyjson::json_view) { return {}; }
     static VdWireReal to_json(const VdWrapLoose& w) { return {w.d, w.k}; }
 };
+#endif
 struct VdScalarReal
 {
     double d = 0;
@@ -3446,12 +3450,14 @@ TEST(Validate, TranslatedValue)
                               (void)yyjson::write(VdWrapReal{std::nan(""), 0}, as_null, with_validation);
                           }).what()),
               "expected a number, got null at /d; reading double");
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(std::string(yyjson::write(VdWrapLoose{std::nan(""), 0}, as_null, with_validation)),
               R"({"d":null,"k":0})");
     EXPECT_EQ(std::string(validation_error([] {
                               (void)yyjson::write(VdWrapLoose{std::nan(""), -1}, as_null, with_validation);
                           }).what()),
               R"(the number is less than the minimum 0 at /k; reading the key "k" of VdWireReal)");
+#endif
     EXPECT_EQ(std::string(validation_error([] {
                               (void)yyjson::write(VdScalarReal{std::nan("")}, as_null, with_validation);
                           }).what()),

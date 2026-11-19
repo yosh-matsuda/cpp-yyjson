@@ -57,12 +57,14 @@ TEST(AllocationFailure, CheckOfScalarRoot)
     // a long scalar root is copied, both to read it and to check it
     const auto json = '"' + std::string(200, 'a') + '"';
     EXPECT_THROW((void)yyjson::read<ThrowingText>(json), std::logic_error);
+#if YYJSON_VERSION_HEX >= 0x000C00
     failing_min = json.size();
     failing_max = json.size() + 2;
     passing = 1;
     EXPECT_THROW((void)yyjson::read<ThrowingText>(json), std::bad_alloc);
     EXPECT_EQ(passing, -1);
     passing = -1;
+#endif
     EXPECT_THROW((void)yyjson::read<ThrowingText>(json), std::logic_error);
 }
 // NOLINTEND

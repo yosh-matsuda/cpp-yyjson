@@ -813,6 +813,10 @@ struct yyjson::caster<OneKey>
     static OneKey from_json(std::string_view) { return OneKey::only; }
     static std::string to_json(OneKey) { return "only"; }
 };
+using OneKeyOneOf =
+    yyjson::one_of_variant<yyjson::alt<std::set<OneKey>, yyjson::unique_items>,
+                           yyjson::alt<std::vector<std::string>, yyjson::min_items(2), yyjson::max_items(2)>>;
+#if YYJSON_VERSION_HEX >= 0x000C00
 enum class KindKey
 {
     integer,
@@ -824,10 +828,8 @@ struct yyjson::caster<KindKey>
     static KindKey from_json(yyjson::json_view v) { return v.is_real() ? KindKey::real : KindKey::integer; }
     static double to_json(KindKey k) { return k == KindKey::real ? 1.5 : 1; }
 };
-using OneKeyOneOf =
-    yyjson::one_of_variant<yyjson::alt<std::set<OneKey>, yyjson::unique_items>,
-                           yyjson::alt<std::vector<std::string>, yyjson::min_items(2), yyjson::max_items(2)>>;
 using KindKeyOneOf = yyjson::one_of_variant<std::set<KindKey>, std::vector<int>>;
+#endif
 struct NestedVariantInner
 {
     std::variant<Spot, bool> p = false;
@@ -5001,7 +5003,9 @@ TEST(Constraints, ListedNumbersExact)
     expect_invalid(
         N{.e = 0x1p64},
         R"(the value is not one of 0, 18446744073709551615 at /e; reading the key "e" of ListedNumbersExact)", "/e");
+#if YYJSON_VERSION_HEX >= 0x000B00
     EXPECT_NO_THROW(yyjson::validate(N{}));
+#endif
 }
 
 TEST(Constraints, MergedExact)
@@ -5054,9 +5058,11 @@ TEST(Constraints, ReviewedJsonEquality)
 
     // a set of keys of a caster compares the JSON elements, whether the set grows or not
     ambiguous(std::type_identity<OneKeyOneOf>(), R"(["a","b"])");
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(yyjson::read<KindKeyOneOf>("[1,1.0]").index(), 1);
     EXPECT_EQ(yyjson::value(yyjson::read("[1,1.0]")).cast<KindKeyOneOf>().index(), 1);
     EXPECT_EQ(yyjson::read<KindKeyOneOf>("[1,1.5,2]").index(), 0);
+#endif
 
     // the merge into a member keeps the types of its fields
     auto nested = NestedVariantLiteral{};
@@ -6198,7 +6204,9 @@ TEST(Constraints, MergedAbsentField)
     const auto fallback = [](const WrittenOuter& t, std::string_view patch) {
         auto merged_directly = false;
         static_cast<void>(expect_merge_into(t, patch, &merged_directly));
+#if YYJSON_VERSION_HEX >= 0x000C00
         EXPECT_FALSE(merged_directly) << patch;
+#endif
         return expect_merge_rule<WrittenOuter, true>(t, patch);
     };
     EXPECT_EQ(fallback(WrittenOuter{{1, 0}, {}, {}}, R"({"in":{"y":null},"body":null,"t":null})"),
@@ -11961,7 +11969,11 @@ struct R17OptionalInf
 
 TEST(Constraints, NullAsMissingCheckIgnoresTheLayout)
 {
-    for (const auto flag : {yyjson::WriteFlag::NewlineAtEnd, yyjson::WriteFlag::Pretty})
+    for (const auto flag : {
+#if YYJSON_VERSION_HEX >= 0x000900
+             yyjson::WriteFlag::NewlineAtEnd,
+#endif
+             yyjson::WriteFlag::Pretty})
     {
         const auto f = yyjson::WriteFlag::InfAndNanAsNull | flag;
         const auto json = yyjson::write(R17OptionalInf{}, f);

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1297,9 +1298,9 @@ namespace yyjson
             within_.clear();
         }
 
-        // The written text of a float is the shortest one that reads back as it, which can be past its double:
-        // 3.4028235e38 for the largest float.  The bounds are those texts, or those of a double for a wider type,
-        // because the reader takes no number past a double.
+        // The bounds are the shortest texts that read back as those of a float, which can be past its double:
+        // 3.4028235e38 for the largest float.  A wider type takes those of a double, which the reader takes no
+        // number past.  `std::to_chars` gives them, as a yyjson older than 0.11 writes a float as its double.
         template <typename T>
         void generator::emit_primitive_keywords(object_ref out)
         {
@@ -1321,7 +1322,11 @@ namespace yyjson
             {
                 using F = std::conditional_t<yyjson::detail::narrower_than_double<T>, T, double>;
                 static const auto bounds = [] {
-                    const auto written = [](F f) { return yyjson::read(yyjson::write(f)).template cast<double>(); };
+                    const auto written = [](F f) {
+                        auto buf = std::array<char, 64>{};
+                        const auto end = std::to_chars(buf.data(), buf.data() + buf.size(), f).ptr;
+                        return yyjson::read(std::string_view(buf.data(), end)).template cast<double>();
+                    };
                     return std::array{written(std::numeric_limits<F>::lowest()), written(std::numeric_limits<F>::max())};
                 }();
                 out.emplace("minimum", bounds[0]);

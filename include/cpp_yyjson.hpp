@@ -22138,7 +22138,11 @@ namespace yyjson
 #endif
             };
             const auto terminated = std::string(text);
+#if YYJSON_VERSION_HEX >= 0x000700
             const char* const end = yyjson_read_number(terminated.c_str(), &number, flags, nullptr, nullptr);
+#else
+            const char* const end = yyjson_read_number(terminated.c_str(), &number, flags, nullptr);
+#endif
             return end == terminated.c_str() + terminated.size();
         }
 
@@ -22277,7 +22281,9 @@ namespace yyjson
             }
             else if constexpr (record_input<Input>)
             {
-                if (yyjson_is_num(&input->number)) return json_number_violation<Schema>(input->number);
+                // some versions of yyjson take no const pointer
+                if (yyjson_is_num(const_cast<yyjson_val*>(&input->number)))
+                    return json_number_violation<Schema>(input->number);
             }
             return number_violation<Schema>(written_real(v));
         }
@@ -33453,10 +33459,11 @@ namespace yyjson
             static void each_kept(yyjson_val* obj, const F& f)
             {
                 auto nulls = false;
-                auto it = yyjson_obj_iter_with(obj);
+                auto it = yyjson_obj_iter{};
+                yyjson_obj_iter_init(obj, &it);
                 for (auto* k = yyjson_obj_iter_next(&it); k != nullptr; k = yyjson_obj_iter_next(&it))
                     nulls = nulls || yyjson_is_null(yyjson_obj_iter_get_val(k));
-                it = yyjson_obj_iter_with(obj);
+                yyjson_obj_iter_init(obj, &it);
                 for (auto* k = yyjson_obj_iter_next(&it); k != nullptr; k = yyjson_obj_iter_next(&it))
                 {
                     auto removed = false;
@@ -33486,7 +33493,8 @@ namespace yyjson
                     each_kept(nodes_[i].v, take);
                 else
                 {
-                    auto it = yyjson_obj_iter_with(nodes_[i].v);
+                    auto it = yyjson_obj_iter{};
+                    yyjson_obj_iter_init(nodes_[i].v, &it);
                     for (auto* k = yyjson_obj_iter_next(&it); k != nullptr; k = yyjson_obj_iter_next(&it))
                         take(key_of(k), yyjson_obj_iter_get_val(k));
                 }
@@ -33511,7 +33519,8 @@ namespace yyjson
                     const auto [n, p] = work.front();
                     work.pop_front();
                     expand(n);
-                    auto it = yyjson_obj_iter_with(p);
+                    auto it = yyjson_obj_iter{};
+                    yyjson_obj_iter_init(p, &it);
                     for (auto* k = yyjson_obj_iter_next(&it); k != nullptr; k = yyjson_obj_iter_next(&it))
                     {
                         const auto key = key_of(k);
@@ -34235,6 +34244,12 @@ namespace yyjson
             const auto key_of = [](yyjson_mut_val* key) {
                 return std::string_view(yyjson_mut_get_str(key), yyjson_mut_get_len(key));
             };
+            // yyjson 0.6 has no `yyjson_mut_obj_iter_with`
+            const auto iter_with = [](yyjson_mut_val* o) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                yyjson_mut_obj_iter iter;
+                yyjson_mut_obj_iter_init(o, &iter);
+                return iter;
+            };
             auto objects = std::vector<yyjson_mut_val*>{obj};
             // the key and the index of each null member, sorted by the key and then by the index
             auto nulls = std::vector<std::pair<std::string_view, std::size_t>>();
@@ -34243,19 +34258,19 @@ namespace yyjson
                 auto* const current = objects.back();
                 objects.pop_back();
                 nulls.clear();
-                auto iter = yyjson_mut_obj_iter_with(current);
+                auto iter = iter_with(current);
                 for (std::size_t i = 0; auto* const key = yyjson_mut_obj_iter_next(&iter); ++i)
                     if (yyjson_mut_is_null(yyjson_mut_obj_iter_get_val(key))) nulls.emplace_back(key_of(key), i);
                 if (nulls.empty()) [[likely]]
                 {
-                    iter = yyjson_mut_obj_iter_with(current);
+                    iter = iter_with(current);
                     while (auto* const key = yyjson_mut_obj_iter_next(&iter))
                         if (auto* const value = yyjson_mut_obj_iter_get_val(key); yyjson_mut_is_obj(value))
                             objects.push_back(value);
                     continue;
                 }
                 std::ranges::sort(nulls);
-                iter = yyjson_mut_obj_iter_with(current);
+                iter = iter_with(current);
                 for (std::size_t i = 0; auto* const key = yyjson_mut_obj_iter_next(&iter); ++i)
                 {
                     auto* const value = yyjson_mut_obj_iter_get_val(key);
@@ -34263,7 +34278,12 @@ namespace yyjson
                     const auto last =
                         std::ranges::upper_bound(nulls, k, {}, &std::pair<std::string_view, std::size_t>::first);
                     if (last != nulls.begin() && std::prev(last)->first == k && i <= std::prev(last)->second)
+                    {
                         yyjson_mut_obj_iter_remove(&iter);
+#if YYJSON_VERSION_HEX < 0x000700
+                        iter.cur = iter.pre;  // yyjson 0.6 moves the iterator past the next member
+#endif
+                    }
                     else if (yyjson_mut_is_obj(value))
                         objects.push_back(value);
                 }
@@ -34311,6 +34331,27 @@ namespace yyjson
                 }
             }
         };
+
+        // Whether the caster of the tuple T takes a JSON object, a member for each element, and whether it takes
+        // a JSON array, a value for each element.
+        template <typename T>
+        constexpr bool tuple_from_object = []<std::size_t... I>(std::index_sequence<I...>) {
+            if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
+                return requires {
+                    (static_cast<std::tuple_element_t<0, std::tuple_element_t<I, T>>>(
+                         std::get<0>(*std::declval<const const_object_ref&>().begin())),
+                     ...);
+                    (cast<std::tuple_element_t<1, std::tuple_element_t<I, T>>>(
+                         std::get<1>(*std::declval<const const_object_ref&>().begin())),
+                     ...);
+                };
+            else
+                return false;
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+        template <typename T>
+        constexpr bool tuple_from_array = []<std::size_t... I>(std::index_sequence<I...>) {
+            return requires { (cast<std::tuple_element_t<I, T>>(std::declval<const const_value_ref&>()), ...); };
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
     }  // namespace reader::detail
 
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -34768,26 +34809,6 @@ namespace yyjson
                                     { caster<T>::from_json(v) } -> std::same_as<T>;
                                 };
 
-        // Whether the caster of the tuple T takes a JSON object, a member for each element, and whether it takes
-        // a JSON array, a value for each element.
-        template <typename T>
-        constexpr bool tuple_from_object = []<std::size_t... I>(std::index_sequence<I...>) {
-            if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
-                return requires {
-                    (static_cast<std::tuple_element_t<0, std::tuple_element_t<I, T>>>(
-                         std::get<0>(*std::declval<const const_object_ref&>().begin())),
-                     ...);
-                    (cast<std::tuple_element_t<1, std::tuple_element_t<I, T>>>(
-                         std::get<1>(*std::declval<const const_object_ref&>().begin())),
-                     ...);
-                };
-            else
-                return false;
-        }(std::make_index_sequence<std::tuple_size_v<T>>{});
-        template <typename T>
-        constexpr bool tuple_from_array = []<std::size_t... I>(std::index_sequence<I...>) {
-            return requires { (cast<std::tuple_element_t<I, T>>(std::declval<const const_value_ref&>()), ...); };
-        }(std::make_index_sequence<std::tuple_size_v<T>>{});
         // Whether the keys of the members that the tuple T takes are copied, so that the reader can give them
         // from the text, which does not outlive the result.
         template <typename T>
@@ -37239,7 +37260,8 @@ namespace yyjson
                 {
                     if constexpr ((Schema::constraints.bits & d::numeric_constraints) != 0)
                     {
-                        const auto number = view_number(cur_);
+                        // some versions of yyjson take no const pointer
+                        auto number = view_number(cur_);
                         const auto kind = yyjson_is_real(&number)   ? d::json_real_violation<Schema>(number.uni.f64)
                                           : yyjson_is_uint(&number) ? d::value_violation<Schema, false>(number.uni.u64)
                                                                     : d::value_violation<Schema, false>(number.uni.i64);

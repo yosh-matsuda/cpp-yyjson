@@ -1590,6 +1590,7 @@ struct yyjson::caster<schema_test::casters::maybe<T>>
     static bool should_omit(const schema_test::casters::maybe<T>& m) { return !m; }
     static T to_json(const schema_test::casters::maybe<T>& m) { return *m; }
 };
+#if YYJSON_VERSION_HEX >= 0x000C00
 template <>
 struct yyjson::caster<schema_test::casters::Tags>
 {
@@ -1605,6 +1606,7 @@ struct yyjson::caster<schema_test::casters::Tags>
     }
     static std::vector<std::string> to_json(const schema_test::casters::Tags& t) { return t.names; }
 };
+#endif
 template <>
 inline constexpr auto yyjson::annotations<schema_test::casters::Post> =
     yyjson::annotate(yyjson::field("tags", yyjson::max_items(2), yyjson::max_length(4)));
@@ -1898,7 +1900,9 @@ TEST(Schema, Primitives)
 TEST(Schema, DomTypes)
 {
     constexpr auto head = R"({"$schema":"https://json-schema.org/draft/2020-12/schema")";
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(schema<yyjson::json_view>(), std::string(head) + "}");
+#endif
     EXPECT_EQ(schema<yyjson::value>(), std::string(head) + "}");
     EXPECT_EQ(schema<yyjson::object>(yyjson::write_direction), std::string(head) + R"(,"type":"object"})");
     EXPECT_EQ(schema<yyjson::array>(), std::string(head) + R"(,"type":"array"})");
@@ -2414,7 +2418,9 @@ TEST(Schema, ListedValues)
                    R"({"f":0.1})", R"({"f":0.2})", R"({"f":2.0})"});
     EXPECT_NE(schema<Listed>().find(R"("enum":[0.1000000001,2]})"), std::string::npos);
     // `write` writes the float that the read keeps, and the keys of a struct in their order
+#if YYJSON_VERSION_HEX >= 0x000B00
     EXPECT_NE(schema<Listed>(yyjson::write_direction).find(R"("enum":[0.1,2.0]})"), std::string::npos);
+#endif
     EXPECT_NE(schema<Listed>(yyjson::write_direction).find(R"("enum":[{"x":0,"y":0},{"x":1,"y":1}])"),
               std::string::npos);
     EXPECT_EQ(definition<Listed>(false)["properties"]["c"]["const"].as<int>(), 3);
@@ -2934,9 +2940,11 @@ TEST(Schema, Casters)
     EXPECT_EQ(definition<casters::BothDefaults>(false),
               json::parse(R"({"type":"object","properties":{"b":{"type":"string"},"v":{"type":"array","items":)"
                           R"({"type":"integer","minimum":-2147483648,"maximum":2147483647},"default":[4]}}})"));
+#if YYJSON_VERSION_HEX >= 0x000C00
     // a caster that reads a `json_view` reads any JSON, which the keywords of its field check
     check<casters::Post>({R"({"tags":["a","b","c"]})", R"({"tags":"cpp20"})", R"({"tags":["cpp20"]})",
                           R"({"tags":"cpp"})", R"({"tags":["ab","cd"]})", R"({"tags":null})", R"({"tags":{}})"});
+#endif
 }
 
 TEST(Schema, CasterKeywords)
