@@ -17,7 +17,7 @@ Fetch the repository with CMake and link the target `cpp_yyjson::cpp_yyjson`. It
 include(FetchContent)
 FetchContent_Declare(cpp_yyjson
     GIT_REPOSITORY https://github.com/yosh-matsuda/cpp-yyjson.git
-    GIT_TAG v2.1.0
+    GIT_TAG v2.2.0
     GIT_SHALLOW TRUE
     GIT_SUBMODULES "")
 FetchContent_MakeAvailable(cpp_yyjson)
