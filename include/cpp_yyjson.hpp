@@ -18146,7 +18146,7 @@ namespace yyjson
                 template <typename T = void>  // penalize overload priority
                 auto emplace_back(std::initializer_list<value> list, copy_string_t) noexcept
                 {
-                    return array_iter<DocType>(*this, array_append(list), copy_string);
+                    return array_iter<DocType>(*this, array_append(list, copy_string));
                 };
                 auto emplace_back(std::initializer_list<key_value_pair> list) noexcept
                 {
@@ -18196,7 +18196,7 @@ namespace yyjson
                 template <typename T = void>  // penalize overload priority
                 auto emplace_front(std::initializer_list<value> list, copy_string_t) noexcept
                 {
-                    return array_iter<DocType>(*this, array_prepend(list), copy_string);
+                    return array_iter<DocType>(*this, array_prepend(list, copy_string));
                 };
                 auto emplace_front(std::initializer_list<key_value_pair> list) noexcept
                 {

@@ -2619,6 +2619,16 @@ TEST(Writer, EmptyStringViewWithoutData)
     EXPECT_EQ((*doc.as_object())[e].write(), "1");
 }
 
+TEST(Writer, EmplaceListWithCopyString)
+{
+    using namespace yyjson;
+
+    auto arr = array();
+    arr.emplace_back({1, "a"}, copy_string);
+    arr.emplace_front({"b", 2}, copy_string);
+    EXPECT_EQ(arr.write(), R"([["b",2],[1,"a"]])");
+}
+
 TEST(Writer, CopyStringKeysOfValues)
 {
     using namespace yyjson;
