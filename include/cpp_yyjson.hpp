@@ -9625,22 +9625,25 @@ namespace yyjson
         template <typename A>
         using alternative_type_t = typename alternative_traits<A>::type;
 
+        template <auto... Settings>
+        struct visit_alternative_settings
+        {
+            constexpr void operator()(const auto& f) const
+            {
+                auto visit = [&]<typename S>(const S& setting) {
+                    if constexpr (!metadata_setting<S>) f(setting);
+                };
+                (visit(alternative_setting_value<Settings>()), ...);
+            }
+        };
+
         // The tree of the settings of `yyjson::alt`.
         template <auto... Settings>
         constexpr tree_builder build_alternative_tree()
         {
             auto b = tree_builder{};
-            build_schema_node(
-                b,
-                [](const auto& f) {
-                    (
-                        [&] {
-                            if constexpr (!metadata_setting<alternative_setting_t<Settings>>)
-                                f(alternative_setting_value<Settings>());
-                        }(),
-                        ...);
-                },
-                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
+            build_schema_node(b, visit_alternative_settings<Settings...>{},
+                              [](std::string_view s) { return tree_string{s.data(), s.size()}; });
             return b;
         }
         // The schema of the settings of the alternative A of a union.
