@@ -298,8 +298,14 @@ static_assert(std::is_constructible_v<yyjson::indirect<double>, int>);
 struct IndStd
 {
     int n = 0;
+#if defined(__GLIBCXX__) && __GLIBCXX__ == 20260322
+    // This libstdc++ cannot compare iterators over std::indirect<T> for recursive T.
+    std::optional<yyjson::indirect<IndStd>> next;
+    std::indirect<std::vector<IndStd>> list;
+#else
     std::optional<std::indirect<IndStd>> next;
     std::vector<std::indirect<IndStd>> list;
+#endif
     bool operator==(const IndStd&) const = default;
 };
 static_assert(yyjson::detail::recursive_type<IndStd>);
