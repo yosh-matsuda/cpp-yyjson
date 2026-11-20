@@ -313,7 +313,9 @@ A [user-defined caster](conversions.md#user-defined-casters) that casts a value 
 
 ### The cost of the policies
 
-A read without a policy checks no key. With a policy, `read<T>`, `read_into` and `merge_into` check the keys of an object only when they differ from the keys of the fields in order. The `cast<T>` of a JSON value checks the keys of each object that it reads into a struct. This holds also for a value that `read<T>` reads into a temporary document.
+A read without a policy checks no key. With a policy, `read<T>`, `read_into` and `merge_into` check a struct for unexpected or missing members only when its keys differ from its fields in order. The `cast<T>` of a JSON value checks the keys of each object that it reads into a struct. This holds also for a value that `read<T>` reads into a temporary document.
+
+With `yyjson::strict` or `yyjson::reject_duplicates`, a successful direct read of a `std::map`, `std::unordered_map` or `std::flat_map` detects repeats while filling the map. This takes one pass in `read<T>`, `read_into` and a `merge_into` that reads a replacement value. A merge into an existing map checks for repeats before applying the patch. A multimap, a range of pairs and a tuple that reads an object also check before the read. A DOM cast compares keys in pairs for objects of at most 16 members. For larger objects it sorts the keys.
 
 ## Constraints
 

@@ -1290,6 +1290,32 @@ TEST(ReadPolicies, Containers)
                     .starts_with("bad cast: the object has a duplicate key at /a; reading std::multimap<"));
     EXPECT_TRUE(read_with<IntHashMultimap>(R"({"a":1,"b":2,"a":3})", yyjson::strict)
                     .starts_with("bad cast: the object has a duplicate key at /a; reading std::unordered_multimap<"));
+    // a key twice with a value that fails before it or at it, as the document checks the keys before the values
+    EXPECT_EQ(read_with<IntMap>(R"({"a":"x","b":2,"a":3})", yyjson::reject_duplicates), map_text);
+    EXPECT_EQ(read_with<IntMap>(R"({"a":1,"b":2,"a":"x"})", yyjson::reject_duplicates), map_text);
+    EXPECT_TRUE(read_with<std::vector<IntHashMap>>(R"([{"b":{},"a":1,"a":2}])", yyjson::strict)
+                    .starts_with("bad cast: the object has a duplicate key at /0/a; reading std::unordered_map<"));
+    // a key twice in a map that `yyjson::read_into` reads over, in the order of its keys or out of it
+    for (const auto* json : {R"({"a":1,"b":2,"a":3})", R"({"b":1,"a":2,"b":3})", R"({"a":1,"c":2,"b":3,"c":"x"})"})
+    {
+        const auto expected = read_with<IntMap>(json, yyjson::reject_duplicates);
+        EXPECT_TRUE(expected.starts_with("bad cast: the object has a duplicate key at /")) << expected;
+        auto map = IntMap{{"a", 0}, {"b", 0}, {"c", 0}};
+        EXPECT_EQ(read_or_error([&] {
+                      yyjson::read_into(json, map, yyjson::reject_duplicates);
+                      return map;
+                  }),
+                  expected)
+            << json;
+        auto hash = IntHashMap{{"a", 0}, {"b", 0}, {"c", 0}};
+        EXPECT_EQ(read_or_error([&] {
+                      yyjson::read_into(json, hash, yyjson::reject_duplicates);
+                      return hash;
+                  }),
+                  read_with<IntHashMap>(json, yyjson::reject_duplicates))
+            << json;
+        EXPECT_EQ(merge_with(IntMap{{"a", 0}}, json, yyjson::reject_duplicates), expected);
+    }
     // a map takes every key
     EXPECT_EQ(read_with<IntMap>(R"({"a":1})", yyjson::reject_unknown_keys), R"({"a":1})");
     // a key twice in a tuple of key-value pairs, which takes the members in their order

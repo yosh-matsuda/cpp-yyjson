@@ -7796,6 +7796,16 @@ struct UnionReasonNode
     std::variant<int, OneOfX> v;
     yyjson::one_of_variant<std::nullptr_t, yyjson::indirect<UnionReasonNode>> next;
 };
+struct UnionReasonCount
+{
+    int x = 0;
+    int y = 0;
+};
+struct UnionReasonText
+{
+    std::string x;
+    int y = 0;
+};
 
 namespace
 {
@@ -7938,6 +7948,28 @@ TEST(Constraints, UnionFailureReasons)
                     "object; alternative 1 ({}) at /a~1b~0c: expected an integer, got a string (reading int)",
                     yyjson::detail::variant_name<IntOrMap>(), yyjson::detail::type_name<std::map<std::string, int>>()),
         "");
+
+    // a struct alternative that a member of the object fails without a read still gives the reason of that read
+    using CountOrText = std::variant<UnionReasonCount, UnionReasonText>;
+    for (const auto& [json, first] : {std::pair{R"({"x":"a","y":"b"})", "x"}, std::pair{R"({"y":"b","x":"a"})", "y"}})
+    {
+        expect_reasons<CountOrText>(
+            json,
+            std::format("no alternative accepts the value; reading std::variant<UnionReasonCount, UnionReasonText>: "
+                        "alternative 0 (UnionReasonCount) at /{}: expected an integer, got a string (reading int); "
+                        "alternative 1 (UnionReasonText) at /y: expected an integer, got a string (reading int)",
+                        first),
+            "");
+    }
+    expect_reasons<CountOrText>(
+        R"({"x":null})",
+        std::format("no alternative accepts the value; reading std::variant<UnionReasonCount, UnionReasonText>: "
+                    "alternative 0 (UnionReasonCount) at /x: expected an integer, got null (reading int); alternative "
+                    "1 (UnionReasonText) at /x: expected a string, got null (reading {})",
+                    yyjson::detail::type_name<std::string>()),
+        "");
+    EXPECT_EQ(yyjson::read<CountOrText>(R"({"x":"a","y":1})").index(), 1);
+    EXPECT_EQ(yyjson::read(R"({"x":"a","y":1})").cast<CountOrText>().index(), 1);
 
     // a variant within an alternative gives no reasons of its own alternatives, which bounds the work
     using Nested = std::variant<int, std::variant<std::string, std::variant<bool, UnionPoint>>>;

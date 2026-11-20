@@ -9890,6 +9890,22 @@ namespace yyjson
             return b;
         }
 
+        // Whether the class S has a setting that `for_each_struct_condition` takes. True for an `as_array` struct too.
+        template <typename S>
+        inline constexpr bool has_struct_condition_settings = [] {
+            if constexpr (!std::is_class_v<S>)
+                return false;
+            else
+                return []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                    return count_true<(combinator_setting<As> || presence_setting<As> || member_annotation<As> ||
+                                       required_keys_setting<As> || setting_of<As, additional_properties<>>)...> != 0;
+                }(std::type_identity<annotation_values_of<S>>{})
+#if FIELD_RFL_ANNOTATIONS
+                       || !type_conditions<S>.empty() || !type_keys<S>.empty()
+#endif
+                           ;
+        }();
+
         // Whether the struct S is annotated with `yyjson::not_`, `if_then_else`, `all_of`, `any_of`, `one_of` or
         // `dependent_required`, which check the keys of the object read into it and the values of its fields, other
         // than the keys of its fields that `yyjson::all_of` only requires.
@@ -9897,26 +9913,13 @@ namespace yyjson
         inline constexpr bool has_struct_conditions = [] {
             if constexpr (!std::is_class_v<S> || as_array_struct<S>)
                 return false;
+            // the members of the root that are left name the keys of no field
+            else if constexpr (has_struct_condition_settings<S>)
+                return checked_tree<&build_struct_tree<S>>::tree.nodes[0].combinators != 0 ||
+                       checked_tree<&build_struct_tree<S>>::tree.nodes[0].members != 0 ||
+                       checked_tree<&build_struct_tree<S>>::tree.nodes[0].properties != 0;
             else
-            {
-                constexpr bool annotated =
-                    []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                        return count_true<(combinator_setting<As> || presence_setting<As> || member_annotation<As> ||
-                                           required_keys_setting<As> || setting_of<As, additional_properties<>>)...> !=
-                               0;
-                    }(std::type_identity<annotation_values_of<S>>{})
-#if FIELD_RFL_ANNOTATIONS
-                    || !type_conditions<S>.empty() || !type_keys<S>.empty()
-#endif
-                    ;
-                // the members of the root that are left name the keys of no field
-                if constexpr (annotated)
-                    return checked_tree<&build_struct_tree<S>>::tree.nodes[0].combinators != 0 ||
-                           checked_tree<&build_struct_tree<S>>::tree.nodes[0].members != 0 ||
-                           checked_tree<&build_struct_tree<S>>::tree.nodes[0].properties != 0;
-                else
-                    return false;
-            }
+                return false;
         }();
 
         // The keywords of the object of a struct that a subschema of its conditions takes, with
@@ -12929,7 +12932,13 @@ namespace yyjson
 
         // Whether the conditions of T check the JSON value of a field, which a check of the values alone cannot do.
         template <typename T>
-        inline constexpr bool struct_conditions_count_input = struct_node_counts_input<T, 0>();
+        inline constexpr bool struct_conditions_count_input = [] {
+            // a struct without such settings has an empty root
+            if constexpr (has_struct_condition_settings<T>)
+                return struct_node_counts_input<T, 0>();
+            else
+                return false;
+        }();
 
         // The keyword of `Schema` that the field `field` does not satisfy, read from the JSON value `json`, or
         // written as `json` if `written`.
@@ -14609,11 +14618,28 @@ namespace yyjson
 
         // Under `yyjson::reject_duplicates`, throws for a key repeated in the object `obj` read into T as pairs.
         template <typename Val>
-        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_repeated_keys(const Val* obj, std::string_view type)
+        CPPYYJSON_NOINLINE void check_repeated_keys(const Val* obj, std::string_view type)
         {
-            auto keys = std::vector<std::pair<std::string_view, std::size_t>>();
-            for_each_member(obj, [&](std::string_view key, const Val*) { keys.emplace_back(key, keys.size()); });
-            const auto first = first_repeated_key(keys);
+            constexpr std::size_t few = 16;
+            auto first = std::size_t(-1);
+            if (const auto size = unsafe_yyjson_get_len(const_cast<Val*>(obj)); size <= few)
+            {
+                // compared in pairs, which costs less than the sort for a few keys
+                auto keys = std::array<std::string_view, few>();
+                auto n = std::size_t{0};
+                for_each_member(obj, [&](std::string_view key, const Val*) {
+                    for (std::size_t i = 0; i < n && first == std::size_t(-1); ++i)
+                        if (keys[i] == key) first = n;
+                    keys[n++] = key;
+                });
+            }
+            else
+            {
+                auto keys = std::vector<std::pair<std::string_view, std::size_t>>();
+                keys.reserve(size);
+                for_each_member(obj, [&](std::string_view key, const Val*) { keys.emplace_back(key, keys.size()); });
+                first = first_repeated_key(keys);
+            }
             if (first == std::size_t(-1)) return;
             auto i = std::size_t{0};
             for_each_member(obj, [&](std::string_view key, const Val* value) {
@@ -27533,6 +27559,63 @@ namespace yyjson
                                 }) ||
                                 reflected_object_castable<T, reader::const_object_ref>);
 
+        // Whether a field of the keyed struct T can never read some kind of JSON value, as `refused_kinds` gives.
+        template <typename T>
+        inline constexpr bool refuses_field_kinds = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return ((refused_kinds<T, Ks>() != 0) || ...);
+        }(std::make_index_sequence<std::remove_cvref_t<decltype(struct_key_matcher<T>())>::size>{});
+
+        // False if a member of the JSON object `obj` has a kind that the field of the keyed struct T of its key can
+        // never read, which the direct reader checks with `skips_refused`.  The cast of T then fails.
+        template <typename T, typename Object>
+        bool field_kinds_readable(const Object& obj)
+        {
+            auto refused = false;
+            const auto check = [&]<std::size_t K>(std::integral_constant<std::size_t, K>, const auto& value) {
+                if constexpr (refused_kinds<T, K>() != 0)
+                {
+                    // the kind from the tag, which `json_kind_of` would give with a call for each field
+                    const auto* const raw = dependent_t<writer::detail::json_value_access, Object>::get(value);
+                    auto* const v = const_cast<std::remove_cvref_t<decltype(*raw)>*>(raw);
+                    auto kind = std::uint16_t{0};
+                    switch (unsafe_yyjson_get_type(v))
+                    {
+                        case YYJSON_TYPE_NULL:
+                            kind = json_kind_null;
+                            break;
+                        case YYJSON_TYPE_BOOL:
+                            kind = json_kind_bool;
+                            break;
+                        case YYJSON_TYPE_NUM:
+                            if (unsafe_yyjson_get_subtype(v) == YYJSON_SUBTYPE_UINT)
+                                kind = json_kind_uint;
+                            else if (unsafe_yyjson_get_subtype(v) == YYJSON_SUBTYPE_SINT)
+                                kind = json_kind_sint;
+                            else
+                                kind = json_kind_of_real(unsafe_yyjson_get_real(v));
+                            break;
+                        case YYJSON_TYPE_STR:
+                            kind = json_kind_string;
+                            break;
+                        case YYJSON_TYPE_ARR:
+                            kind = json_kind_array;
+                            break;
+                        case YYJSON_TYPE_OBJ:
+                            kind = json_kind_object;
+                            break;
+                        default:
+                            kind = json_kind_all;
+                    }
+                    refused = refused || (kind & refused_kinds<T, K>()) != 0;
+                }
+            };
+            if constexpr (visitable<T>)
+                (void)assign_fields_in_order<visit_struct<T>::key_matcher>(obj, check);
+            else
+                (void)assign_fields_in_order<reflected_key_matcher<T>>(obj, check);
+            return !refused;
+        }
+
         // N bits, which `std::bitset` does not set in a constant expression before C++23.
         template <std::size_t N>
         struct bit_array
@@ -28353,7 +28436,7 @@ namespace yyjson
             constraint_kind kind;
         };
 
-        // Whether this thread reads the alternatives of a failed untagged read again to find their reasons.  A
+        // Whether this thread reads the alternatives of an untagged variant, whose failures give its reasons.  A
         // variant that fails within that read gives no reasons, so that the work stays bounded at each depth.
         inline constinit thread_local bool collecting_alternative_reasons = false;
 
@@ -28424,6 +28507,86 @@ namespace yyjson
         // fails, or none if it reads the value.
         using alternative_reason = std::optional<alternative_failure> (*)(const void* json);
 
+        // How an alternative of a variant failed when the variant tried it: the exception of its read, or the
+        // keyword of `alternative_rejected`.
+        struct alternative_record
+        {
+            std::optional<bad_cast> failure;
+            constraint_kind rejected = constraint_kind::none;
+            bool tried = false;
+        };
+        // The reason of the alternative I from its record and the JSON value at `json`.
+        using recorded_reason = alternative_failure (*)(const void* json, const alternative_record& record);
+
+        // The failures of the alternatives of an untagged variant that a read has tried.  The records are
+        // allocated at the first failure that is kept, and each exit of the read frees them with `release` or
+        // `take`: a destructor would slow down every read of the variant.
+        class alternative_trials
+        {
+            alternative_record* records_ = nullptr;
+
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void free() noexcept
+            {
+                delete[] records_;
+                records_ = nullptr;
+            }
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD alternative_record& at(std::size_t size, std::size_t i)
+            {
+                if (records_ == nullptr) records_ = new alternative_record[size];
+                return records_[i];
+            }
+            // A failure of a nested variant is not kept, as `alternative_reasons_scope` changes its text.
+            static bool keeps(bool nested, const bad_cast* e) noexcept
+            {
+                return !nested && !collecting_alternative_reasons &&
+                       (e == nullptr || e->kind() != error_kind::no_alternative);
+            }
+
+        public:
+            alternative_trials() = default;
+            alternative_trials(const alternative_trials&) = delete;
+            alternative_trials& operator=(const alternative_trials&) = delete;
+
+            [[nodiscard]] bool empty() const noexcept { return records_ == nullptr; }
+            void release() noexcept
+            {
+                if (records_ != nullptr) [[unlikely]]
+                    free();
+            }
+            [[nodiscard]] std::unique_ptr<alternative_record[]> take() noexcept
+            {
+                return std::unique_ptr<alternative_record[]>(std::exchange(records_, nullptr));
+            }
+            // Records the failure of the alternative I of `size` unless the variant discards its reasons.  A
+            // failure to record leaves the reason to be read again.
+            void record(std::size_t size, std::size_t i, bool nested, const bad_cast& e) noexcept
+            {
+                if (!keeps(nested, &e)) return;
+                try
+                {
+                    auto& record = at(size, i);
+                    record.failure.emplace(e);
+                    record.tried = true;
+                }
+                catch (...)  // NOLINT(bugprone-empty-catch)
+                {
+                }
+            }
+            void record(std::size_t size, std::size_t i, bool nested, constraint_kind rejected) noexcept
+            {
+                if (!keeps(nested, nullptr)) return;
+                try
+                {
+                    auto& record = at(size, i);
+                    record.rejected = rejected;
+                    record.tried = true;
+                }
+                catch (...)  // NOLINT(bugprone-empty-catch)
+                {
+                }
+            }
+        };
+
         // Throws at `at` that no alternative of the variant `variant` reads the value, with the reason of each.
         [[noreturn]] CPPYYJSON_COLD inline void throw_alternative_reasons(cast_target at, std::string_view variant,
                                                                           std::span<const std::string_view> names,
@@ -28442,15 +28605,18 @@ namespace yyjson
         }
 
         // Throws at `at` that no alternative of the untagged variant `variant` reads the JSON value at `json` of
-        // `kind`, with the reason of each, which `reasons_of` finds, unless a variant that reads it discards it.
+        // `kind`, with the reason of each, unless `discards`.  The reason of an alternative that `trials` records
+        // comes from `recorded`, and `reasons_of` reads any other again.
         [[noreturn]] CPPYYJSON_COLD inline void throw_untagged_reasons(cast_target at, std::string_view variant,
                                                                        std::span<const std::string_view> names,
                                                                        std::span<const std::uint16_t> kinds,
                                                                        std::span<const alternative_reason> reasons_of,
-                                                                       const void* json, std::uint16_t kind,
-                                                                       bool nested)
+                                                                       std::span<const recorded_reason> recorded,
+                                                                       alternative_trials& trials, bool discards,
+                                                                       const void* json, std::uint16_t kind)
         {
-            if (nested || collecting_alternative_reasons)
+            const auto records = trials.take();
+            if (discards)
             {
                 auto facts = failure_facts<error_kind::no_alternative>();
                 facts.type = variant;
@@ -28463,6 +28629,8 @@ namespace yyjson
                 {
                     if ((kinds[i] & kind) == 0)
                         reasons[i].reason = no_kind_reason(kinds[i], kind);
+                    else if (records != nullptr && records[i].tried)
+                        reasons[i] = recorded[i](json, records[i]);
                     else if (auto reason = reasons_of[i](json))
                         reasons[i] = std::move(*reason);
                     else
@@ -28502,6 +28670,7 @@ namespace yyjson
             {
                 const auto kind = json_kind_of(json);
                 const auto rereads = variant_reread_guard<V, Json>(kind);
+                auto trials = alternative_trials();
                 if constexpr (json_value_of_document<Json> && ranks_keyed_alternatives<V>)
                 {
                     if (kind == json_kind_object)
@@ -28512,24 +28681,28 @@ namespace yyjson
                             const void* const raw = dependent_t<writer::detail::json_value_access, Json>::get(json);
                             return from_ranked(
                                 json, key_ranking::rank_object(obj, raw, (read_policies & unknown_keys_policy) != 0), 0,
-                                rereads);
+                                rereads, trials);
                         }
                     }
                 }
-                return from_alternative<0>(json, kind, rereads);
+                return from_alternative<0>(json, kind, rereads, trials);
             }
 
             // `may_cast` for the alternative I, which is checked before it is cast when another alternative
             // may be tried.  False fails the alternative as a failed cast does.
             template <std::size_t I, typename Json, typename Guard>
-            static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads)
+            static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads, alternative_trials& trials)
             {
                 using T = std::variant_alternative_t<I, V>;
                 if constexpr (json_value_of_document<Json> && default_read_integer<std::remove_cvref_t<T>>)
                 {
                     if (!integer_fits<std::remove_cvref_t<T>>(json, kind))
                     {
-                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                        if (rereads.template stops_after<I>())
+                        {
+                            trials.release();
+                            throw_variant_reread_limit<V, T>();
+                        }
                         return false;
                     }
                 }
@@ -28537,8 +28710,28 @@ namespace yyjson
                 {
                     if (!yyjson::detail::may_cast<std::remove_cvref_t<T>>(json, kind))
                     {
-                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                        if (rereads.template stops_after<I>())
+                        {
+                            trials.release();
+                            throw_variant_reread_limit<V, T>();
+                        }
                         return false;
+                    }
+                }
+                if constexpr (json_value_of_document<Json> && keyed_struct<std::remove_cvref_t<T>>)
+                {
+                    if constexpr (refuses_field_kinds<std::remove_cvref_t<T>>)
+                    {
+                        if (kind == json_kind_object &&
+                            !field_kinds_readable<std::remove_cvref_t<T>>(*json.as_object()))
+                        {
+                            if (rereads.template stops_after<I>())
+                            {
+                                trials.release();
+                                throw_variant_reread_limit<V, T>();
+                            }
+                            return false;
+                        }
                     }
                 }
                 return true;
@@ -28592,59 +28785,99 @@ namespace yyjson
             static constexpr auto failure_reasons = []<std::size_t... Is>(std::index_sequence<Is...>) {
                 return std::array<alternative_reason, sizeof...(Ts)>{&failure_reason<Is, Json>...};
             }(std::index_sequence_for<Ts...>{});
+
+            // `recorded_reason` for the alternative I, which gives what `failure_reason` gives.
+            template <std::size_t I, typename Json>
+            static alternative_failure record_reason(const void* json, const alternative_record& record)
+            {
+                if constexpr (constrained_union_alternative<V, I>)
+                {
+                    if (record.rejected != constraint_kind::none)
+                        return {
+                            {},
+                            keyword_failure_text(constraint_facts<union_alternative_schema<V, I>>(record.rejected))};
+                }
+                if (!record.failure.has_value()) return {};
+                const auto at = target_of(*static_cast<const Json*>(json));
+                return {bad_cast_access::path_from(*record.failure, at.value(), at.mutable_value()),
+                        bad_cast_access::reason(*record.failure)};
+            }
+            template <typename Json>
+            static constexpr auto record_reasons = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<recorded_reason, sizeof...(Ts)>{&record_reason<Is, Json>...};
+            }(std::index_sequence_for<Ts...>{});
             static constexpr auto alternative_names =
                 std::array<std::string_view, sizeof...(Ts)>{variant_name<Ts>()...};
 
-            // Throws for the JSON value that no alternative reads, with the reason of each unless `nested`.
+            // Throws for the JSON value that no alternative reads, with the reason of each unless `nested`.  The
+            // reasons of the alternatives that `trials` records come from those records.
             template <typename Json>
-            [[noreturn]] CPPYYJSON_COLD static void throw_no_match(const Json& json, bool nested)
+            [[noreturn]] CPPYYJSON_COLD static void throw_no_match(const Json& json, alternative_trials& trials,
+                                                                   bool nested)
             {
                 throw_untagged_reasons(target_of(json), variant_name<V>(), alternative_names, alternative_kinds<Json>,
-                                       failure_reasons<Json>, &json, json_kind_of(json), nested);
+                                       failure_reasons<Json>, record_reasons<Json>, trials,
+                                       nested || collecting_alternative_reasons, &json, json_kind_of(json));
             }
 
             // Casts the JSON object to the keyed alternative ranked at `pos` in `ranked`, or to the first after it that
             // reads the object, and then to the first other alternative that does as `from_alternative` does.
             template <typename Json, typename Ranking, typename Guard>
-            static V from_ranked(const Json& json, const Ranking& ranked, std::size_t pos, const Guard& rereads)
+            static V from_ranked(const Json& json, const Ranking& ranked, std::size_t pos, const Guard& rereads,
+                                 alternative_trials& trials)
             {
-                if (pos == ranked.count) return from_alternative<0>(json, json_kind_object, rereads, ranked);
-                return from_keyed<0>(json, ranked, pos, rereads);
+                if (pos == ranked.count) return from_alternative<0>(json, json_kind_object, rereads, trials, ranked);
+                return from_keyed<0>(json, ranked, pos, rereads, trials);
             }
 
-            // `from_ranked` for the keyed alternative K, by its index among them, if `ranked` has it at `pos`.  A keyed
-            // struct is not checked with `may_cast`, which checks nothing in a struct.
+            // `from_ranked` for the keyed alternative K, by its index among them, if `ranked` has it at `pos`.  It is
+            // checked with `may_cast` as the direct reader checks the first keyed alternative.
             template <std::size_t K, typename Json, typename Ranking, typename Guard>
-            static V from_keyed(const Json& json, const Ranking& ranked, std::size_t pos, const Guard& rereads)
+            static V from_keyed(const Json& json, const Ranking& ranked, std::size_t pos, const Guard& rereads,
+                                alternative_trials& trials)
             {
                 if constexpr (K + 1 < key_ranking::size)
                 {
-                    if (ranked.order[pos] != K) return from_keyed<K + 1>(json, ranked, pos, rereads);
+                    if (ranked.order[pos] != K) return from_keyed<K + 1>(json, ranked, pos, rereads, trials);
                 }
                 constexpr auto i = key_ranking::alternatives[K];
                 using T = std::variant_alternative_t<i, V>;
+                if (!may_cast<i>(json, json_kind_object, rereads, trials))
+                    return from_ranked(json, ranked, pos + 1, rereads, trials);
                 auto limit = std::exception_ptr();
                 try
                 {
-                    return cast_alternative<i>(json);
+                    auto value = cast_alternative<i>(json);
+                    trials.release();
+                    return value;
                 }
                 catch (const recursion_limit_error&)
                 {
                     limit = std::current_exception();
                 }
-                catch (const bad_cast&)  // NOLINT(bugprone-empty-catch)
+                catch (const bad_cast& e)
                 {
+                    trials.record(sizeof...(Ts), i, rereads.nested(), e);
                 }
-                catch (const alternative_rejected&)  // NOLINT(bugprone-empty-catch)
+                catch (const alternative_rejected& e)
                 {
+                    trials.record(sizeof...(Ts), i, rereads.nested(), e.kind);
                 }
                 catch (...)
                 {
                     limit = std::current_exception();
                 }
-                if (limit) std::rethrow_exception(limit);
-                if (rereads.template stops_after<i>()) throw_variant_reread_limit<V, T>();
-                return from_ranked(json, ranked, pos + 1, rereads);
+                if (limit)
+                {
+                    trials.release();
+                    std::rethrow_exception(limit);
+                }
+                if (rereads.template stops_after<i>())
+                {
+                    trials.release();
+                    throw_variant_reread_limit<V, T>();
+                }
+                return from_ranked(json, ranked, pos + 1, rereads, trials);
             }
 
             // Casts the JSON value to the alternative I, or to the first alternative after it that accepts the value.
@@ -28653,15 +28886,15 @@ namespace yyjson
             // have been tried and failed already, and the others are tried for the object.
             template <std::size_t I, typename Json, typename Guard, typename... Ranked>
             static V from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads,
-                                      const Ranked&... ranked)
+                                      alternative_trials& trials, const Ranked&... ranked)
             {
                 if constexpr (I == sizeof...(Ts))
-                    throw_no_match(json, rereads.nested());
+                    throw_no_match(json, trials, rereads.nested());
                 else
                 {
                     using T = std::variant_alternative_t<I, V>;
                     if ((alternative_kinds<Json>[I] & kind) != 0 && !(ranked.has(I) || ...) &&
-                        (!may_follow<I, Json>(kind, ranked...) || may_cast<I>(json, kind, rereads)))
+                        (!may_follow<I, Json>(kind, ranked...) || may_cast<I>(json, kind, rereads, trials)))
                     {
                         // A limit or an exception of another type is thrown again after the handler.  On Windows a
                         // handler runs on top of the frames that threw, so a throw from the handler at every level of
@@ -28669,26 +28902,38 @@ namespace yyjson
                         auto limit = std::exception_ptr();
                         try
                         {
-                            return cast_alternative<I>(json);
+                            auto value = cast_alternative<I>(json);
+                            trials.release();
+                            return value;
                         }
                         catch (const recursion_limit_error&)
                         {
                             limit = std::current_exception();
                         }
-                        catch (const bad_cast&)  // NOLINT(bugprone-empty-catch)
+                        catch (const bad_cast& e)
                         {
+                            trials.record(sizeof...(Ts), I, rereads.nested(), e);
                         }
-                        catch (const alternative_rejected&)  // NOLINT(bugprone-empty-catch)
+                        catch (const alternative_rejected& e)
                         {
+                            trials.record(sizeof...(Ts), I, rereads.nested(), e.kind);
                         }
                         catch (...)
                         {
                             limit = std::current_exception();
                         }
-                        if (limit) std::rethrow_exception(limit);
-                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                        if (limit)
+                        {
+                            trials.release();
+                            std::rethrow_exception(limit);
+                        }
+                        if (rereads.template stops_after<I>())
+                        {
+                            trials.release();
+                            throw_variant_reread_limit<V, T>();
+                        }
                     }
-                    return from_alternative<I + 1>(json, kind, rereads, ranked...);
+                    return from_alternative<I + 1>(json, kind, rereads, trials, ranked...);
                 }
             }
 
@@ -39376,8 +39621,7 @@ namespace yyjson
                     auto key_buf = std::string();
                     auto position = d::emplace_position<V>::first(result);
                     [[maybe_unused]] auto out = std::ranges::begin(result);
-                    check_map_keys();
-                    read_members([&] {
+                    const auto member = [&] {
                         if constexpr (d::object_assignable_range<V, const_object_ref>)
                             if (rec.size == std::ranges::size(result)) [[unlikely]]
                                 fail();
@@ -39387,12 +39631,21 @@ namespace yyjson
                         auto value = read_recorded<E>(r);
                         keep_element<E>(rec.members, value, r);
                         ++rec.size;
+                        const auto size = std::ranges::size(result);
                         if constexpr (d::object_assignable_range<V, const_object_ref>)
                             *out++ = d::make_key_value<V>(key, std::move(value));
                         else
                             d::emplace_key_value<!d::object_emplaceable_range<V, const_object_ref>>(
                                 result, position, key, std::move(value));
-                    });
+                        return std::ranges::size(result) != size;
+                    };
+                    if constexpr (d::unique_set<V> && !d::object_assignable_range<V, const_object_ref>)
+                        read_unique_members(member);
+                    else
+                    {
+                        check_map_keys();
+                        read_members(member);
+                    }
                     if constexpr (d::object_assignable_range<V, const_object_ref>)
                         if (rec.size != std::ranges::size(result)) [[unlikely]]
                             fail();
@@ -39799,6 +40052,43 @@ namespace yyjson
                 }
             }
 
+            // Reads the members of the object at `cur_` as `read_members` reads them, into a map whose `member()`
+            // returns false for a key that it has, which `yyjson::reject_duplicates` rejects.
+            template <typename Member>
+            CPPYYJSON_ALWAYS_INLINE void read_unique_members(Member&& member)
+            {
+                if ((policies_ & yyjson::detail::duplicates_policy) == 0) [[likely]]
+                    read_members([&] { static_cast<void>(member()); });
+                else
+                    read_members_once(member);
+            }
+            // A failure looks for a repeated key before it leaves, as the document checks the keys before it reads
+            // the values.
+            template <typename Member>
+            CPPYYJSON_NOINLINE void read_members_once(Member& member)
+            {
+                const char* const open = cur_;
+                try
+                {
+                    read_members([&] {
+                        if (!member()) [[unlikely]]
+                            fail();
+                    });
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                    const char* const at = cur_;
+                    cur_ = open;
+                    check_unique_keys();
+                    cur_ = at;
+                    throw;
+                }
+            }
+
             CPPYYJSON_ALWAYS_INLINE void read_colon()
             {
                 skip_ws();
@@ -39848,14 +40138,22 @@ namespace yyjson
                     auto result = T();
                     auto key_buf = std::string();
                     auto position = yyjson::detail::emplace_position<T>::first(result);
-                    check_map_keys();
-                    read_members([&] {
+                    const auto member = [&] {
                         // the key is kept in `key_buf` while the value is read if it has escapes
                         const auto key = read_key<T>(key_buf);
                         read_colon();
+                        const auto size = std::ranges::size(result);
                         yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
                             result, position, key, read_value<value_type>());
-                    });
+                        return std::ranges::size(result) != size;
+                    };
+                    if constexpr (yyjson::detail::unique_set<T>)
+                        read_unique_members(member);
+                    else
+                    {
+                        check_map_keys();
+                        read_members(member);
+                    }
                     return result;
                 }
                 else if constexpr (yyjson::detail::object_assignable_range<T, json_object>)
@@ -40818,7 +41116,6 @@ namespace yyjson
             void read_map_over(T& result)
             {
                 using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
-                check_map_keys();
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
                 if constexpr (yyjson::detail::hinted_map<T>)
@@ -40829,7 +41126,7 @@ namespace yyjson
                     auto ahead = result.begin();
                     auto named = std::optional<node_set>();
                     auto next = result.end();
-                    read_members([&] {
+                    read_unique_members([&] {
                         const auto key = read_key<T>(key_buf);
                         read_colon();
                         if (!named) [[likely]]
@@ -40838,14 +41135,15 @@ namespace yyjson
                             {
                                 read_value_into(ahead->second);
                                 ++ahead;
-                                return;
+                                return true;
                             }
                             // a key before `ahead` is either new or named before
                             lookup_key(lookup, key);
                             if (ahead == result.end() || result.key_comp()(lookup, ahead->first))
                             {
+                                const auto size = result.size();
                                 result.emplace_hint(ahead, lookup, read_value<value_type>());
-                                return;
+                                return result.size() != size;
                             }
                             named.emplace(result.size());
                             next = ahead;
@@ -40855,13 +41153,16 @@ namespace yyjson
                         if (it == result.end())
                         {
                             named->insert(&*result.emplace(lookup, read_value<value_type>()).first);
-                            return;
+                            return true;
                         }
                         next = std::next(it);
                         if (result.key_comp()(it->first, ahead->first) || !named->insert(&*it))
+                        {
                             std::ignore = read_value<value_type>();
-                        else
-                            read_value_into(it->second);
+                            return false;
+                        }
+                        read_value_into(it->second);
+                        return true;
                     });
                     if (!named)
                         result.erase(ahead, result.end());
@@ -40873,7 +41174,7 @@ namespace yyjson
                 {
                     // `named` holds the nodes that a member has named, and the others are erased at the end
                     auto named = node_set(result.size());
-                    read_members([&] {
+                    read_unique_members([&] {
                         const auto key = read_key<T>(key_buf);
                         read_colon();
                         const auto it = result.find(lookup_key(lookup, key));
@@ -40882,7 +41183,11 @@ namespace yyjson
                         else if (named.insert(&*it))
                             read_value_into(it->second);
                         else
+                        {
                             std::ignore = read_value<value_type>();
+                            return false;
+                        }
+                        return true;
                     });
                     if (named.size() != result.size())
                         for (auto it = result.begin(); it != result.end();)
@@ -41334,17 +41639,38 @@ namespace yyjson
             }
 
             // Fails if the object at `cur_` has a key twice, which `yyjson::reject_duplicates` rejects for a map.
-            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_unique_keys()
+            CPPYYJSON_NOINLINE void check_unique_keys()
             {
                 const auto guard = cursor_guard{*this, cur_};
-                auto keys = std::vector<std::string>();
+                // a key with escapes is kept in `escaped`, whose strings stay in place, and others in the text
+                auto escaped = std::forward_list<std::string>();
+                constexpr std::size_t few = 16;
+                auto first = std::array<std::string_view, few>();
+                auto rest = std::vector<std::pair<std::string_view, std::size_t>>();
+                auto count = std::size_t{0};
                 ++cur_;
                 skip_ws();
                 if (*cur_ == '}') return;
                 for (;;)
                 {
                     if (*cur_ != '"') fail();
-                    keys.emplace_back(read_string(scratch_));
+                    auto key = read_string(scratch_);
+                    if (key.data() == scratch_.data()) key = escaped.emplace_front(key);
+                    if (count < few)
+                    {
+                        for (std::size_t i = 0; i < count; ++i)
+                        {
+                            if (first[i] == key) fail();
+                        }
+                        first[count] = key;
+                    }
+                    else
+                    {
+                        if (count == few)
+                            for (std::size_t i = 0; i < few; ++i) rest.emplace_back(first[i], i);
+                        rest.emplace_back(key, count);
+                    }
+                    ++count;
                     read_colon();
                     skip_value();
                     skip_ws();
@@ -41352,10 +41678,7 @@ namespace yyjson
                     ++cur_;
                     skip_ws();
                 }
-                auto views = std::vector<std::pair<std::string_view, std::size_t>>();
-                views.reserve(keys.size());
-                for (const auto& key : keys) views.emplace_back(key, views.size());
-                if (yyjson::detail::first_repeated_key(views) != std::size_t(-1)) fail();
+                if (!rest.empty() && yyjson::detail::first_repeated_key(rest) != std::size_t(-1)) fail();
             }
             CPPYYJSON_ALWAYS_INLINE void check_map_keys()
             {
