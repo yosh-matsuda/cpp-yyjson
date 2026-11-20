@@ -582,6 +582,73 @@ TEST(TaggedVariant, AdjacentAfterSkippedField)
               (std::vector<TagSkippedBare>{{0, TagCircle{2}}, {0, {}}}));
 }
 
+// `std::monostate` with a name of `adjacent_tag`, and beside a field of the tag
+struct TagNamedNone
+{
+    TagBodyOrNone body;
+    bool operator==(const TagNamedNone&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagNamedNone> =
+    yyjson::annotate(yyjson::field("body", yyjson::adjacent_tag("t", {"none", "circle", "text"})));
+struct TagFieldNone
+{
+    std::string t;
+    TagBodyOrNone body;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagFieldNone> = yyjson::annotate(yyjson::field("body", tag_body_or_none));
+struct TagOptionalFieldNone
+{
+    std::string t;
+    TagBodyOrNone body;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagOptionalFieldNone> = yyjson::annotate(
+    yyjson::field("t", yyjson::default_, yyjson::min_length(1)), yyjson::field("body", tag_body_or_none));
+
+TEST(TaggedVariant, Monostate)
+{
+    using namespace yyjson;
+
+    // a named `std::monostate` is written as null with its tag, and the tag reads only null
+    EXPECT_EQ(write(TagNamedNone{}), R"({"t":"none","body":null})");
+    expect_direct_write(TagNamedNone{});
+    EXPECT_EQ(read<TagNamedNone>(R"({"body":null,"t":"none"})"), TagNamedNone{});
+    EXPECT_TRUE(expect_direct_read<TagNamedNone>(R"({"body":null,"t":"none"})"));
+    EXPECT_EQ(read<TagNamedNone>(R"({"t":"circle","body":{"r":1}})"), (TagNamedNone{TagCircle{1}}));
+    for (const auto* json : {R"({"t":"none","body":1})", R"({"body":1,"t":"none"})", R"({"body":null})"})
+    {
+        EXPECT_THROW((void)read<TagNamedNone>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<TagNamedNone>(), bad_cast) << json;
+        expect_direct_read<TagNamedNone>(json);
+    }
+
+    // a field of the tag beside an unnamed `std::monostate` must be left out of the object
+    const auto unnamed =
+        R"(the field "t" of TagFieldNone is "circle", but the field "body" holds std::monostate, which )"
+        "yyjson::adjacent_tag does not name";
+    for (const auto& f : std::initializer_list<std::function<void()>>{
+             [] { (void)write(TagFieldNone{"circle", {}}); }, [] { validate(TagFieldNone{"circle", {}}); },
+             [] { (void)write(TagFieldNone{"circle", {}}, with_validation); }})
+    {
+        try
+        {
+            f();
+            ADD_FAILURE() << "no exception";
+        }
+        catch (const std::invalid_argument& e)
+        {
+            EXPECT_EQ(std::string_view(e.what()), unnamed);
+        }
+    }
+    EXPECT_THROW(validate(TagFieldNone{"text", TagCircle{1}}), std::invalid_argument);
+    EXPECT_THROW(validate(TagFieldNone{"circle", std::string("x")}), std::invalid_argument);
+    EXPECT_EQ(write(TagOptionalFieldNone{}), R"({"body":null})");
+    EXPECT_NO_THROW(validate(TagOptionalFieldNone{}));
+    EXPECT_THROW((void)write(TagOptionalFieldNone{"text", {}}), std::invalid_argument);
+}
+
 TEST(TaggedVariant, ManyAlternatives)
 {
     using namespace yyjson;

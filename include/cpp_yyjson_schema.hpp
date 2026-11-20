@@ -3101,8 +3101,8 @@ namespace yyjson
         }
 
         // The tag of the variant of the field K names its alternative, also when a field of S holds it.  A missing tag
-        // reads only null, as `std::monostate`, and a missing value keeps its default, which the tag must name.  A
-        // write gives no tag for `std::monostate`, and none beside a default value that it leaves out.
+        // reads only null, as `std::monostate` without a name, and a missing value keeps its default, which the tag
+        // must name.  A write gives no tag for such a `std::monostate`, and none beside a default that it leaves out.
         template <typename S, std::size_t K>
         void generator::emit_adjacent_tag(object_ref out)
         {
@@ -3135,10 +3135,8 @@ namespace yyjson
                     const auto d = it->second.as_string();
                     if (!d || Tags::alternative(*d) == std::variant_npos) field.erase("default");
                 }
-                if (!monostate || !writing_) names(place(field, "enum"));
+                names(place(field, "enum"));
             }
-            // a write leaves the field of the tag unchecked while the variant has no value
-            const bool unchecked = !own && monostate && writing_;
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 (
                     [&] {
@@ -3150,28 +3148,13 @@ namespace yyjson
                                 .emplace("const", Tags::ids[Is]);
                             tagged.emplace("required", empty_array).emplace_back(key);
                             auto at = then.emplace("properties", empty_object).emplace(value, empty_object);
-                            using T = std::variant_alternative_t<Is, F>;
-                            if (!unchecked)
-                                emit<T>(at);
-                            else
-                            {
-                                auto any = at.emplace("anyOf", empty_array);
-                                emit<T>(any.emplace_back(empty_object));
-                                any.emplace_back(empty_object).emplace("type", "null");
-                            }
+                            emit<std::variant_alternative_t<Is, F>>(at);
                         }
                     }(),
                     ...);
             }(std::make_index_sequence<size>{});
-            // a write checks a field of the tag only against the variant, and may leave it out as any other field
-            if constexpr (!own)
-                if (writing_) return;
-            const auto depend = [&](std::string_view from, std::string_view to) {
-                auto all = sub(out, "dependentRequired");
-                all.emplace(from, empty_array).emplace_back(to);
-            };
-            if constexpr (monostate)
-            {
+            // a value other than null needs the tag
+            const auto tag_of_value = [&] {
                 auto [valued, then] = condition(out);
                 valued.emplace("required", empty_array).emplace_back(value);
                 valued.emplace("properties", empty_object)
@@ -3179,7 +3162,20 @@ namespace yyjson
                     .emplace("not", empty_object)
                     .emplace("type", "null");
                 then.emplace("required", empty_array).emplace_back(key);
-            }
+            };
+            // a write leaves out a field of the tag only beside `std::monostate`, and may leave out the variant
+            if constexpr (!own)
+                if (writing_)
+                {
+                    if constexpr (monostate) tag_of_value();
+                    return;
+                }
+            const auto depend = [&](std::string_view from, std::string_view to) {
+                auto all = sub(out, "dependentRequired");
+                all.emplace(from, empty_array).emplace_back(to);
+            };
+            if constexpr (monostate)
+                tag_of_value();
             else if (required)
                 add_required(out, key);
             else

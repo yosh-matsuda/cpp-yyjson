@@ -11,6 +11,7 @@ In short:
 *   The default dialect is JSON Schema 2020-12. The tag `yyjson::openapi_3_1` gives the schema objects of OpenAPI 3.1.
 *   [`yyjson::schema_collection`](#openapi-and-schema-collections) collects the schemas of more than one type, for example for the `components/schemas` of an OpenAPI document.
 *   JSON that is valid against the read schema is read by `read<T>`. JSON that `write` writes for a value that `yyjson::validate` accepts is valid against the write schema. A [short list of exceptions](#exceptions) applies.
+*   Both schema directions describe a named `std::monostate` with its adjacent tag and a `null` value.
 *   The library does not read a schema. It writes no other dialect, such as draft-07 or OpenAPI 3.0.
 
 This page describes:
@@ -298,7 +299,7 @@ The library cannot derive the schema of some types, such as a caster that reads 
 *   `yyjson::schema(R"({...})")` replaces the generated schema. `yyjson::schema({.read = "...", .write = "..."})` gives one text for each direction. A direction without a text keeps the generated schema.
 *   `yyjson::schema_extend(R"({...})")` adds keywords to the generated schema. A keyword of the same name replaces the generated keyword. The added keywords come at the end. On a field, the generated `default` stays, and a `default` in the text replaces it.
 
-Give them to a type in its annotations, or to a field in `yyjson::field`. A type or a field takes only one of the two settings. The text of `yyjson::schema` must be a JSON object or a boolean. `true` gives no keyword, and `false` gives `"not": {}`. The text of `yyjson::schema_extend` must be a JSON object.
+Give either setting to a type or field. For a `yyjson::alt` alternative, pass a pointer to a `constexpr` setting. A type, field or alternative takes only one of the two. The text of `yyjson::schema` must be a JSON object or a boolean. `true` gives no keyword, and `false` gives `"not": {}`. The text of `yyjson::schema_extend` must be a JSON object.
 
 ```cpp
 struct Rgb
@@ -356,7 +357,7 @@ yyjson::json_schema<Theme>().write();
 | `std::variant`, `yyjson::any_of_variant` | `anyOf`. When each alternative gives only a JSON type, the schema merges them into one `type`, such as `["integer","string"]`. |
 | `yyjson::one_of_variant` | `oneOf` in the read schema and in the write schema. The schema keeps `oneOf` also when each alternative gives only a JSON type. A variant of one alternative gives the schema of that alternative alone, because `oneOf` of one schema accepts the same values. |
 | [internal tag](conversions.md#internal-tag) | `oneOf`. Each alternative is a `$ref` with `properties` that give the `const` of the tag and `required` that gives its key. |
-| [adjacent tag](conversions.md#adjacent-tag) | The field of the value is `anyOf` of the alternatives. The key of the tag takes `enum` of the names. `if` and `then` connect each name to its alternative. |
+| [adjacent tag](conversions.md#adjacent-tag) | The value can match any alternative. The key of the tag takes `enum` of the names. `if` and `then` connect each name to its alternative. A named `std::monostate` requires `null` for that name. With an unnamed `std::monostate`, a non-null value requires the tag. A separate tag field can have its own `required` rule. |
 
 ## Casters
 
@@ -477,5 +478,5 @@ These are compile errors:
 *   A read policy with `yyjson::write_direction`, or `yyjson::emit_defaults` without it.
 *   `yyjson::write_direction`, `yyjson::emit_defaults` or `yyjson::schema_options` twice, or two dialects.
 *   A character other than `[A-Za-z0-9._-]` in `yyjson::schema_name`, or `yyjson::schema_name` on a field.
-*   `yyjson::schema` and `yyjson::schema_extend` on one field or one type.
+*   `yyjson::schema` and `yyjson::schema_extend` on the same field, type or `yyjson::alt` alternative.
 *   Metadata on a position that [does not take it](#metadata).

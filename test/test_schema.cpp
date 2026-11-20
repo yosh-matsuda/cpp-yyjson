@@ -809,6 +809,11 @@ namespace schema_test
             std::string kind = "i";
             Number d;
         };
+        // a `std::monostate` with a name of the tag
+        struct NamedNone
+        {
+            MaybeNumber d;
+        };
         struct StructDefault
         {
             std::string kind = "i";
@@ -1164,6 +1169,9 @@ inline constexpr auto yyjson::annotations<schema_test::tags::Pairs> =
 template <>
 inline constexpr auto yyjson::annotations<schema_test::tags::KindDefault> = yyjson::annotate(
     yyjson::field("kind", yyjson::default_), yyjson::field("d", yyjson::adjacent_tag("kind", {"i", "s"})));
+template <>
+inline constexpr auto yyjson::annotations<schema_test::tags::NamedNone> =
+    yyjson::annotate(yyjson::field("d", yyjson::adjacent_tag("kind", {"none", "i", "s"})));
 template <>
 inline constexpr auto yyjson::annotations<schema_test::tags::StructDefault> =
     yyjson::annotate(yyjson::default_, yyjson::field("d", yyjson::adjacent_tag("kind", {"i", "s"})));
@@ -1695,6 +1703,29 @@ namespace
         {
             return false;
         }
+        catch (const std::invalid_argument&)
+        {
+            return false;
+        }
+    }
+
+    // Whether `write` rejects t, as a `std::monostate` beside a field of the tag that names no alternative.
+    template <typename T>
+    bool write_rejects(const T& t)
+    {
+        try
+        {
+            yyjson::validate(t);
+            return false;
+        }
+        catch (const yyjson::bad_cast&)
+        {
+            return false;
+        }
+        catch (const std::invalid_argument&)
+        {
+            return true;
+        }
     }
 
     // Each `default` of `schema` and of its subschemas is valid against the schema that holds it.
@@ -1757,7 +1788,8 @@ namespace
                 if (accepted && valid && (policies & yyjson::detail::unknown_keys_policy) == 0 &&
                     (d.diff & rounded) == 0)
                 {
-                    EXPECT_TRUE(meets_constraints(yyjson::read<T>(d.json, ps...)))
+                    const auto t = yyjson::read<T>(d.json, ps...);
+                    EXPECT_TRUE(write_rejects(t) || meets_constraints(t))
                         << "valid, but the value read fails its check: " << d.json << " under " << +policy;
                 }
         }
@@ -2873,6 +2905,8 @@ TEST(Schema, AdjacentTag)
                       R"({"kind":"zz","a":1,"b":2})"});
     check<tags::Held>({R"({"kind":"x","d":null})", R"({"kind":"c","d":null})", R"({"kind":"i","d":3})", R"({"d":null})",
                        R"({"kind":"i","d":null})", R"({"kind":"c","d":3})", R"({"kind":"x","d":3})"});
+    // the write leaves no field of the tag beside a `std::monostate` without a name
+    EXPECT_THROW((void)yyjson::write(yyjson::read<tags::Held>(R"({"d":null})")), std::invalid_argument);
     // the read checks a tag that a field holds as it checks a tag of its own
     const auto held = {doc("{}"),
                        doc(R"({"d":1})"),
@@ -2889,6 +2923,8 @@ TEST(Schema, AdjacentTag)
     check<tags::StructDefault>(held);
     check<tags::MaybeKindDefault>(held);
     check<tags::MaybeStructDefault>(held);
+    check<tags::NamedNone>({R"({"kind":"none","d":null})", R"({"kind":"none","d":1})", R"({"d":null})",
+                            R"({"kind":"i","d":1})", R"({"kind":"i","d":null})", R"({"kind":"none"})", "{}"});
     // a write keeps a tag equal to its default, which a read needs beside the value
     const auto kinds = std::vector{tags::KindDefault{"i", 1}, tags::KindDefault{"s", "x"}};
     check_write_required(kinds);

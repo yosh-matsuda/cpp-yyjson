@@ -359,7 +359,8 @@ void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t, with_v
 A `write` with `with_validation` calls `validate` first, and then writes as the same `write` without the tag does. It gives the same text.
 
 *   `validate` throws [`yyjson::bad_cast`](#yyjsonbad_cast) for the first value that a constraint rejects. `path()` gives the JSON Pointer to that value in the written JSON. `position()` gives no position. `what()` is the text that `read<T>` gives for that value, without the position. A key that a read puts into another field than the map that writes it has its own message.
-*   When the write rejects the same object, a `write` with `with_validation` throws the exception of the write instead of the `bad_cast`. Examples are `yyjson::write_error` for a NaN without `WriteFlag::AllowInfAndNan`, and `std::invalid_argument` for a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative. A field with the key of an internal tag that holds another name also gives `std::invalid_argument`.
+*   When the write rejects the same object, a `write` with `with_validation` throws the exception of the write instead of the `bad_cast`. Examples are `yyjson::write_error` for a NaN without `WriteFlag::AllowInfAndNan`, and `std::invalid_argument` for a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative.
+*   `validate` itself throws `std::invalid_argument` for tag and key conflicts before checking constraints on that object. An internal tag needs an object and cannot replace a different tag value. A field that holds an adjacent tag must name the active alternative. The write must omit that field for an unnamed `std::monostate`. A map of `yyjson::extra_keys` or `yyjson::pattern_properties` must not hold the key of a field or tag.
 *   When `validate` throws, the forms with `out` leave `out` unchanged. This holds also when they throw the exception of the write in its place. When `validate` passes, `out` is as `yyjson::write` leaves it.
 
 The checks follow the [rules of the check before a write](validation.md#checking-a-value-before-writing).
@@ -2026,7 +2027,7 @@ template <std::size_t N>
 consteval auto adjacent_tag(std::string_view key, const std::string_view (&ids)[N]);
 ```
 
-`ids` names the alternatives other than `std::monostate`, in the order of the template arguments.
+`ids` lists the names in template argument order. Omit `std::monostate` for `internal_tag`. With `adjacent_tag`, either omit `std::monostate` or name every alternative. A named `std::monostate` writes its tag beside `null`. Reading the value requires that tag, even for `null`.
 
 *   `internal_tag` puts the tag in the object of the alternative, as in `{"type":"circle","radius":1}`. It is a setting of the variant type, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate).
 *   `adjacent_tag` puts the tag in the object of the struct that holds the variant, next to its field, as in `{"type":"circle","shape":{"radius":1}}`. It is a setting of that field, given to [`yyjson::field`](#yyjsonfield).
@@ -2307,7 +2308,7 @@ consteval explicit schema_name(std::string_view text);
 *   `yyjson::schema(text)` replaces the generated schema in both directions. `yyjson::schema({.read = ..., .write = ...})` replaces it in each direction that has a text. The text is a JSON object or a boolean.
 *   `yyjson::schema_extend(text)` adds the members of a JSON object to the generated schema. A member replaces the keyword of the same key.
 *   On a field, `yyjson::schema` also replaces the generated `default`. `yyjson::schema_extend` keeps it, unless the text has a `default`.
-*   A field takes `yyjson::schema` or `yyjson::schema_extend`, but not both. They are settings of a type in `yyjson::annotate`, of [`yyjson::field`](#yyjsonfield) and of an alternative of `yyjson::alt`.
+*   A type, a field or an alternative takes `yyjson::schema` or `yyjson::schema_extend`, but not both. They are settings of a type in `yyjson::annotate`, of [`yyjson::field`](#yyjsonfield) and of an alternative of `yyjson::alt`.
 *   `yyjson::schema_name(text)` gives the name of a struct, an enumeration, a variant or a type with a caster in `$defs`. It is a setting of `yyjson::annotate`. With the reflection of C++26, it can also be written on the declaration of the type, as `struct [[=yyjson::schema_name("Box")]] Box`. A name that is empty or has a character other than `[A-Za-z0-9._-]` is a compile error.
 *   The library does not check the text against the type. A schema that accepts more than the read is an [exception to the guarantees](json-schema.md#exceptions).
 
@@ -2504,7 +2505,7 @@ The exceptions of the library are in two groups:
 
 The library throws these exceptions of the `std::logic_error` group:
 
-*   `std::invalid_argument`: `yyjson::read` gets a `len` or a `ReadInsitu` flag that the string does not agree with ([`yyjson::read`](#yyjsonread)). `read<T>`, `read_into` and `merge_into` get `ReadInsitu`. A variant with `yyjson::internal_tag` or `yyjson::adjacent_tag` is written, and the tag that the alternative writes does not agree with the annotation. A `yyjson::indirect` that holds no value after a move is written or checked with `yyjson::validate`.
+*   `std::invalid_argument`: `yyjson::read` gets a `len` or a `ReadInsitu` flag that the string does not agree with ([`yyjson::read`](#yyjsonread)). `read<T>`, `read_into` and `merge_into` get `ReadInsitu`. A write or `yyjson::validate` finds a [tag or key conflict](#yyjsonvalidate-yyjsonwith_validation). A `yyjson::indirect` that holds no value after a move is written or checked with `yyjson::validate`.
 *   `std::out_of_range`: `operator[]` of an object does not find the key, or an index of a `yyjson::json_view` is out of range.
 *   `std::logic_error`: a `to_json` uses an emitter in a wrong way while `yyjson::write` runs ([emitters](#yyjsonobject_emitter-yyjsonarray_emitter)).
 

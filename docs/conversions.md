@@ -971,7 +971,7 @@ JSON often tells the kind of an object by a member that names it, such as `"type
 *   `yyjson::internal_tag(key, ids)` puts the tag in the object of the alternative itself. It is a setting of the variant type, given in `yyjson::annotations<V>`.
 *   `yyjson::adjacent_tag(key, ids)` puts the tag in the object of the struct that holds the variant, next to the field of the variant. It is a setting of that field, given by `yyjson::field` or by a [C++26 annotation](#c26-annotations) of the member.
 
-`ids` names the alternatives other than `std::monostate`, in the order of the template arguments:
+`ids` lists the names in template argument order. Omit `std::monostate` for `internal_tag`. With `adjacent_tag`, either omit `std::monostate` or name every alternative. For example:
 
 ```cpp
 struct Circle
@@ -1017,13 +1017,14 @@ Both kinds of tag follow these rules:
 *   The tag may be anywhere in its object, before or after the other members.
 *   A tag that is not a string or that names no alternative throws `yyjson::bad_cast`. So does a missing tag, also in a variant that has `std::monostate`, except in the cases of [missing members](#adjacent-tag) of `adjacent_tag`.
 *   When the object has the key of the tag more than once, the rules of [repeated keys](validation.md#repeated-keys) apply.
-*   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`.
-*   Any other alternative is written with its tag first: as the first member of its object for `internal_tag`, and as the member right before the field of the variant for `adjacent_tag`. A tag that is a [field of a struct](#a-field-that-holds-the-tag) is written where the field is declared instead.
+*   Only JSON `null` reads as `std::monostate`. The write omits the tag for an unnamed `std::monostate`.
+*   Each named alternative is written with its tag first: as the first member of its object for `internal_tag`, and as the member right before the field of the variant for `adjacent_tag`. A tag that is a [field of a struct](#a-field-that-holds-the-tag) is written where the field is declared instead.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
 *   Write the specialization `inline`, as for [the other annotations](#annotations).
 *   The following fail to compile with a `static_assert`:
     *   a variant that has `std::monostate` more than once;
-    *   `ids` that do not name each of the other alternatives, or empty or repeated names;
+    *   `ids` that omit any alternative other than `std::monostate`, too many names, or empty or repeated names;
+    *   `internal_tag` that names `std::monostate`;
     *   an empty key;
     *   `yyjson::annotations<V>` with more than one `internal_tag`, or with a `yyjson::field`;
     *   `internal_tag` given to a struct.
@@ -1032,7 +1033,7 @@ The cost of finding the tag in the text is described in [Key lookup](performance
 
 ### Internal tag
 
-With `internal_tag`, each alternative other than `std::monostate` is written as a JSON object: a struct, a map, or a type whose caster writes an object. Writing an alternative that is another kind of value throws `std::invalid_argument`.
+With `internal_tag`, each alternative other than `std::monostate` is written as a JSON object: a struct, a map, or a type whose caster writes an object. Writing an alternative that is another kind of value throws `std::invalid_argument`. `yyjson::validate` and `write` with `yyjson::with_validation` throw the same exception.
 
 The alternative reads the whole object, its tag included:
 
@@ -1050,7 +1051,9 @@ The tag and the member of the variant are two members of one object, and either 
 | | The member of the variant is present | The member of the variant is missing |
 | --- | --- | --- |
 | **The tag is present** | the member is read as the alternative that the tag names | the field keeps its value in `T()`; `yyjson::bad_cast` is thrown unless that value holds the alternative that the tag names |
-| **The tag is missing** | `yyjson::bad_cast`, unless the member is JSON null and the variant has `std::monostate` | the field keeps its value in `T()` |
+| **The tag is missing** | `yyjson::bad_cast`, unless the member is JSON null and the variant has an unnamed `std::monostate` | the field keeps its value in `T()` |
+
+For example, with the name `none`, a `std::monostate` writes as `{"kind":"none","d":null}`. A present `d` needs `kind` even for `null`. The tag `none` accepts no other value.
 
 ### A field that holds the tag
 
@@ -1058,6 +1061,8 @@ A struct may have a field whose key is the key of the tag:
 
 *   With `internal_tag`, a field of the struct of the alternative. A map that holds the key works the same way.
 *   With `adjacent_tag`, a field of the struct that holds the variant.
+
+If the variant holds an unnamed `std::monostate`, the write must omit the adjacent tag field. Even a field that writes `""` makes `write` and `yyjson::validate` throw `std::invalid_argument`. For example, reading `{"d":null}` can leave an empty `kind` that the write rejects. To omit the empty tag, declare a sentinel with `yyjson::field("kind", yyjson::default_, yyjson::min_length(1))`. Alternatively, name `std::monostate` in `ids` and set `kind` to that name.
 
 The field is a string or an [enumeration](#enumerations) whose names, renamed ones included, are the `ids`. An enumeration of `yyjson::enum_format::integer` there fails to compile. The field is read and written as any other field, and the library does not write the tag again. When the struct is written, the field has to name the alternative that the variant holds, or `std::invalid_argument` is thrown:
 
