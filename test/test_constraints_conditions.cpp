@@ -68,12 +68,11 @@ using ScalarVariant = std::variant<int, std::string>;
 CONSTRAINT_RULE(PropertiesInverted, StringMap, yyjson::min_properties(2), yyjson::max_properties(1))
 CONSTRAINT_RULE(ItemsTwice, std::vector<int>, yyjson::items(yyjson::minimum(0)), yyjson::items(yyjson::maximum(1)))
 CONSTRAINT_RULE(ItemsInside, std::vector<int>, yyjson::items(yyjson::minimum(2), yyjson::maximum(1)))
-// a position of yyjson::prefix_items holds at most 8 nodes before it is copied into the tree
-using Nested10 = std::vector<std::vector<
-    std::vector<std::vector<std::vector<std::vector<std::vector<std::vector<std::vector<std::vector<int>>>>>>>>>>;
-CONSTRAINT_RULE(PrefixTooLong, Nested10,
-                yyjson::prefix_items(yyjson::items(yyjson::items(yyjson::items(
-                    yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
+// A position holds at most eight nodes. Count in breadth to avoid MSVC's initializer depth limit.
+constexpr auto nine_nodes = yyjson::detail::prefix_schema{
+    yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0))), yyjson::contains(yyjson::minimum(0))),
+    yyjson::contains(yyjson::items(yyjson::items(yyjson::minimum(0))), yyjson::contains(yyjson::minimum(0)))};
+CONSTRAINT_RULE(PrefixTooLong, yyjson::value, yyjson::prefix_items(nine_nodes))
 // a subschema of a combinator follows the rules of a field, and a field can take a combinator more than once
 CONSTRAINT_RULE(NotTwice, int, yyjson::not_(yyjson::minimum(0)), yyjson::not_(yyjson::maximum(1)))
 CONSTRAINT_RULE(NotInverted, int, yyjson::not_(yyjson::minimum(2), yyjson::maximum(1)))
@@ -112,9 +111,7 @@ CONSTRAINT_RULE(ByteAllOfOutside, unsigned char, yyjson::all_of(yyjson::maximum(
 CONSTRAINT_RULE(ValueBoundsInverted, yyjson::value, yyjson::minimum(1), yyjson::maximum(0))
 CONSTRAINT_RULE(VariantBoundsInverted, ScalarVariant, yyjson::minimum(1), yyjson::maximum(0))
 CONSTRAINT_RULE(ValueConstOutside, yyjson::value, yyjson::const_(5), yyjson::maximum(4))
-CONSTRAINT_RULE(AnyOfTooLong, Nested10,
-                yyjson::any_of(yyjson::items(yyjson::items(yyjson::items(
-                    yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
+CONSTRAINT_RULE(AnyOfTooLong, yyjson::value, yyjson::any_of(nine_nodes))
 #undef CONSTRAINT_RULE
 // the counts of the members of a struct follow the rules of those of a map
 struct StructCountsInverted
