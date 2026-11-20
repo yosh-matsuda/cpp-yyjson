@@ -15127,6 +15127,14 @@ namespace yyjson
         template <typename T>
         using integer_of_t = typename integer_of<T>::type;
 
+        // A class that counts in an integer type `rep`, such as `std::chrono::duration`, which reads a JSON integer
+        // only in the range of `rep`.
+        template <typename T>
+        concept integer_count = std::is_class_v<T> && requires(const T& t) {
+            typename T::rep;
+            { t.count() } -> std::same_as<typename T::rep>;
+        } && std::integral<typename T::rep> && (!std::same_as<typename T::rep, bool>);
+
         // The names of an enumeration that `enum_conversion` gives, which are read by a key matcher.
         template <typename E>
         inline constexpr auto enum_name_matcher =
@@ -23880,6 +23888,8 @@ namespace yyjson
         {
             if constexpr (integer_like<U>)
                 return value <= std::numeric_limits<integer_of_t<U>>::max();
+            else if constexpr (integer_count<U>)
+                return value <= std::numeric_limits<typename U::rep>::max();
             else
                 return true;
         }
@@ -23891,6 +23901,8 @@ namespace yyjson
             else if constexpr (integer_like<U>)
                 return value >= std::numeric_limits<integer_of_t<U>>::min() &&
                        value <= std::numeric_limits<integer_of_t<U>>::max();
+            else if constexpr (integer_count<U>)
+                return std::in_range<typename U::rep>(value);
             else
                 return true;
         }
@@ -23978,6 +23990,8 @@ namespace yyjson
             }
             else if constexpr (json_scalar_constructible<U, std::uint64_t>)
             {
+                if (!fits_json_uint<U>(value)) [[unlikely]]
+                    detail::throw_overflow<U>(at, value);
                 return U(value);
             }
             else if constexpr (std::is_enum_v<U>)
@@ -23999,6 +24013,8 @@ namespace yyjson
             }
             else if constexpr (json_scalar_constructible<U, std::int64_t>)
             {
+                if (!fits_json_sint<U>(value)) [[unlikely]]
+                    detail::throw_overflow<U>(at, value);
                 return U(value);
             }
             else if constexpr (std::is_enum_v<U>)

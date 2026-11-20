@@ -100,7 +100,7 @@ The following types have no conversion of their own. Some of them can still be r
 | Type | Written | Read | Instead |
 | --- | --- | --- | --- |
 | raw pointers | no | null only | `std::optional`, `std::unique_ptr`, `std::shared_ptr`, or a [translator](#translator) |
-| `std::chrono` durations | no | an integer as the count | a translator to a number or a string |
+| `std::chrono` durations | no | an integer as the count, in the range of its `rep` | a translator to a number or a string |
 | `std::chrono` time points | no | no | a translator to a number or a string |
 | `std::function` | no | null only | leave the field out with [`yyjson::skip`](#skipped-fields) or `VISITABLE_STRUCT` |
 | `std::any` | no | no | the same |

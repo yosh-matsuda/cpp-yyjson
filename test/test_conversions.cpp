@@ -304,6 +304,19 @@ TEST(Reader, ValueKinds)
     EXPECT_THROW((void)read("0.5").cast<Flag>(), bad_cast);
     EXPECT_EQ(read<Count>("2").n, 2);
     EXPECT_EQ(read("3").cast<std::chrono::seconds>(), std::chrono::seconds(3));
+    // a duration reads only the integers that its count holds
+    try
+    {
+        (void)read<std::chrono::seconds>("18446744073709551615");
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_EQ(e.kind(), error_kind::out_of_range);
+    }
+    EXPECT_THROW((void)read("-1").cast<std::chrono::duration<unsigned>>(), bad_cast);
+    EXPECT_THROW((void)read<std::vector<std::chrono::duration<std::int8_t>>>("[1,128]"), bad_cast);
+    EXPECT_EQ(read<std::chrono::duration<std::int8_t>>("-128").count(), -128);
     EXPECT_EQ(read<Scale>("1.5").x, 1.5);
     EXPECT_EQ((read<std::variant<int, bool>>("true")), (std::variant<int, bool>(true)));
     EXPECT_EQ((read("true").cast<std::variant<double, bool>>().index()), 1U);

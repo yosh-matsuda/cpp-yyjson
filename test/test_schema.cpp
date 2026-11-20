@@ -3009,8 +3009,15 @@ TEST(Schema, Unconverted)
     check_read<int*>({"null", "0", "{}"});
     check_read<casters::Ctor>({"1", "1.5", "-1", R"("1")", "null", "true"});
     check_read<casters::Number>({"1", "1.5", "null", R"("1")"});
-    check_read<std::chrono::seconds>(
-        {"5", "-5", {"5.0", integer_only}, "18446744073709551615", "-9223372036854775808", "1e308", R"("5")"});
+    check_read<std::chrono::seconds>({"5",
+                                      "-5",
+                                      {"5.0", integer_only},
+                                      "18446744073709551615",
+                                      "9223372036854775807",
+                                      "-9223372036854775808",
+                                      "1e308",
+                                      R"("5")"});
+    check_read<std::chrono::duration<std::uint8_t>>({"255", "256", "-1"});
     check_read<std::chrono::duration<double>>({"5", "1.5", R"("5")"});
     check_read<casters::Legacy>({R"({"p":null,"c":1,"n":1.5,"s":3})", R"({"p":1,"c":1,"n":1,"s":3})",
                                  R"({"p":null,"c":"x","n":1,"s":3})", R"({"p":null,"c":1,"n":1,"s":0.5})"});

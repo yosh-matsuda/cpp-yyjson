@@ -1903,6 +1903,12 @@ namespace yyjson
                 }
                 if constexpr (real)
                     emit_primitive_keywords<double>(out);
+                else if constexpr (integers != 0 && yd::integer_count<T>)
+                {
+                    using rep = typename T::rep;
+                    out.emplace("minimum", std::numeric_limits<rep>::lowest());
+                    out.emplace("maximum", std::numeric_limits<rep>::max());
+                }
                 else if constexpr (integers != 0)
                 {
                     if constexpr ((kinds & yd::json_kind_sint) != 0)
