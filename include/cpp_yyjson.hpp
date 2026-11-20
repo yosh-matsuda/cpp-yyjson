@@ -5790,10 +5790,14 @@ namespace yyjson
         consteval bool library_annotated_members(std::meta::info type)
         {
             const auto context = std::meta::access_context::unchecked();
-            for (const auto base : std::meta::bases_of(type, context))
+            const auto bases = std::meta::bases_of(type, context);
+            for (const auto base : bases)
                 if (library_annotated_members(std::meta::type_of(base))) return true;
-            for (const auto member : std::meta::nonstatic_data_members_of(type, context))
-                for (const auto a : std::meta::annotations_of(member))
+            const auto members = std::meta::nonstatic_data_members_of(type, context);
+            for (const auto member : members)
+            {
+                const auto annotations = std::meta::annotations_of(member);
+                for (const auto a : annotations)
                 {
                     auto t = std::meta::remove_cvref(std::meta::type_of(a));
                     if (!std::meta::is_class_type(t) && !std::meta::is_enum_type(t)) continue;
@@ -5801,6 +5805,7 @@ namespace yyjson
                     for (auto p = std::meta::parent_of(t); p != ^^::; p = std::meta::parent_of(p))
                         if (p == ^^yyjson) return true;
                 }
+            }
             return false;
         }
 
