@@ -640,12 +640,15 @@ namespace yyjson
         // The types whose schema is their kind of JSON, which a check names without a setting that keeps the type.
         using kind_types = std::tuple<bool, std::nullptr_t, double, long double, std::string, std::string_view,
                                       yyjson::value, yyjson::object, yyjson::array>;
-        // The index in Ts of the type whose check is `test`, or the size of Ts.
-        template <typename... Ts>
-        consteval std::size_t matched_index(const yyjson::detail::type_test& test, std::tuple<Ts...>*)
+        // The index in Ts of the type whose check is `Test`, or the size of Ts.
+        template <auto Test, typename... Ts>
+        consteval std::size_t matched_index(std::tuple<Ts...>*)
         {
+            using check = std::integral_constant<decltype(Test), Test>;
             std::size_t i = 0;
-            (void)((test.test == &yyjson::detail::test_type<Ts> || (++i, false)) || ...);
+            (void)((std::same_as<check, std::integral_constant<decltype(Test), &yyjson::detail::test_type<Ts>>> ||
+                    (++i, false)) ||
+                   ...);
             return i;
         }
 
@@ -3601,7 +3604,7 @@ namespace yyjson
             using Ts =
                 decltype(std::tuple_cat(std::declval<typename matched_types<typename settings_of<S>::type>::type>(),
                                         std::declval<kind_types>()));
-            constexpr auto i = matched_index(N::constraints.matches, static_cast<Ts*>(nullptr));
+            constexpr auto i = matched_index<N::constraints.matches.test>(static_cast<Ts*>(nullptr));
             static_assert(i < std::tuple_size_v<Ts>,
                           "json_schema takes yyjson::matches<T> in a subschema of yyjson::all_of, any_of, one_of and "
                           "prefix_items when T is a kind of JSON, such as bool or std::string, or when another setting "
