@@ -28795,10 +28795,13 @@ namespace yyjson
                 }
                 return failure;
             }
-            template <typename Json>
-            static constexpr auto failure_reasons = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            template <typename Json, std::size_t... Is>
+            static constexpr auto make_failure_reasons(std::index_sequence<Is...>)
+            {
                 return std::array<alternative_reason, sizeof...(Ts)>{&failure_reason<Is, Json>...};
-            }(std::index_sequence_for<Ts...>{});
+            }
+            template <typename Json>
+            static constexpr auto failure_reasons = make_failure_reasons<Json>(std::index_sequence_for<Ts...>{});
 
             // `recorded_reason` for the alternative I, which gives what `failure_reason` gives.
             template <std::size_t I, typename Json>
@@ -28816,10 +28819,13 @@ namespace yyjson
                 return {bad_cast_access::path_from(*record.failure, at.value(), at.mutable_value()),
                         bad_cast_access::reason(*record.failure)};
             }
-            template <typename Json>
-            static constexpr auto record_reasons = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            template <typename Json, std::size_t... Is>
+            static constexpr auto make_record_reasons(std::index_sequence<Is...>)
+            {
                 return std::array<recorded_reason, sizeof...(Ts)>{&record_reason<Is, Json>...};
-            }(std::index_sequence_for<Ts...>{});
+            }
+            template <typename Json>
+            static constexpr auto record_reasons = make_record_reasons<Json>(std::index_sequence_for<Ts...>{});
             static constexpr auto alternative_names =
                 std::array<std::string_view, sizeof...(Ts)>{variant_name<Ts>()...};
 
