@@ -27444,14 +27444,14 @@ namespace yyjson
         // Counts a recursive variant in `recursive_variant_reads` while it is read.
         class recursive_variant_read
         {
-            bool nested_ = recursive_variant_reads++ != 0;
+            std::size_t outer_ = recursive_variant_reads++;
 
         public:
             recursive_variant_read() noexcept = default;
             recursive_variant_read(const recursive_variant_read&) = delete;
             recursive_variant_read& operator=(const recursive_variant_read&) = delete;
-            ~recursive_variant_read() { --recursive_variant_reads; }
-            [[nodiscard]] bool nested() const noexcept { return nested_; }
+            ~recursive_variant_read() { recursive_variant_reads = outer_; }
+            [[nodiscard]] bool nested() const noexcept { return outer_ != 0; }
         };
 
         // Passes on the failure of the alternative that a `yyjson::one_of_variant` selects, which is not nested in
