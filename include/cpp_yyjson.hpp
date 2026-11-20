@@ -11699,21 +11699,25 @@ namespace yyjson
         {
             static constexpr bool known = false;
         };
-        template <typename R, typename A, typename... As, bool E>
-        struct caster_signature<R (*)(A, As...) noexcept(E)>
+        template <typename R, typename A, typename... As>
+        struct caster_signature<R (*)(A, As...)>
         {
             static constexpr bool known = true;
             using result = std::remove_cvref_t<R>;
             using source = std::remove_cvref_t<A>;
         };
         // the in-place `from_json(T&, source)` reads its second parameter
-        template <typename A, typename B, bool E>
+        template <typename A, typename B>
         requires (std::is_lvalue_reference_v<A> && !std::is_const_v<std::remove_reference_t<A>>)
-        struct caster_signature<void (*)(A, B) noexcept(E)>
+        struct caster_signature<void (*)(A, B)>
         {
             static constexpr bool known = true;
             using result = void;
             using source = std::remove_cvref_t<B>;
+        };
+        template <typename R, typename... As>
+        struct caster_signature<R (*)(As...) noexcept> : caster_signature<R (*)(As...)>
+        {
         };
         // The JSON kinds of the source or of the result of a conversion that is one function, or else of any kind.
         template <typename T>
