@@ -33026,8 +33026,9 @@ namespace yyjson
         // The address and the type of a value that was absent before a merge read it.  A struct and its first
         // field share the address, but not the type.
         using absent_key = std::pair<const void*, const void*>;
+        // GCC on arm64 macOS loads the address with an instruction that needs pointer alignment.
         template <typename T>
-        inline char absent_type = 0;
+        alignas(void*) inline char absent_type = 0;
         template <typename T>
         absent_key absent_key_of(const T& t) noexcept
         {
