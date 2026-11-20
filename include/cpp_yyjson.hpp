@@ -34184,6 +34184,12 @@ namespace yyjson
             std::rethrow_exception(failure);
         }
 
+        // Frees a document. GCC cannot take the address of `yyjson_doc_free`, which is always inlined, at -O1.
+        struct free_doc
+        {
+            void operator()(yyjson_doc* doc) const noexcept { yyjson_doc_free(doc); }
+        };
+
         // The value of the reader is excluded first: Clang before 19 can take the lambda of `base_of_value` as
         // satisfied by it in the constraint of a partial specialization, and keeps that result for later checks.
         template <typename Json>
@@ -34197,9 +34203,9 @@ namespace yyjson
             static decltype(auto) with_root(const Json& json, F&& f)
             {
                 const auto* const original = writer::detail::json_value_access::get(json);
-                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
+                const auto doc = std::unique_ptr<yyjson_doc, free_doc>(
                     // the value is const from yyjson 0.13, and not modified before
-                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(original), nullptr), &yyjson_doc_free);
+                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(original), nullptr));
                 if (doc == nullptr) [[unlikely]]
                     throw std::bad_alloc();
                 return with_copy_of(original, yyjson_doc_get_root(doc.get()), std::forward<F>(f));
@@ -34314,8 +34320,8 @@ namespace yyjson
                 if (copy == nullptr) [[unlikely]]
                     throw std::bad_alloc();
                 remove_null_members(copy);
-                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
-                    yyjson_mut_val_imut_copy(copy, nullptr), &yyjson_doc_free);
+                const auto doc =
+                    std::unique_ptr<yyjson_doc, yyjson::detail::free_doc>(yyjson_mut_val_imut_copy(copy, nullptr));
                 if (doc == nullptr) [[unlikely]]
                     throw std::bad_alloc();
                 auto* const root = yyjson_doc_get_root(doc.get());
@@ -39212,7 +39218,7 @@ namespace yyjson
                     if (err.code == YYJSON_READ_ERROR_MEMORY_ALLOCATION) throw std::bad_alloc();
                     fail();
                 }
-                rec.doc.reset(doc, yyjson_doc_free);
+                rec.doc.reset(doc, free_doc());
                 rec.root.reset(new const_value_ref(yyjson_doc_get_root(doc)));
             }
 
