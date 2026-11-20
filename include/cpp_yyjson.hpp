@@ -7736,7 +7736,7 @@ namespace yyjson
 
         // The index of the field of S whose key is `key`, or `struct_field_count<S>`.
         template <typename S>
-        consteval std::size_t struct_field_of_key(std::string_view key)
+        constexpr std::size_t struct_field_of_key(std::string_view key)
         {
             return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 const auto keys = std::array<std::string_view, sizeof...(Is)>{struct_field_key<S, Is>...};
@@ -7832,7 +7832,7 @@ namespace yyjson
         // Whether the object of S may have a member of `key`: of a field, of a tag that `writes_adjacent_tag`, or if
         // `Any`, of the map of `yyjson::extra_keys` or `yyjson::pattern_properties`.
         template <typename S, bool Any = false>
-        consteval bool writes_member_of_key(std::string_view key)
+        constexpr bool writes_member_of_key(std::string_view key)
         {
             if (struct_field_of_key<S>(key) != struct_field_count<S>) return true;
             if constexpr (has_extra_keys<S> || pattern_count<S> != 0)
@@ -7852,7 +7852,7 @@ namespace yyjson
 
         // Whether the variant V, if not void, has a `yyjson::internal_tag` of `key`, which each alternative writes.
         template <typename V>
-        consteval bool writes_internal_tag_of_key(std::string_view key)
+        constexpr bool writes_internal_tag_of_key(std::string_view key)
         {
             if constexpr (std::is_void_v<V>)
                 return false;
@@ -9965,7 +9965,7 @@ namespace yyjson
         // Whether `key` is the key of a tag of the object of S, of `yyjson::adjacent_tag` or of the
         // `yyjson::internal_tag` of the variant Tagged, and of no field.
         template <typename S, typename Tagged>
-        consteval bool tag_key_of(std::string_view key)
+        constexpr bool tag_key_of(std::string_view key)
         {
             if (struct_field_of_key<S>(key) != struct_field_count<S>) return false;
             if (writes_internal_tag_of_key<Tagged>(key)) return true;
@@ -25249,7 +25249,7 @@ namespace yyjson
             return json_fast_read<V>();
         }
 
-        consteval json_need max_need(json_need a, json_need b) noexcept { return a < b ? b : a; }
+        constexpr json_need max_need(json_need a, json_need b) noexcept { return a < b ? b : a; }
 
         // Whether the node `root` of `tree`, or a node below it, has `yyjson::unique_items` or a value of
         // `yyjson::json_text`.
