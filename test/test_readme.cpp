@@ -118,6 +118,7 @@ TEST(Readme, ChecksAndSchema)
         EXPECT_EQ(e.keyword(), "minimum");
     }
 
+#if YYJSON_VERSION_HEX >= 0x000700
     // the README shows the name of the type without the namespace of this file
     auto schema = std::string(yyjson::json_schema<Signup>().write(yyjson::WriteFlag::PrettyTwoSpaces));
     for (auto i = schema.find("readme."); i != std::string::npos; i = schema.find("readme.")) schema.erase(i, 7);
@@ -146,6 +147,7 @@ TEST(Readme, ChecksAndSchema)
   },
   "$ref": "#/$defs/Signup"
 })");
+#endif
 }
 
 TEST(Readme, DataBinding)
