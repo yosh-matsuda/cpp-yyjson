@@ -101,7 +101,8 @@ TEST(Schema, CasterExamples)
 TEST(Schema, Unconverted)
 {
     namespace casters = schema_test::casters;
-    check_read<int*>({"null", "0", "{}"});
+    static_assert(!yyjson::writable<int*>);
+    check_read<int*>({"null", "0", "-1", "1", "{}"});
     check_read<casters::Ctor>({"1", "1.5", "-1", R"("1")", "null", "true"});
     check_read<casters::Number>({"1", "1.5", "null", R"("1")"});
     check_read<std::chrono::seconds>({"5",

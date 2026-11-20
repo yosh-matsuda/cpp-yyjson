@@ -23519,10 +23519,10 @@ namespace yyjson
         template <typename T>
         concept accepts_any_type = std::is_class_v<T> && std::constructible_from<T, any_type_probe>;
 
-        // MSVC checks the cast that T(Arg) is, which converts a `bool` to a scoped enumeration as well.
+        // A functional cast can reinterpret an integer as a pointer. A static cast cannot.
         template <typename T, typename Arg>
 #ifdef _MSC_VER
-        concept scalar_constructible = (!std::is_enum_v<T>) && requires { T(std::declval<Arg>()); };
+        concept scalar_constructible = (!std::is_enum_v<T>) && requires { static_cast<T>(std::declval<Arg>()); };
 #else
         concept scalar_constructible = std::constructible_from<T, Arg>;
 #endif
