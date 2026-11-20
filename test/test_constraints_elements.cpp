@@ -42,7 +42,7 @@ struct InputCounted
     std::set<int> s = {};
     std::map<std::string, int> m = {};
     std::vector<int> v = {};
-    std::unordered_set<int> c = {};
+    std::set<int> c = {};
     bool operator==(const InputCounted&) const = default;
 };
 template <>
