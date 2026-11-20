@@ -84,6 +84,8 @@ jobs:
 
     env:
       triplet: x64-linux
+      # Clang writes the preprocessed source and the command of a crash into this directory.
+      CCC_OVERRIDE_OPTIONS: "# +-fcrash-diagnostics-dir=${{ github.workspace }}/crash"
 
     steps:
     - uses: actions/checkout@v4
@@ -114,6 +116,14 @@ jobs:
         ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
         cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
+
+    - name: Upload compiler crash reports
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: crash-ubuntu-${{ matrix.compiler.name }}
+        path: ${{ github.workspace }}/crash
+        if-no-files-found: ignore
 
   ubuntu-target-build:
     strategy:
@@ -219,6 +229,8 @@ jobs:
 
     env:
       triplet: arm64-osx
+      # Clang writes the preprocessed source and the command of a crash into this directory.
+      CCC_OVERRIDE_OPTIONS: "# +-fcrash-diagnostics-dir=${{ github.workspace }}/crash"
 
     steps:
     - uses: actions/checkout@v4
@@ -256,3 +268,13 @@ jobs:
         ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
         cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
+
+    - name: Upload compiler crash reports
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: crash-macos-${{ matrix.compiler.name }}
+        path: |
+          ${{ github.workspace }}/crash
+          ~/Library/Logs/DiagnosticReports/clang*
+        if-no-files-found: ignore
