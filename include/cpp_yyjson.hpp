@@ -9289,7 +9289,7 @@ namespace yyjson
                 b.values.push_back(v);
             }
             for (std::size_t k = 0; k < p.pattern_size; ++k) b.patterns.push_back(keep(p.chars.view(p.patterns[k])));
-            const auto moved = [&](schema_node n) {
+            const auto relocate = [&](schema_node& n) {
                 for (auto* i : {&n.items, &n.properties, &n.keys, &n.contains, &n.prefix_first, &n.combinators,
                                 &n.operands_first, &n.next, &n.members})
                     if (*i != 0) *i += base - 1;
@@ -9297,10 +9297,14 @@ namespace yyjson
                 n.patterns_first += pattern_base;
                 for (auto* name : {&n.constraints.format_name, &n.constraints.assertion_name, &n.key})
                     if (name->size != 0) *name = keep(p.chars.view(*name));
-                return n;
             };
-            b.nodes[at] = moved(p.nodes[0]);
-            for (std::size_t k = 1; k < p.node_size; ++k) b.nodes.push_back(moved(p.nodes[k]));
+            b.nodes[at] = p.nodes[0];
+            relocate(b.nodes[at]);
+            for (std::size_t k = 1; k < p.node_size; ++k)
+            {
+                b.nodes.push_back(p.nodes[k]);
+                relocate(b.nodes.back());
+            }
             const auto dropped = drop ? position_nodes(p, 0) : std::vector<std::size_t>{};
             for (std::size_t k = 0; k < p.record_size; ++k)
             {
