@@ -248,6 +248,8 @@ jobs:
     - name: Build and test
       run: |
         export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
+        # the runner has 7 GB of memory, and a test TU can take more than 3 GB
+        export CMAKE_BUILD_PARALLEL_LEVEL=2
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug
