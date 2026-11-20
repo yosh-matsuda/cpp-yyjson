@@ -162,7 +162,7 @@ void expect_write_error(const T& t, std::string_view message)
     expect_message([&] { (void)yyjson::write(t, yyjson::with_validation); });
 }
 
-extern thread_local std::size_t vd_allocations;
+extern constinit thread_local std::size_t vd_allocations;
 
 template <typename T>
 std::size_t validate_allocations(const T& t)

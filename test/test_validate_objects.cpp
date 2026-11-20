@@ -576,7 +576,7 @@ struct VdRequiredOnly
 template <>
 inline constexpr auto yyjson::annotations<VdRequiredOnly> = yyjson::annotate(yyjson::field("a", yyjson::required));
 
-thread_local std::size_t vd_allocations = 0;
+constinit thread_local std::size_t vd_allocations = 0;
 
 void* operator new(std::size_t size)
 {
