@@ -27579,10 +27579,11 @@ namespace yyjson
                                 reflected_object_castable<T, reader::const_object_ref>);
 
         // Whether a field of the keyed struct T can never read some kind of JSON value, as `refused_kinds` gives.
-        template <typename T>
-        inline constexpr bool refuses_field_kinds = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return ((refused_kinds<T, Ks>() != 0) || ...);
-        }(std::make_index_sequence<std::remove_cvref_t<decltype(struct_key_matcher<T>())>::size>{});
+        template <typename T, std::size_t... Ks>
+        consteval bool refuses_field_kinds(std::index_sequence<Ks...>)
+        {
+            return any_true({(refused_kinds<T, Ks>() != 0)...});
+        }
 
         // False if a member of the JSON object `obj` has a kind that the field of the keyed struct T of its key can
         // never read, which the direct reader checks with `skips_refused`.  The cast of T then fails.
@@ -28738,7 +28739,8 @@ namespace yyjson
                 }
                 if constexpr (json_value_of_document<Json> && keyed_struct<std::remove_cvref_t<T>>)
                 {
-                    if constexpr (refuses_field_kinds<std::remove_cvref_t<T>>)
+                    using S = std::remove_cvref_t<T>;
+                    if constexpr (refuses_field_kinds<S>(std::make_index_sequence<struct_field_count<S>>{}))
                     {
                         if (kind == json_kind_object &&
                             !field_kinds_readable<std::remove_cvref_t<T>>(*json.as_object()))
