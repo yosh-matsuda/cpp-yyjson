@@ -593,10 +593,12 @@ TEST(Constraints, ReviewedJsonEquality)
     EXPECT_EQ(yyjson::value(yyjson::read("9007199254740993")).cast<RoundedOneOf>().index(), 1);
     // both alternatives match: the set reads the two distinct JSON numbers as one double
     const auto ambiguous = []<typename V>(std::type_identity<V>, const std::string& json) {
-        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<V>(json); }),
-                              bad_cast_of([&] { (void)yyjson::value(yyjson::read(json)).cast<V>(); })})
+        const auto check = [](const yyjson::bad_cast& e) {
             EXPECT_NE(std::string_view(e.what()).find("the alternatives 0 and 1 match"), std::string_view::npos)
                 << e.what();
+        };
+        check(bad_cast_of([&] { (void)yyjson::read<V>(json); }));
+        check(bad_cast_of([&] { (void)yyjson::value(yyjson::read(json)).cast<V>(); }));
     };
     ambiguous(std::type_identity<RealSetOneOf>(), "[9007199254740992,9007199254740993]");
     // the set rejects a repeated JSON number

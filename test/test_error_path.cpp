@@ -281,6 +281,13 @@ namespace
         return yyjson::bad_cast("no exception");
     }
 
+    template <typename T, typename... Ps>
+    auto read_errors(std::string_view json, Ps... policies)
+    {
+        return std::array{bad_cast_of([&] { (void)yyjson::read<T>(json, policies...); }),
+                          bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(policies...); })};
+    }
+
     // the value at `path` fails, which starts at the first `marker` in `json`, in the first line
     template <typename T>
     void expect_path(std::string_view json, std::string_view path, std::string_view marker)
@@ -523,8 +530,7 @@ TEST(ErrorPath, Message)
     // each way of reading gives the same text, which names no C++ type and no text of the input
     const auto expect_message = [&]<typename T>(std::type_identity<T>, std::string_view json, std::string_view message,
                                                 std::vector<std::string_view> input, auto... policies) {
-        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<T>(json, policies...); }),
-                              bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(policies...); })})
+        for (const auto& e : read_errors<T>(json, policies...))
         {
             const auto text = e.message();
             EXPECT_EQ(text, message) << json;
@@ -598,8 +604,7 @@ TEST(ErrorPath, Keyword)
     // the keyword of the setting that fails, as each way of reading gives it
     const auto expect_keyword = [](std::string_view json, std::string_view keyword, auto type) {
         using T = typename decltype(type)::type;
-        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<T>(json); }),
-                              bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(); })})
+        for (const auto& e : read_errors<T>(json))
         {
             EXPECT_EQ(e.kind(), yyjson::error_kind::keyword) << json;
             EXPECT_EQ(e.keyword(), keyword) << json;
@@ -661,16 +666,16 @@ namespace
     template <typename T>
     void expect_keyword_everywhere(std::string_view json, const T& t, std::string_view keyword)
     {
-        for (const auto& e : {bad_cast_of([&] { (void)yyjson::read<T>(json); }),
-                              bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(); }), bad_cast_of([&] {
-                                  auto merged = T();
-                                  yyjson::merge_into(json, merged);
-                              }),
-                              bad_cast_of([&] { yyjson::validate(t); })})
-        {
+        const auto check = [&](const yyjson::bad_cast& e) {
             EXPECT_EQ(e.kind(), yyjson::error_kind::keyword) << json;
             EXPECT_EQ(e.keyword(), keyword) << json;
-        }
+        };
+        for (const auto& e : read_errors<T>(json)) check(e);
+        check(bad_cast_of([&] {
+            auto merged = T();
+            yyjson::merge_into(json, merged);
+        }));
+        check(bad_cast_of([&] { yyjson::validate(t); }));
     }
 }  // namespace
 
