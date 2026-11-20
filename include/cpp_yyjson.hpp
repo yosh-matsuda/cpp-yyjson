@@ -5059,6 +5059,13 @@ namespace yyjson
 
             // Whether the field i has no key of its own, but receives the keys of no field.
             [[nodiscard]] constexpr bool keyless(std::size_t i) const noexcept { return i == extra_keys || pattern[i]; }
+
+            [[nodiscard]] constexpr std::size_t unskipped_count() const noexcept
+            {
+                std::size_t count = 0;
+                for (std::size_t i = 0; i < N; ++i) count += !skipped[i] && !keyless(i);
+                return count;
+            }
         };
 
         // The keywords of the combinator `a` of a struct and of its subschemas at any depth, but not of their members.
@@ -6369,12 +6376,7 @@ namespace yyjson
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
             constexpr auto& table = field_keys<T, reflected_field_names<T>>::table;
-            constexpr auto count = [] {
-                std::size_t c = 0;
-                for (std::size_t i = 0; i < table.skipped.size(); ++i) c += !table.skipped[i] && !table.keyless(i);
-                return c;
-            }();
-            auto indices = std::array<std::size_t, count>{};
+            auto indices = std::array<std::size_t, table.unskipped_count()>{};
             for (std::size_t i = 0, k = 0; i < table.skipped.size(); ++i)
             {
                 if (!table.skipped[i] && !table.keyless(i)) indices[k++] = i;
