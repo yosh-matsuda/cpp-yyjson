@@ -59,12 +59,34 @@ add_executable(
   test_many_fields.cpp
   test_transparent.cpp
   test_read_policies.cpp
+  test_read_policies_closed.cpp
+  test_read_policies_keys.cpp
+  test_read_policies_extra.cpp
   test_nullable.cpp
   test_with_caster.cpp
   test_presence.cpp
   test_constraints.cpp
+  test_constraints_listed.cpp
+  test_constraints_elements.cpp
+  test_constraints_equality.cpp
+  test_constraints_items.cpp
+  test_constraints_combinators.cpp
+  test_constraints_conditions.cpp
+  test_constraints_object_conditions.cpp
+  test_constraints_patterns.cpp
+  test_constraints_unions.cpp
+  test_constraints_one_of.cpp
+  test_constraints_casters.cpp
+  test_constraints_kinds.cpp
+  test_constraints_merged_values.cpp
+  test_constraints_predicates.cpp
+  test_constraints_caster_reads.cpp
   test_as_array.cpp
-  test_validate.cpp)
+  test_validate.cpp
+  test_validate_nested.cpp
+  test_validate_objects.cpp
+  test_validate_unions.cpp
+  test_validate_casters.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 # a test file can exceed the sections of an object file that MSVC writes by default
@@ -84,7 +106,16 @@ target_link_libraries("${PROJECT_NAME}_test_allocation_failure"
 
 # the schemas of cpp_yyjson_schema.hpp, checked with the JSON Schema validator of jsoncons
 find_package(jsoncons CONFIG REQUIRED)
-add_executable("${PROJECT_NAME}_test_schema" test_schema.cpp)
+add_executable(
+  "${PROJECT_NAME}_test_schema"
+  test_schema.cpp
+  test_schema_structs.cpp
+  test_schema_keywords.cpp
+  test_schema_variants.cpp
+  test_schema_tags.cpp
+  test_schema_casters.cpp
+  test_schema_metadata.cpp
+  test_schema_kinds.cpp)
 target_link_libraries(
   "${PROJECT_NAME}_test_schema" PRIVATE ${PROJECT_NAME} jsoncons::jsoncons
                                         GTest::gtest GTest::gtest_main)
