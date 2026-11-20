@@ -8,7 +8,7 @@ cpp-yyjson is a C++20 JSON library with two APIs: the *data binding API* (`yyjso
 
 ## How-to guides
 
-*   [Guide](guide.md): how to do common tasks, such as renaming keys, reading variants, finding the value that failed or reading JSON Lines, and what the library does not do.
+*   [Guide](guide.md): how to do common tasks, and what the library does not do. Examples are renaming keys, rejecting unknown keys, restricting values, reading variants and reading JSON Lines.
 *   [FAQ](faq.md): why the library behaves as it does, for example with unknown keys, key order, threads, lifetimes and compile errors.
 
 ## Concepts
@@ -16,6 +16,10 @@ cpp-yyjson is a C++20 JSON library with two APIs: the *data binding API* (`yyjso
 *   [Converting C++ types](conversions.md): which C++ types convert to JSON and how, JSON keys and annotations, structs written as JSON arrays, enumerations, variants and user-defined casters.
 *   [Validation and errors](validation.md): what a read checks, how it treats unknown, missing and repeated keys and `null` in an optional field, and the errors that the library reports. It also gives the constraints, which restrict the values of a field as the keywords of JSON Schema do.
 *   [JSON Schema](json-schema.md): how to write the JSON Schema of a C++ type for a read or a write, what it guarantees, and the schemas for OpenAPI 3.1.
+
+## Upgrading
+
+*   [Upgrading from 2.1 to 2.2](upgrading.md): the changes in behavior, which programs they affect, and what to do.
 
 ## Reference
 
