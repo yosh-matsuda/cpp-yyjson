@@ -25427,7 +25427,8 @@ namespace yyjson
                 if constexpr ((Schema::constraints.bits & constraint_bit<unique_items_t>) != 0)
                     need = max_need(need, unique_items_need<V>());
                 if constexpr (n.combinators != 0) need = max_need(need, combinators_need<Schema, n.combinators, F>());
-                need = max_need(need, elements_need<Schema, V>());
+                if constexpr (n.prefix_count != 0 || n.items != 0 || n.contains != 0 || n.properties != 0)
+                    need = max_need(need, elements_need<Schema, V>());
                 if constexpr (variant_value<V>) need = max_need(need, alternatives_need<V, Schema>());
                 return need;
             }
