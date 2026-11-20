@@ -27952,13 +27952,12 @@ namespace yyjson
                 return false;
             }();
 
-            // The member of s that takes `key`, or null.
-            static constexpr const one_of_struct_member* taking(const one_of_struct_shape& s,
-                                                                std::string_view key) noexcept
+            // The index of the member that takes `key`, or the number of members.
+            static constexpr std::size_t taking(const one_of_struct_shape& s, std::string_view key) noexcept
             {
-                for (const auto& m : s.members)
-                    if (m.key == key) return m.taken ? &m : nullptr;
-                return nullptr;
+                for (std::size_t i = 0; i < s.members.size(); ++i)
+                    if (s.members[i].key == key) return s.members[i].taken ? i : s.members.size();
+                return s.members.size();
             }
             static constexpr bool tag_of(const one_of_struct_shape& s, std::string_view key) noexcept
             {
@@ -27987,7 +27986,7 @@ namespace yyjson
             {
                 if (!within_budget(x, y) || !y.exact || !x.tags.empty() || (y_closed && !x_closed)) return false;
                 for (const auto& m : x.members)
-                    if (m.taken && y_closed && taking(y, m.key) == nullptr) return false;
+                    if (m.taken && y_closed && taking(y, m.key) == y.members.size()) return false;
                 for (const auto& n : y.members)
                 {
                     if (!n.taken)
@@ -27995,9 +27994,9 @@ namespace yyjson
                         if (n.required) return false;
                         continue;
                     }
-                    const auto* m = taking(x, n.key);
-                    if (n.required && (m == nullptr || !m->required)) return false;
-                    if (m == nullptr || !bound_contains(n.value, m->value)) return false;
+                    const auto i = taking(x, n.key);
+                    if (i == x.members.size() || (n.required && !x.members[i].required)) return false;
+                    if (!bound_contains(n.value, x.members[i].value)) return false;
                 }
                 return true;
             }
@@ -28009,9 +28008,9 @@ namespace yyjson
                 for (const auto& m : x.members)
                 {
                     if (!m.required) continue;
-                    if (const auto* n = taking(y, m.key); n != nullptr)
+                    if (const auto i = taking(y, m.key); i != y.members.size())
                     {
-                        if (bounds_disjoint(m.value, n->value)) return true;
+                        if (bounds_disjoint(m.value, y.members[i].value)) return true;
                     }
                     else if (by_key && y.closed && !tag_of(y, m.key))
                         return true;
