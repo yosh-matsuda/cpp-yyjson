@@ -48,6 +48,8 @@ add_executable(
   test_direct_reader.cpp
   test_json_view.cpp
   test_conversions.cpp
+  test_conversion_variants.cpp
+  test_conversion_direct.cpp
   test_casters.cpp
   test_read_into.cpp
   test_reflection.cpp
