@@ -65,7 +65,7 @@ Output:
 }
 ```
 
-A key that is missing from the JSON leaves the member at its default, here `port = 80`, and a key that the struct does not have is ignored. `write` returns a `yyjson::json_string`, a `std::string_view` that owns its buffer; construct a `std::string` from it to keep the text.
+By default, a key that is missing from the JSON leaves the member at its default, here `port = 80`. A key that the struct does not have is ignored. [Read policies](guide.md#reject-unknown-missing-or-repeated-keys) make a read reject such JSON. `write` returns a `yyjson::json_string`, a `std::string_view` that owns its buffer; construct a `std::string` from it to keep the text.
 
 ## Handle errors
 
@@ -95,6 +95,33 @@ Output:
 read_error: Read JSON error: unexpected end of data at line 1, column 34, pos 33
 bad_cast: expected an integer, got a string at /port (line 1, column 30, pos 29); reading int
 ```
+
+## Reject values that are not valid
+
+Give a field constraints in `yyjson::annotations<T>`, after the struct. The names of the constraints are the keywords of JSON Schema. With these lines, the `Server` struct rejects a port that is out of range:
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Server> =
+    yyjson::annotate(yyjson::field("port", yyjson::minimum(1), yyjson::maximum(65535)));
+
+try
+{
+    auto server = yyjson::read<Server>(R"({"host":"example.com","port":0})");
+}
+catch (const yyjson::bad_cast& e)
+{
+    std::cout << e.what() << '\n';
+}
+```
+
+Output:
+
+```text
+the number is less than the minimum 1 at /port (line 1, column 30, pos 29); reading the key "port" of Server
+```
+
+`e.message()` gives only `the number is less than the minimum 1`, without the C++ type, so a program can show it to a user. `yyjson::json_schema<Server>()` of `cpp_yyjson_schema.hpp` writes the JSON Schema of the struct, with the same constraints.
 
 ## Read JSON of unknown shape
 
@@ -175,6 +202,8 @@ To convert a whole object, prefer `read<T>` and `write`: they skip the document 
 
 *   The [Guide](guide.md) shows how to do common tasks, grouped by subject: [files, output and errors](guide.md#files-output-and-errors), [keys and fields](guide.md#keys-and-fields), [types](guide.md#types), [diagnosing errors](guide.md#diagnosing-errors), [JSON of any shape](guide.md#json-of-any-shape), [input formats](guide.md#input-formats) and [repeated work](guide.md#repeated-work).
 *   [Converting C++ types](conversions.md) explains which types convert and how, and how to customize the JSON keys and write casters.
-*   [Validation and errors](validation.md) explains what a read checks and the errors that the library reports.
+*   [Validation and errors](validation.md) explains what a read checks, the read policies, the constraints and the errors that the library reports.
+*   [JSON Schema](json-schema.md) explains how to write the JSON Schema of a C++ type.
+*   [Upgrading from 2.1 to 2.2](upgrading.md) lists the changes in behavior.
 *   The [API reference](reference.md) describes every class and function of both APIs.
 *   The [FAQ](faq.md) answers questions about behavior, threads and lifetimes.

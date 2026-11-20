@@ -16,11 +16,11 @@ Short answers to questions about behavior that is not a single task, with links 
 
 ### What happens to a key that the struct does not have, a missing key, or a key that appears twice?
 
-`read<T>` ignores an unknown key, and the field of a missing key keeps its default. The [read policies](validation.md#read-policies) make the read reject these keys instead. A [repeated key](validation.md#repeated-keys) gives its field the value of one of the members. [What a read checks](validation.md#what-a-read-checks) has the full rules. To see the keys that the struct does not have, read a document and look at its keys, as the Guide shows in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
+By default, `read<T>` ignores an unknown key. The field of a missing key keeps its value in `T()`. The [read policies](validation.md#read-policies) and [closed structs](validation.md#closed-structs) make the read reject these keys instead. A [repeated key](validation.md#repeated-keys) gives its field the value of one of the members. [What a read checks](validation.md#what-a-read-checks) has the full rules. To keep the keys that the struct does not have, give the struct a field of `yyjson::extra_keys`, as the Guide shows in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
 
 ### Why does a `std::optional` field not tell `null` from a missing key?
 
-A `std::optional<int>` field reads `null` as if the key were left out, so both leave the field at its value in `T()`. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the rule. A `std::variant<std::monostate, int>` or `std::shared_ptr<int>` field reads `null`, but it reads a missing key in the same way. To tell the two apart, put such a type in a `std::optional`, for example `std::optional<std::variant<std::monostate, int>>`. A missing key then leaves the field empty, and `null` gives it a value that holds `std::monostate`. `write` leaves out an empty field and writes `null` for `std::monostate`. See [Keep null as a value](guide.md#keep-null-as-a-value).
+A `std::optional<int>` field reads `null` as if the key were left out, so both leave the field at its value in `T()`. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the rule. A `std::variant<std::monostate, int>` or `std::shared_ptr<int>` field reads `null`, but it reads a missing key in the same way. To tell the two apart, put such a type in a `std::optional`, for example `std::optional<yyjson::nullable<int>>` or `std::optional<std::variant<std::monostate, int>>`. A missing key then leaves the field empty, and `null` gives it a value that holds an empty `yyjson::nullable<int>` or `std::monostate`. `write` leaves out an empty field and writes `null` for the value that `null` gave. See [Keep null as a value](guide.md#keep-null-as-a-value).
 
 ### Why is `2.0` read as the `int` of a `std::variant<int, double>`?
 
@@ -90,7 +90,7 @@ Yes, as long as the threads do not share what they modify:
 
 ### Is cpp-yyjson header-only?
 
-The C++ interface is two headers, `cpp_yyjson.hpp` and `field_reflection.hpp`, but it needs the yyjson backend, which CMake compiles from `src/yyjson.c` into a static library. Link `cpp_yyjson::cpp_yyjson` and CMake takes care of both; see [Installation](../README.md#installation).
+The C++ interface is two headers, `cpp_yyjson.hpp` and `field_reflection.hpp`, and an optional third header, `cpp_yyjson_schema.hpp`, for JSON Schema. The headers need the yyjson backend, which CMake compiles from `src/yyjson.c` into a static library. Link `cpp_yyjson::cpp_yyjson` and CMake takes care of both; see [Installation](../README.md#installation).
 
 ### Can I use the yyjson that my project already has?
 

@@ -22,6 +22,7 @@ Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that i
     *   [Map every key to another naming convention](#map-every-key-to-another-naming-convention)
     *   [Keep the keys that the struct does not have](#keep-the-keys-that-the-struct-does-not-have)
     *   [Reject unknown, missing or repeated keys](#reject-unknown-missing-or-repeated-keys)
+    *   [Restrict the values of a field](#restrict-the-values-of-a-field)
 *   [Types](#types)
     *   [Read and write an enumeration](#read-and-write-an-enumeration)
     *   [Read an object whose keys are not known in advance](#read-an-object-whose-keys-are-not-known-in-advance)
@@ -177,7 +178,7 @@ Details: [Skipped fields](conversions.md#skipped-fields).
 
 ### Give a field a default value
 
-A field whose key is missing keeps the value it has in a default-constructed `T`, so its default member initializer is its default:
+Without a [read policy](#reject-unknown-missing-or-repeated-keys), a field whose key is missing keeps the value it has in a default-constructed `T`. A default member initializer thus gives the value of a missing key:
 
 ```cpp
 struct Options
@@ -190,11 +191,35 @@ auto options = yyjson::read<Options>(R"({"verbose":true})");
 // -> Options{3, true}
 ```
 
+A member initializer is not a declared default. `yyjson::strict` and `yyjson::reject_missing_keys` reject a missing key of such a field, and the [JSON Schema](json-schema.md#required-keys-and-defaults) of the struct requires the key. Declare the default in `yyjson::annotations<T>`:
+
+*   `yyjson::default_` on a field declares its value in `T()` as its default. On the struct, it declares the default of each field that has no setting of its own and is not a `std::optional`.
+*   `yyjson::default_from<f>` on a field declares `f()` as its default.
+*   `yyjson::required` on a field makes every read reject an object without its key, also without a read policy.
+
+```cpp
+struct Settings
+{
+    int retries = 3;
+    bool verbose = false;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Settings> = yyjson::annotate(yyjson::default_);
+
+auto settings = yyjson::read<Settings>(R"({"verbose":true})", yyjson::strict);
+// -> Settings{3, true}
+auto json = yyjson::write(settings);
+// -> {"verbose":true}
+```
+
+`write` leaves out a field that is equal to its declared default, and `yyjson::emit_defaults` writes it. The schema does not require the key of a field with a declared default. Details: [Default values and required keys](conversions.md#default-values-and-required-keys).
+
 A `null` does not give the default. For `null` in a field that is not optional, such as `retries`, `yyjson::read<T>` throws `yyjson::bad_cast`.
 
 ### Write a field only when it has a value
 
-A `std::optional` field without a value is left out of the object. When `yyjson::read<T>` finds no key, the field gets its value in `T()`, which is `std::nullopt` unless a default member initializer gives another value. A `null` does the same, unless the type in the optional reads `null` itself. [Keep null as a value](#keep-null-as-a-value) gives the details. Only a field is left out. An empty `std::optional` in an array, in a map or at the root is written as `null`:
+A `std::optional` field without a value is left out of the object. When `yyjson::read<T>` finds no key, the field gets `f()` of its `yyjson::default_from<f>`. Without that setting, it gets its value in `T()`, which is `std::nullopt` unless a default member initializer gives another value. A `null` does the same, unless the type in the optional reads `null` itself. `yyjson::strict` rejects such a `null`. [Keep null as a value](#keep-null-as-a-value) gives the details. Only a field is left out. An empty `std::optional` in an array, in a map or at the root is written as `null`:
 
 ```cpp
 struct Profile
@@ -211,23 +236,23 @@ To leave out a value of your own type, give its caster a [`should_omit`](convers
 
 ### Keep null as a value
 
-A field of type `std::optional`, `std::shared_ptr`, `std::unique_ptr`, or `std::variant` with `std::monostate` reads a missing key and `null` the same way. To tell them apart in a field, put a type that reads `null` in a `std::optional`, such as `std::optional<std::variant<std::monostate, T>>` or `std::optional<std::shared_ptr<T>>`. A missing key then gives `std::nullopt`, and `null` gives an optional that holds `std::monostate` or an empty pointer:
+By default, an empty optional or smart pointer field does not distinguish `null` from a missing member. The same holds for an untagged variant whose default alternative is `std::monostate`. If an [adjacent tag](conversions.md#adjacent-tag) names `std::monostate`, reading `null` requires its tag. To distinguish `null` from a missing member, put a type that reads `null` in a `std::optional`, such as `std::optional<yyjson::nullable<T>>`. A missing key then gives `std::nullopt`, and `null` gives an optional that holds an empty `yyjson::nullable<T>`:
 
 ```cpp
 struct Patch
 {
-    std::optional<std::variant<std::monostate, std::string>> nickname;
+    std::optional<yyjson::nullable<std::string>> nickname;
 };
 
 auto missing = yyjson::read<Patch>("{}");
 // -> nickname is std::nullopt
 auto cleared = yyjson::read<Patch>(R"({"nickname":null})");
-// -> nickname holds std::monostate
+// -> nickname holds an empty yyjson::nullable<std::string>
 auto json = yyjson::write(cleared);
 // -> {"nickname":null}
 ```
 
-`write` leaves out the field when it is `std::nullopt`. [`yyjson::merge_into`](#apply-a-partial-update) reads `null` as a reset, and gives the field its value in `T()`.
+`std::optional<std::variant<std::monostate, T>>` and `std::optional<std::shared_ptr<T>>` work in the same way. `write` leaves out the field when it is `std::nullopt`. [`yyjson::merge_into`](#apply-a-partial-update) reads `null` as a reset, and gives the field its default: `f()` of its `yyjson::default_from<f>`, or else its value in `T()`. Details: [`null` in a `std::optional`](validation.md#null-in-a-stdoptional).
 
 ### Map every key to another naming convention
 
@@ -235,7 +260,7 @@ There is no setting that renames all the keys of a struct, such as from `snake_c
 
 ### Keep the keys that the struct does not have
 
-A struct ignores the keys that it has no field for. A field of [`yyjson::extra_keys`](validation.md#keys-that-no-field-names) receives them, and a write writes them again:
+By default, a struct ignores the keys that it has no field for. A field of [`yyjson::extra_keys`](validation.md#keys-that-no-field-names) receives them, and a write writes them again:
 
 ```cpp
 struct Profile
@@ -254,7 +279,7 @@ auto json = yyjson::write(profile);
 // -> {"name":"Ann","theme":"dark"}
 ```
 
-A field of [`yyjson::pattern_properties("regex")`](validation.md#keys-that-a-pattern-matches) receives only the keys that its pattern matches.
+A field of [`yyjson::pattern_properties("regex")`](validation.md#keys-that-a-pattern-matches) receives only the keys that its pattern matches. The program gives the regular expression engine as a [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher).
 
 A document also keeps the keys. Read a document, cast it, and look at the keys of the document:
 
@@ -275,7 +300,7 @@ for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
 
 ### Reject unknown, missing or repeated keys
 
-By default, a read ignores an unknown key, keeps the default of a field whose key is missing, and accepts a key twice. Give a [read policy](validation.md#read-policies) to reject such JSON:
+By default, a read ignores an unknown key, accepts a missing key, and accepts a key twice. Give a [read policy](validation.md#read-policies) to reject such JSON:
 
 ```cpp
 struct Config
@@ -289,12 +314,36 @@ yyjson::read<Config>(R"({"host":"a"})", yyjson::strict);
 // throws yyjson::bad_cast: a required key is missing (line 1, column 1, pos 0); reading the key "port" of Config
 ```
 
-`yyjson::strict` rejects missing keys, `null` in a `std::optional` field, and repeated keys. It accepts unknown keys, so that a reader of an older version accepts the keys that a newer writer adds. To make every read of a struct use a policy, declare it in `yyjson::annotations<T>`:
+`yyjson::strict` rejects missing keys of fields without a [declared default](#give-a-field-a-default-value), `null` in a `std::optional` field whose value type does not read `null`, and repeated keys. It accepts unknown keys, so that a reader of an older version accepts the keys that a newer writer adds. To make every read of a struct use a policy, declare it in `yyjson::annotations<T>`:
 
 ```cpp
 template <>
 inline constexpr auto yyjson::annotations<Config> = yyjson::annotate(yyjson::strict);
 ```
+
+`yyjson::additional_properties(false)` in `yyjson::annotations<T>` closes a struct: every read of it rejects an unknown key. See [Closed structs](validation.md#closed-structs).
+
+### Restrict the values of a field
+
+Give a field constraints in `yyjson::annotations<T>`. The names of the constraints are the keywords of JSON Schema. A read of a value that does not satisfy them throws `yyjson::bad_cast`:
+
+```cpp
+struct Account
+{
+    std::string name;
+    int age = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Account> =
+    yyjson::annotate(yyjson::field("name", yyjson::min_length(1), yyjson::max_length(32)),
+                     yyjson::field("age", yyjson::minimum(0), yyjson::maximum(150)));
+
+yyjson::read<Account>(R"({"name":"Ann","age":200})");
+// throws yyjson::bad_cast: the number is greater than the maximum 150 at /age (line 1, column 21, pos 20); reading the key "age" of Account
+```
+
+`yyjson::pattern` needs a regular expression engine that the program gives as a [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher). `yyjson::validate(t)` checks the JSON that `write` gives for `t` against the same constraints. Details: [Constraints](validation.md#constraints).
 
 ## Types
 
@@ -325,7 +374,7 @@ auto scores = yyjson::read<std::map<std::string, int>>(R"({"alice":3,"bob":5})")
 // -> {{"alice", 3}, {"bob", 5}}
 ```
 
-`std::unordered_map` works as well. A map whose keys are enumerations reads the names of the enumerators as keys. A map whose keys are integers or classes that a caster converts is an array of `[key, value]` pairs ([details](conversions.md#conversion-rules)).
+`std::unordered_map` works as well. A map whose keys are enumerations reads the names of the enumerators as keys, or the integers in strings, such as `"1"`, for `yyjson::enum_format::integer`. A map whose keys are integers or classes that a caster converts is an array of `[key, value]` pairs ([details](conversions.md#conversion-rules)).
 
 ### Choose a variant alternative by a `"type"` member
 
@@ -354,7 +403,7 @@ When the tag is a sibling of the variant field, as in `{"kind":"circle","data":{
 
 ### Read a struct from an array or a string
 
-A struct converts to an object. To convert it to another kind of value, write a *translator*: a caster that converts the type to and from a type that the library already handles:
+A struct converts to an object. [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) in `yyjson::annotations<T>` converts it to an array of its fields, and [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) converts a struct of one field to the value of that field. For another form, write a *translator*: a caster that converts the type to and from a type that the library already handles:
 
 ```cpp
 struct Point
@@ -417,7 +466,7 @@ A class with public members and a constructor of its own can be registered with 
 
 ### Convert dates and times
 
-`std::chrono` types have no conversion of their own. A translator chooses the representation, such as seconds since the epoch:
+`std::chrono` time points have no conversion of their own, and a duration only reads an integer. A translator chooses the representation, such as seconds since the epoch:
 
 ```cpp
 template <>
@@ -744,7 +793,8 @@ for (const auto& p : points)
 | `operator<<` for JSON values | [`write()` or `std::format`](#print-a-json-value) |
 | JSON Pointer lookup | [a struct of the members needed](#read-only-a-few-members-of-a-large-document), or `operator[]` and `find` level by level |
 | A rule that renames every key | [rename each field](#map-every-key-to-another-naming-convention) |
-| Rejecting unknown or missing keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) before casting it |
-| Restricting the values of a field, such as to a range | check the values after the read, or read the field through a [translator](#read-a-struct-from-an-array-or-a-string) that throws `yyjson::bad_cast`, which then names the [path](#find-the-value-that-failed) of the value |
+| Reporting every invalid value of one read | none. A read and `yyjson::validate` stop at the first value that fails. The error gives the [path](#find-the-value-that-failed) of that value. |
+| Reading a JSON Schema, or checking JSON against one | give the [constraints](#restrict-the-values-of-a-field) in `yyjson::annotations<T>`. The library writes the [JSON Schema](json-schema.md) of a type, but reads none. |
+| A regular expression engine for `yyjson::pattern` | give one, such as `std::regex`, as a [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) |
 | JSON Lines and streams of values | [read line by line](#read-json-lines) |
-| `std::chrono` types, raw pointers, classes with private members | [a translator](#convert-dates-and-times), as listed in [Conversion rules](conversions.md#conversion-rules) |
+| `std::chrono` time points, writing `std::chrono` durations, raw pointers, classes with private members | [a translator](#convert-dates-and-times), as listed in [Conversion rules](conversions.md#conversion-rules) |

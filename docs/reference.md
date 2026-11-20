@@ -181,7 +181,7 @@ Some [constraints](validation.md#the-cost-of-constraints) need a document to com
 
 Whether `read<T>` reads directly also depends on `flag`; see [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt).
 
-If the string is valid JSON and a value does not convert to its type, `read<T>` throws a `yyjson::bad_cast` without a document. An exception that a user-defined `from_json` throws also leaves `read<T>` after one call of the `from_json`. `cast<T>` gives the same exception. If the string is not valid JSON, `read<T>` reads it into a document and throws the `yyjson::read_error` of the document. `read<T>` also reads the string into a document and casts it, more slowly, for the values that the direct read leaves to yyjson. Examples are a number whose exponent has 6 digits or more, and a field tagged by `adjacent_tag` that occurs twice in an object. A user-defined `from_json` may be called more than once for the same JSON value, so do not rely on the number of calls.
+If the string is valid JSON and a value does not convert to its type, `read<T>` throws a `yyjson::bad_cast` without a document. An exception that a user-defined `from_json` throws also leaves `read<T>` after one call of the `from_json`. `cast<T>` rejects the same values. When a value has more than one error, `read<T>` and `cast<T>` can report different errors. `read<T>` and `read_into` report the first error in the order of the text. `cast<T>` and `merge_into` check the keywords of a whole object first, such as `yyjson::max_properties`, a missing key or an unknown key, and then the fields. If the string is not valid JSON, `read<T>` reads it into a document and throws the `yyjson::read_error` of the document. `read<T>` also reads the string into a document and casts it, more slowly, for the values that the direct read leaves to yyjson. Examples are a number whose exponent has 6 digits or more, and a field tagged by `adjacent_tag` that occurs twice in an object. A user-defined `from_json` may be called more than once for the same JSON value, so do not rely on the number of calls.
 
 ### `yyjson::read_into`, `yyjson::merge_into`
 
@@ -553,6 +553,7 @@ The DOM classes hold the JSON values of a document:
     using yyjson::value = yyjson::writer::value;
     using yyjson::array = yyjson::writer::array;
     using yyjson::object = yyjson::writer::object;
+    using yyjson::key_value_pair = yyjson::writer::key_value_pair;
     ```
 
 [`yyjson::cast<T>`](#yyjsoncast) and the constructors of the mutable classes convert between JSON values and C++ types. They use the same [casters](conversions.md) as the data binding API.
@@ -991,6 +992,8 @@ template <value_constructible T>
 yyjson::value& yyjson::value::operator=(T&&);
 template <value_constructible T>
 yyjson::value& yyjson::value::operator=(pair_like<T, yyjson::copy_string_t>);
+yyjson::value& yyjson::value::operator=(std::initializer_list<yyjson::value>);
+yyjson::value& yyjson::value::operator=(std::initializer_list<yyjson::writer::key_value_pair>);
 
 // Cast
 template <typename T>
@@ -1124,6 +1127,7 @@ template <array_constructible T>
 yyjson::array& operator=(T&&);
 template <array_constructible T>
 yyjson::array& operator=(pair_like<T, yyjson::copy_string_t>);
+yyjson::array& operator=(std::initializer_list<yyjson::value>);
 
 // Cast
 template <typename T>
@@ -1260,6 +1264,7 @@ template <object_constructible T>
 yyjson::object& operator=(T&&);
 template <object_constructible T>
 yyjson::object& operator=(pair_like<T, yyjson::copy_string_t>);
+yyjson::object& operator=(std::initializer_list<yyjson::writer::key_value_pair>);
 
 // Cast
 template <typename T>
@@ -1433,6 +1438,8 @@ for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
 //  bc: [2]
 ```
 
+`yyjson::json_string`, the string that `write` returns, is formattable with the empty format specification `{}` only, as in `std::format("{}", yyjson::write(x))`.
+
 ### Conversion from immutable to mutable
 
 To change a document that `yyjson::read` returned, construct a mutable class from it. This copies the document.
@@ -1596,7 +1603,7 @@ template <typename T>
 inline constexpr auto annotations = annotate();
 
 template <typename... As>
-consteval annotation_list<As...> annotate(As... values);
+consteval auto annotate(As... values);  // returns a type that the library does not name
 ```
 
 Specialize `annotations<T>` before the first use of `T`. `annotate` takes these settings, and rejects any other with a compile error:

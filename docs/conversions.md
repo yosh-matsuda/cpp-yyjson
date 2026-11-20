@@ -2,6 +2,14 @@
 
 # Converting C++ types
 
+In short:
+
+*   The data binding API and the DOM API use the same conversions.
+*   Numbers, strings, containers, maps, `std::optional`, smart pointers, tuples and `std::variant` convert with no code. An [untagged variant](#untagged-variants) tries its alternatives to read a JSON value.
+*   A struct converts as a JSON object by [reflection](#reflection), with no registration. [Annotations](#annotations) change its keys, defaults and form.
+*   A [tagged variant](#tagged-variants) reads the alternative that the tag names. An adjacent tag can name `std::monostate` for JSON `null`.
+*   A [user-defined caster](#user-defined-casters) converts any other type, or converts a type in another format.
+
 This document describes which C++ types convert to and from JSON, and how to customize the conversion. [Validation and errors](validation.md) describes what a read checks and the errors that it reports, and the [Reference](reference.md) describes the functions.
 
 Both APIs use the same conversions:
@@ -33,7 +41,7 @@ The sections of this document:
 1.  [Conversion rules](#conversion-rules): numbers, strings, containers, maps and sets, and the types that do not convert.
 2.  [Standard library types](#standard-library-types): `std::optional`, smart pointers, `std::variant` and tuples, and how an [untagged variant](#untagged-variants) chooses its alternative. A variant whose [alternatives have constraints](#alternatives-with-constraints) is in the same section.
 3.  [Structs](#structs): converted by [reflection](#reflection) with no registration, or registered with [`VISITABLE_STRUCT`](#visitable_struct).
-4.  [Annotations](#annotations): JSON keys other than the field names, and skipped fields.
+4.  [Annotations](#annotations): JSON keys other than the field names, and skipped fields. This section also gives [default values and required keys](#default-values-and-required-keys), `yyjson::nullable`, [a struct as the value of its field](#a-struct-as-the-value-of-its-field) and [a struct as a JSON array](#a-struct-as-a-json-array).
 5.  [Enumerations](#enumerations), by the names of their enumerators or by their integers.
 6.  [Tagged variants](#tagged-variants): a `std::variant` whose alternative a member of the object names.
 7.  [JSON values as fields](#json-values-as-fields): a part of the JSON kept as it is.
@@ -84,7 +92,7 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are written as arrays of numbers. Only ranges of `char` are JSON strings.
 *   These four string types cannot be read back, and `yyjson::readable` is false for them. To read such an array of numbers, use a `std::vector` of the character type, such as `std::vector<char8_t>`.
-*   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules. The [read policies](validation.md#read-policies) make a read reject such keys.
+*   A struct that is read ignores a key that it does not have. A field whose key is missing keeps its value in `T()`, unless the field has a [default or is required](#default-values-and-required-keys). [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules. The [read policies](validation.md#read-policies) make a read reject such keys.
 
 If the keys of a map are neither strings nor [enumerations](#enumerations), the map is not a JSON object. An example is `std::map<int, int>`. If a user-defined caster, `VISITABLE_STRUCT` or the reflection converts the keys, the map is not a JSON object either. This holds also for a class of keys that converts to a string. Keys of `std::string` and `std::string_view` stay the keys of an object, even with a user-defined caster of `std::string`. A map that is not a JSON object has these rules:
 
@@ -115,7 +123,7 @@ A struct, a container or another type that holds one of them converts only in th
 
 ### Headers
 
-`cpp_yyjson.hpp` includes the standard headers of the types it is built on, such as `<string>`, `<vector>`, `<optional>`, `<variant>` and `<memory>`, but not those of the other containers. Include `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<list>` or `<deque>` yourself when you use them.
+`cpp_yyjson.hpp` includes the standard headers of the types it is built on, such as `<string>`, `<vector>`, `<optional>`, `<variant>` and `<memory>`, but not those of the other containers. Include `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>` or `<list>` yourself when you use them.
 
 ## Standard library types
 

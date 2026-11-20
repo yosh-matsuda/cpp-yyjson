@@ -1,4 +1,5 @@
 #include "test_common.hpp"
+#include "cpp_yyjson_schema.hpp"
 
 // the snippets of README.md, in the order of the README, with their outputs checked
 
@@ -28,6 +29,12 @@ namespace readme
         bool operator==(const Project&) const = default;
     };
 
+    struct Signup
+    {
+        std::string email;
+        int age;
+    };
+
     template <typename F>
     std::string bad_cast_message(F&& f)
     {
@@ -49,6 +56,11 @@ namespace readme
         return "no exception";
     }
 }  // namespace readme
+
+template <>
+inline constexpr auto yyjson::annotations<readme::Signup> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::field("email", yyjson::min_length(3)),
+                     yyjson::field("age", yyjson::minimum(13), yyjson::maximum(150)));
 
 TEST(Readme, QuickLook)
 {
@@ -87,6 +99,53 @@ TEST(Readme, QuickLook)
 
     auto table = rates.cast<std::map<std::string, double>>();
     EXPECT_EQ(table, (std::map<std::string, double>{{"USD", 1.17}, {"JPY", 172.4}, {"GBP", 0.87}}));
+}
+
+// the block after the errors, which the README shows before the DOM API
+TEST(Readme, ChecksAndSchema)
+{
+    using namespace readme;
+
+    try
+    {
+        (void)yyjson::read<Signup>(R"({"email":"ann@example.com","age":9})");
+        ADD_FAILURE() << "no exception";
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_EQ(e.message(), "the number is less than the minimum 13");
+        EXPECT_EQ(e.path(), "/age");
+        EXPECT_EQ(e.keyword(), "minimum");
+    }
+
+    // the README shows the name of the type without the namespace of this file
+    auto schema = std::string(yyjson::json_schema<Signup>().write(yyjson::WriteFlag::PrettyTwoSpaces));
+    for (auto i = schema.find("readme."); i != std::string::npos; i = schema.find("readme.")) schema.erase(i, 7);
+    EXPECT_EQ(schema, R"({
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Signup": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3
+        },
+        "age": {
+          "type": "integer",
+          "minimum": 13,
+          "maximum": 150
+        }
+      },
+      "required": [
+        "email",
+        "age"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$ref": "#/$defs/Signup"
+})");
 }
 
 TEST(Readme, DataBinding)

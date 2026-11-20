@@ -2,6 +2,14 @@
 
 # Validation and errors
 
+In short:
+
+*   Text that is not JSON throws `yyjson::read_error`. JSON that does not convert to the C++ type throws `yyjson::bad_cast`.
+*   By default, a struct ignores an unknown key, and a field whose key is missing keeps its value in `T()`. The [read policies](#read-policies), such as `yyjson::strict` and `yyjson::reject_unknown_keys`, reject such JSON.
+*   [Constraints](#constraints), such as `yyjson::minimum` and `yyjson::max_length`, restrict the values of a field. They have the names of the keywords of JSON Schema.
+*   `yyjson::validate(t)` and `yyjson::with_validation` check a C++ object against the constraints [before a write](#checking-a-value-before-writing). They also reject tag and key conflicts with `std::invalid_argument`.
+*   `bad_cast` gives the [path and the position](#conversion-errors) of the value. Its `message()` names no C++ type, so a program can show it to a user.
+
 This document describes:
 
 *   what a read checks, and what it does with unknown, missing and repeated keys and with `null` in a `std::optional` field;
