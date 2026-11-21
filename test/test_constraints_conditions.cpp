@@ -186,9 +186,10 @@ namespace constraint_tree_rules
         (yyjson::detail::position_empty_kinds(
              yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>(), 0) &
          yyjson::detail::object_kind) != 0;
+    // the two lambdas below hold const locals, because MSVC 19.44 stops with C1001 on a constexpr local
     template <typename T>
     constexpr bool struct_empty = [] {
-        constexpr auto counts =
+        const auto counts =
             yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().nodes[0].constraints;
         return (yyjson::detail::position_empty_kinds(
                     yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_tree<T>>(), 0, {&counts, 1}) &
@@ -196,7 +197,7 @@ namespace constraint_tree_rules
     }();
     template <typename T>
     constexpr bool names_empty = [] {
-        constexpr auto tree = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>();
+        const auto tree = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>();
         return yyjson::detail::position_reads_nothing<std::string>(tree, tree.nodes[0].keys);
     }();
     using enum yyjson::detail::constraint_error;
