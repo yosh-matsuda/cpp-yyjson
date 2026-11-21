@@ -186,15 +186,16 @@ namespace constraint_tree_rules
         (yyjson::detail::position_empty_kinds(
              yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>(), 0) &
          yyjson::detail::object_kind) != 0;
-    // a const local, because MSVC 19.44 stops with C1001 on a constexpr local here
+    // variable templates and no lambda, because MSVC 19.44 stops with C1001 on a lambda here
     template <typename T>
-    constexpr bool struct_empty = [] {
-        const auto counts =
-            yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().nodes[0].constraints;
-        return (yyjson::detail::position_empty_kinds(
-                    yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_tree<T>>(), 0, {&counts, 1}) &
-                yyjson::detail::object_kind) != 0;
-    }();
+    constexpr auto struct_counts_of =
+        yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().nodes[0].constraints;
+    template <typename T>
+    constexpr auto struct_tree_of = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_tree<T>>();
+    template <typename T>
+    constexpr bool struct_empty =
+        (yyjson::detail::position_empty_kinds(struct_tree_of<T>, 0, {&struct_counts_of<T>, 1}) &
+         yyjson::detail::object_kind) != 0;
     template <typename T>
     constexpr auto names_tree_of = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>();
     template <typename T>
