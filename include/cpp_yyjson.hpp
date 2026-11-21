@@ -9289,14 +9289,27 @@ namespace yyjson
                 b.values.push_back(v);
             }
             for (std::size_t k = 0; k < p.pattern_size; ++k) b.patterns.push_back(keep(p.chars.view(p.patterns[k])));
+            const auto relocate_index = [base](std::size_t& i) {
+                if (i != 0) i += base - 1;
+            };
+            const auto relocate_name = [&](tree_string& name) {
+                if (name.size != 0) name = keep(p.chars.view(name));
+            };
             const auto relocate = [&](schema_node& n) {
-                for (auto* i : {&n.items, &n.properties, &n.keys, &n.contains, &n.prefix_first, &n.combinators,
-                                &n.operands_first, &n.next, &n.members})
-                    if (*i != 0) *i += base - 1;
+                relocate_index(n.items);
+                relocate_index(n.properties);
+                relocate_index(n.keys);
+                relocate_index(n.contains);
+                relocate_index(n.prefix_first);
+                relocate_index(n.combinators);
+                relocate_index(n.operands_first);
+                relocate_index(n.next);
+                relocate_index(n.members);
                 n.values_first += value_base;
                 n.patterns_first += pattern_base;
-                for (auto* name : {&n.constraints.format_name, &n.constraints.assertion_name, &n.key})
-                    if (name->size != 0) *name = keep(p.chars.view(*name));
+                relocate_name(n.constraints.format_name);
+                relocate_name(n.constraints.assertion_name);
+                relocate_name(n.key);
             };
             b.nodes[at] = p.nodes[0];
             relocate(b.nodes[at]);
