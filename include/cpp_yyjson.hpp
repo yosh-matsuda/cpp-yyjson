@@ -9618,6 +9618,7 @@ namespace yyjson
         {
             using type = A;
             static constexpr bool constrained = false;
+            static consteval bool check() { return true; }
         };
         template <typename T, auto... Settings>
         struct alternative_traits<alt<T, Settings...>>
@@ -9625,6 +9626,7 @@ namespace yyjson
             using type = T;
             // the metadata does not change the read
             static constexpr bool constrained = count_true<!metadata_setting<alternative_setting_t<Settings>>...> != 0;
+            static consteval bool check();
         };
         template <typename A>
         using alternative_type_t = typename alternative_traits<A>::type;
@@ -11883,45 +11885,39 @@ namespace yyjson
             }
         }
 
-        template <typename A>
-        consteval bool check_alternative()
+        template <typename T, auto... Settings>
+        consteval bool alternative_traits<alt<T, Settings...>>::check()
         {
-            if constexpr (is_alt<A>)
-                return []<typename T, auto... Settings>(std::type_identity<alt<T, Settings...>>) {
-                    static_assert(!is_alt<T>, "yyjson::alt takes a type that is not yyjson::alt");
-                    constexpr bool arguments[] = {true, alternative_setting_argument<Settings>...};
-                    static_assert(std::ranges::all_of(arguments, std::identity{}),
-                                  "yyjson::alt takes settings, or pointers to constexpr variables that hold them");
-                    if constexpr (std::ranges::all_of(arguments, std::identity{}))
-                    {
-                        static_assert(check_subschema_forms<alternative_setting_t<Settings>...>());
-                        static_assert(!(std::same_as<alternative_setting_t<Settings>, schema_name> || ...),
-                                      "yyjson::schema_name names a type in yyjson::annotate, not an alternative");
-                        static_assert(
-                            count_true<std::same_as<alternative_setting_t<Settings>, schema>...> == 0 ||
-                                count_true<setting_of<alternative_setting_t<Settings>, schema_extend<>>...> == 0,
-                            "yyjson::schema replaces the schema that yyjson::schema_extend extends: give "
-                            "one of them");
-                        static_assert(metadata_once<alternative_setting_t<Settings>...>,
-                                      "yyjson::alt takes each of its metadata once");
-                        constexpr bool settings[] = {true, subschema_argument<alternative_setting_t<Settings>>...};
-                        static_assert(std::ranges::all_of(settings, std::identity{}),
-                                      "yyjson::alt takes the settings of the value of a field, "
-                                      "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...), but no "
-                                      "setting of a member, such as yyjson::rename or yyjson::default_");
-                        constexpr bool taken[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
-                        if constexpr (alternative_traits<A>::constrained && std::ranges::all_of(taken, std::identity{}))
-                            (void)checked_tree<&build_alternative_tree<Settings...>>::tree;
-                    }
-                    return true;
-                }(std::type_identity<A>{});
-            else
-                return true;
+            static_assert(!is_alt<T>, "yyjson::alt takes a type that is not yyjson::alt");
+            constexpr bool arguments[] = {true, alternative_setting_argument<Settings>...};
+            static_assert(std::ranges::all_of(arguments, std::identity{}),
+                          "yyjson::alt takes settings, or pointers to constexpr variables that hold them");
+            if constexpr (std::ranges::all_of(arguments, std::identity{}))
+            {
+                static_assert(check_subschema_forms<alternative_setting_t<Settings>...>());
+                static_assert(!(std::same_as<alternative_setting_t<Settings>, schema_name> || ...),
+                              "yyjson::schema_name names a type in yyjson::annotate, not an alternative");
+                static_assert(count_true<std::same_as<alternative_setting_t<Settings>, schema>...> == 0 ||
+                                  count_true<setting_of<alternative_setting_t<Settings>, schema_extend<>>...> == 0,
+                              "yyjson::schema replaces the schema that yyjson::schema_extend extends: give "
+                              "one of them");
+                static_assert(metadata_once<alternative_setting_t<Settings>...>,
+                              "yyjson::alt takes each of its metadata once");
+                constexpr bool settings[] = {true, subschema_argument<alternative_setting_t<Settings>>...};
+                static_assert(std::ranges::all_of(settings, std::identity{}),
+                              "yyjson::alt takes the settings of the value of a field, "
+                              "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...), but no "
+                              "setting of a member, such as yyjson::rename or yyjson::default_");
+                constexpr bool taken[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
+                if constexpr (constrained && std::ranges::all_of(taken, std::identity{}))
+                    (void)checked_tree<&build_alternative_tree<Settings...>>::tree;
+            }
+            return true;
         }
         template <typename... As>
         consteval bool check_alternatives()
         {
-            constexpr bool checked[] = {true, check_alternative<As>()...};
+            constexpr bool checked[] = {true, alternative_traits<As>::check()...};
             return std::ranges::all_of(checked, std::identity{});
         }
         // The keyword of `Schema` on numbers that the number `v` does not satisfy.
