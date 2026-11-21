@@ -6953,15 +6953,24 @@ namespace yyjson
 
         template <typename T>
         struct default_caster;
+        // The call through an object comes first, as for `to_json_usr_noext`, which gives the reason.
+        template <typename T, typename Json>
+        concept caster_from_json_value = requires(caster<T>& c, const Json& v) { c.from_json(v); } &&
+                                         requires(const Json& v) { caster<T>::from_json(v); };
+        template <typename T, typename Json>
+        concept caster_from_json_into = requires(caster<T>& c, T& t, const Json& v) { c.from_json(t, v); } &&
+                                        requires(T& t, const Json& v) { caster<T>::from_json(t, v); };
         // Whether `caster<T>` or `default_caster<T>` has a `from_json` that reads a `T` from the JSON reference
         // `Json`.  The reader and the writer each name the four forms that they use.
         template <typename T, typename Json>
-        concept caster_from_json = requires(const Json& v) {
+        concept caster_from_json = requires(caster<T>& c, const Json& v) {
+            { c.from_json(v) } -> std::same_as<T>;
+        } && requires(const Json& v) {
             { caster<T>::from_json(v) } -> std::same_as<T>;
         };
         template <typename T, typename Json>
-        concept default_caster_from_json = requires(const Json& v) {
-            { default_caster<T>::from_json(v) } -> std::same_as<T>;
+        concept default_caster_from_json = requires(default_caster<T>& c, const Json& v) {
+            { c.from_json(v) } -> std::same_as<T>;
         };
 
         // A copy of a JSON value in a document of the other API, for a caster whose `from_json` takes only the
@@ -6973,8 +6982,7 @@ namespace yyjson
         // `caster<T>::from_json(t, json)` with the JSON value `json` or with its copy.
         template <typename T, typename Json>
         concept caster_assigns_from_json =
-            requires(T& t, const Json& v) { caster<T>::from_json(t, v); } ||
-            requires(T& t, const typename json_value_of_copy<Json>::other& v) { caster<T>::from_json(t, v); };
+            caster_from_json_into<T, Json> || caster_from_json_into<T, typename json_value_of_copy<Json>::other>;
         // `caster<T>::from_json(json)` that returns a `T` from the JSON value `json` or from its copy.
         template <typename T, typename Json>
         concept caster_from_json_or_copy =
@@ -6985,7 +6993,7 @@ namespace yyjson
         void caster_assign_from_json(T& t, const Json& json)
         {
             check_caster_members<T>(json);
-            if constexpr (requires { caster<T>::from_json(t, json); })
+            if constexpr (caster_from_json_into<T, Json>)
                 caster<T>::from_json(t, json);
             else
                 json_value_of_copy<Json>::apply(json, [&](const auto& copy) { caster<T>::from_json(t, copy); });
@@ -13823,7 +13831,9 @@ namespace yyjson
                 with_cast_path(dependent_t<writer::detail::json_value_access, Json>::get(value),
                                [&] { from_json_translator<field_type>::assign_from_json(field, value); });
             }
-            else if constexpr (requires { default_caster<field_type>::assign_in_place(field, value, replaceable); })
+            else if constexpr (requires(default_caster<field_type>& c) {
+                                   c.assign_in_place(field, value, replaceable);
+                               })
             {
                 if (!default_caster<field_type>::assign_in_place(field, value, replaceable))
                     field = cast_nested<field_type>(value);
@@ -13849,7 +13859,7 @@ namespace yyjson
         concept usual_type_assignable_field =
             std::is_arithmetic_v<Field> && std::same_as<Field, std::remove_cv_t<Field>> &&
             !caster_assigns_from_json<Field, Json> && !from_json_translator<Field>::in_place &&
-            requires(Field& f, const Json& v) { default_caster<Field>::assign_usual_type(f, v); };
+            requires(default_caster<Field>& c, Field& f, const Json& v) { c.assign_usual_type(f, v); };
 
         template <typename Field, typename Json>
         CPPYYJSON_ALWAYS_INLINE inline void assign_reflected_field(Field& field, const Json& value, bool replaceable)
@@ -15665,13 +15675,17 @@ namespace yyjson
             concept base_of_object = requires(Derived d) { detail::derives_from_object(d); };
 
 #pragma region caster
+            // A failed call is tried through an object first: Clang 21.1.8 built by GCC crashes on a failed
+            // qualified call when the overload set holds a static member template.  The qualified call is
+            // checked only after the object form succeeds.
             template <typename T>
             concept to_json_usr_noext =
+                requires(caster<std::remove_cvref_t<T>>& c, T&& t) { c.to_json(std::forward<T>(t)); } &&
                 requires(T&& t) { caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t)); };
             template <typename T>
-            concept to_json_usr_only_ext = requires(T&& t) {
-                caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
-            };  // clang-format on
+            concept to_json_usr_only_ext =
+                requires(caster<std::remove_cvref_t<T>>& c, T&& t) { c.to_json(std::forward<T>(t), copy_string); } &&
+                requires(T&& t) { caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string); };
             template <typename T>
             concept to_json_usr_ext = to_json_usr_noext<T> && to_json_usr_only_ext<T>;
             template <typename T>
@@ -15683,13 +15697,18 @@ namespace yyjson
                                          std::same_as<V, object_ref> || std::same_as<V, object_emitter> ||
                                          std::same_as<V, array_emitter>;
             template <typename V, typename T>
-            concept to_json_inp_usr_noext = to_json_inp_target<V> && requires(V& v, T&& t) {
-                caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
-            };
+            concept to_json_inp_usr_noext =
+                to_json_inp_target<V> &&
+                requires(caster<std::remove_cvref_t<T>>& c, V& v, T&& t) { c.to_json(v, std::forward<T>(t)); } &&
+                requires(V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t)); };
             template <typename V, typename T>
-            concept to_json_inp_usr_only_ext = to_json_inp_target<V> && requires(V& v, T&& t) {
-                caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
-            };
+            concept to_json_inp_usr_only_ext =
+                to_json_inp_target<V> &&
+                requires(caster<std::remove_cvref_t<T>>& c, V& v, T&& t) {
+                    c.to_json(v, std::forward<T>(t), copy_string);
+                } && requires(V& v, T&& t) {
+                    caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
+                };
             template <typename V, typename T>
             concept to_json_inp_usr_ext = to_json_inp_usr_noext<V, T> && to_json_inp_usr_only_ext<V, T>;
             template <typename V, typename T>
@@ -15727,19 +15746,20 @@ namespace yyjson
             template <typename T>
             concept to_json_usr_translator = (!to_json_inp_usr_defined<T>) && to_json_usr<T>;
 
+            // The calls go through an object only, for the reason given above `to_json_usr_noext`.
             template <typename T>
-            concept to_json_def = (!to_json_usr<T>) && requires(T&& t) {
-                default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
-                default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t));
+            concept to_json_def = (!to_json_usr<T>) && requires(default_caster<std::remove_cvref_t<T>>& c, T&& t) {
+                c.to_json(std::forward<T>(t), copy_string);
+                c.to_json(std::forward<T>(t));
             };
 
             template <typename V, typename T>
             concept to_json_inp_def =
                 (!to_json_inp_usr<V, T>) && (!to_json_emit_usr<V, T>) &&
                 (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) &&
-                requires(V& v, T&& t) {
-                    default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
-                    default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
+                requires(default_caster<std::remove_cvref_t<T>>& c, V& v, T&& t) {
+                    c.to_json(v, std::forward<T>(t), copy_string);
+                    c.to_json(v, std::forward<T>(t));
                 };
             template <typename T>
             concept to_json_val_def = to_json_inp_def<value_ref, T>;
@@ -20149,9 +20169,8 @@ namespace yyjson
             // `cast<T>` takes the caster of a `from_json(const const_value_ref&)` that also exists, other than one
             // that takes a value owning its document, which a `const_value_ref` converts to
             static constexpr bool castable =
-                (returns_dom_value() || !requires(const reader::const_value_ref& v) {
-                    { caster<T>::from_json(v) } -> std::same_as<T>;
-                }) && (returns || (in_place && std::default_initializable<T> && std::move_constructible<T>));
+                (returns_dom_value() || !caster_from_json<T, reader::const_value_ref>) &&
+                (returns || (in_place && std::default_initializable<T> && std::move_constructible<T>));
 
             // Converts the value that `cast<source>` has read.  `R` defers the return type, which is invalid for an
             // array `T`, to a call.
@@ -20266,10 +20285,10 @@ namespace yyjson
         concept from_json_unusable =
             caster_names_from_json<T> && (!std::derived_from<caster<T>, builtin_caster>) &&
             (!from_json_translator<T>::returns) && (!from_json_translator<T>::in_place) &&
-            !requires(const reader::const_value_ref& v) { caster<T>::from_json(v); } &&
-            !requires(const writer::detail::const_value_ref& w) { caster<T>::from_json(w); } &&
-            !requires(T& t, const reader::const_value_ref& v) { caster<T>::from_json(t, v); } &&
-            !requires(T& t, const writer::detail::const_value_ref& w) { caster<T>::from_json(t, w); };
+            !caster_from_json_value<T, reader::const_value_ref> &&
+            !caster_from_json_value<T, writer::detail::const_value_ref> &&
+            !caster_from_json_into<T, reader::const_value_ref> &&
+            !caster_from_json_into<T, writer::detail::const_value_ref>;
         template <typename T>
         constexpr bool assert_from_json_usable() noexcept
         {
@@ -20772,7 +20791,7 @@ namespace yyjson
             check_caster_members<T>(json);
             if constexpr (!from_json_translator<T>::castable)
             {
-                if constexpr (requires { caster<T>::from_json(json); })
+                if constexpr (caster_from_json_value<T, Json>)
                     return caster<T>::from_json(json);
                 else
                     return json_value_of_copy<Json>::apply(
@@ -24698,24 +24717,35 @@ namespace yyjson
 
         // X reads T from a JSON value of the DOM API, as a template or as overloads.
         template <typename T, typename X>
-        concept converter_reads_dom = requires(const reader::const_value_ref& v) {
-            { X::from_json(v) } -> std::same_as<T>;
-        } || requires(const writer::detail::const_value_ref& v) {
-            { X::from_json(v) } -> std::same_as<T>;
-        } || requires(T& t, const reader::const_value_ref& v) {
-            X::from_json(t, v);
-        } || requires(T& t, const writer::detail::const_value_ref& v) { X::from_json(t, v); };
+        concept converter_reads_dom =
+            (requires(X& x, const reader::const_value_ref& v) {
+                { x.from_json(v) } -> std::same_as<T>;
+            } && requires(const reader::const_value_ref& v) {
+                { X::from_json(v) } -> std::same_as<T>;
+            }) || (requires(X& x, const writer::detail::const_value_ref& v) {
+                { x.from_json(v) } -> std::same_as<T>;
+            } && requires(const writer::detail::const_value_ref& v) {
+                { X::from_json(v) } -> std::same_as<T>;
+            }) || (requires(X& x, T& t, const reader::const_value_ref& v) { x.from_json(t, v); } &&
+                   requires(T& t, const reader::const_value_ref& v) { X::from_json(t, v); }) ||
+            (requires(X& x, T& t, const writer::detail::const_value_ref& v) { x.from_json(t, v); } &&
+             requires(T& t, const writer::detail::const_value_ref& v) { X::from_json(t, v); });
         template <typename T, typename X>
         concept converter_reads = (!std::same_as<typename converter_return_param<T, X>::type, no_converter_form>) ||
                                   (!std::same_as<typename converter_in_place_param<T, X>::type, no_converter_form>) ||
                                   converter_reads_dom<T, X>;
 
         template <typename V, typename T, typename X>
-        concept converter_writes_into = requires(V& v, const T& t) { X::to_json(v, t); } ||
-                                        requires(V& v, const T& t) { X::to_json(v, t, copy_string); };
+        concept converter_writes_into =
+            (requires(X& x, V& v, const T& t) { x.to_json(v, t); } &&
+             requires(V& v, const T& t) { X::to_json(v, t); }) ||
+            (requires(X& x, V& v, const T& t) { x.to_json(v, t, copy_string); } &&
+             requires(V& v, const T& t) { X::to_json(v, t, copy_string); });
         template <typename T, typename X>
         concept converter_writes =
-            requires(const T& t) { X::to_json(t); } || requires(const T& t) { X::to_json(t, copy_string); } ||
+            (requires(X& x, const T& t) { x.to_json(t); } && requires(const T& t) { X::to_json(t); }) ||
+            (requires(X& x, const T& t) { x.to_json(t, copy_string); } &&
+             requires(const T& t) { X::to_json(t, copy_string); }) ||
             converter_writes_into<writer::value_ref, T, X> || converter_writes_into<writer::array_ref, T, X> ||
             converter_writes_into<writer::object_ref, T, X> || converter_writes_into<object_emitter, T, X> ||
             converter_writes_into<array_emitter, T, X>;
@@ -24749,7 +24779,9 @@ namespace yyjson
         struct with_caster_dom_reader
         {
             template <typename Json>
-            requires requires(const Json& json) {
+            requires requires(X& x, const Json& json) {
+                { x.from_json(json) } -> std::same_as<T>;
+            } && requires(const Json& json) {
                 { X::from_json(json) } -> std::same_as<T>;
             }
             static with_caster<T, X> from_json(const Json& json)
@@ -24757,7 +24789,8 @@ namespace yyjson
                 return with_caster<T, X>(std::in_place, X::from_json(json));
             }
             template <typename Json>
-            requires requires(T& t, const Json& json) { X::from_json(t, json); }
+            requires requires(X& x, T& t, const Json& json) { x.from_json(t, json); } &&
+                     requires(T& t, const Json& json) { X::from_json(t, json); }
             static void from_json(with_caster<T, X>& w, const Json& json)
             {
                 X::from_json(w.value, json);
@@ -24783,6 +24816,7 @@ namespace yyjson
         {
             template <typename Self>
             requires std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(X& x, Self&& s) { x.to_json(std::forward<Self>(s).value); } &&
                      requires(Self&& s) { X::to_json(std::forward<Self>(s).value); }
             static decltype(auto) to_json(Self&& s)
             {
@@ -24790,6 +24824,7 @@ namespace yyjson
             }
             template <typename Self>
             requires std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(X& x, Self&& s) { x.to_json(std::forward<Self>(s).value, copy_string); } &&
                      requires(Self&& s) { X::to_json(std::forward<Self>(s).value, copy_string); }
             static decltype(auto) to_json(Self&& s, copy_string_t)
             {
@@ -24798,6 +24833,7 @@ namespace yyjson
             template <typename V, typename Self>
             requires writer::detail::to_json_inp_target<V> &&
                      std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(X& x, V& v, Self&& s) { x.to_json(v, std::forward<Self>(s).value); } &&
                      requires(V& v, Self&& s) { X::to_json(v, std::forward<Self>(s).value); }
             static void to_json(V& v, Self&& s)
             {
@@ -24806,6 +24842,7 @@ namespace yyjson
             template <typename V, typename Self>
             requires writer::detail::to_json_inp_target<V> &&
                      std::same_as<std::remove_cvref_t<Self>, with_caster<T, X>> &&
+                     requires(X& x, V& v, Self&& s) { x.to_json(v, std::forward<Self>(s).value, copy_string); } &&
                      requires(V& v, Self&& s) { X::to_json(v, std::forward<Self>(s).value, copy_string); }
             static void to_json(V& v, Self&& s, copy_string_t)
             {
@@ -35123,9 +35160,7 @@ namespace yyjson
         template <typename T>
         concept builtin_tuple = yyjson::detail::tuple_like<T> && !yyjson::detail::std_array<T> &&
                                 std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
-                                requires(const const_value_ref& v) {
-                                    { caster<T>::from_json(v) } -> std::same_as<T>;
-                                };
+                                yyjson::detail::caster_from_json<T, const_value_ref>;
 
         // Whether the keys of the members that the tuple T takes are copied, so that the reader can give them
         // from the text, which does not outlive the result.

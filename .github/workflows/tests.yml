@@ -82,15 +82,13 @@ jobs:
         - { name: "LLVM 18", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@18)/bin/clang", cxx: "$(brew --prefix llvm@18)/bin/clang++", brewpkg: "llvm@18" }
         - { name: "LLVM 19", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
         - { name: "LLVM 20", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
-        - { name: "LLVM 21", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21", allow_failure: true }
+        - { name: "LLVM 21", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
         - { name: "LLVM 22", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
         - { name: "LLVM 22 (C++23)", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22", std: "23" }
         - { name: "LLVM 22 (C++26)", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22", std: "26" }
     name: Ubuntu - ${{ matrix.compiler.name }}
     runs-on: ${{ matrix.compiler.os }}
     timeout-minutes: 120
-    # Clang 21 overflows its stack while it compiles some test TUs.
-    continue-on-error: ${{ matrix.compiler.allow_failure == true }}
 
     env:
       triplet: x64-linux
@@ -227,7 +225,7 @@ jobs:
         - { name: "GCC 16 (C++26 reflection)", os: "macos-latest", c: "gcc-16", cxx: "g++-16", brewpkg: "gcc@16", std: "26", flags: "-freflection -DCPPYYJSON_TEST_REQUIRE_STD_REFLECTION" }
         - { name: "Clang 19", os: "macos-latest", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
         - { name: "Clang 20", os: "macos-latest", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
-        - { name: "Clang 21", os: "macos-latest", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21", allow_failure: true }
+        - { name: "Clang 21", os: "macos-latest", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
         - { name: "Clang 22", os: "macos-latest", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
         - { name: "AppleClang16", os: "macos-15", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_16.2.app" }
         - { name: "AppleClang17", os: "macos-15", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_26.3.app" }
@@ -235,7 +233,7 @@ jobs:
     name: MacOS - ${{ matrix.compiler.name }}
     runs-on: ${{ matrix.compiler.os }}
     timeout-minutes: 120
-    # Clang 21 overflows its stack while it compiles some test TUs.
+    # The workaround for the Clang 21 crash is not verified on AppleClang 21.
     continue-on-error: ${{ matrix.compiler.allow_failure == true }}
 
     env:
