@@ -9632,8 +9632,12 @@ namespace yyjson
         template <typename T, auto... Settings>
         inline constexpr bool is_alt<alt<T, Settings...>> = true;
 
-        // The type of the alternative A of a union, which is `yyjson::alt<T, settings...>` or T, and whether it has
-        // settings.
+        // The type of the alternative A of a union (`yyjson::alt<T, settings...>` or T), and whether it has settings.
+        // check() fails to compile on wrong settings. It calls a free function, because MSVC 14.52 merges the
+        // member functions of the specializations for a pointer setting and a class setting.
+        template <typename T, auto... Settings>
+        consteval bool check_alternative_settings();
+
         template <typename A>
         struct alternative_traits
         {
@@ -9647,7 +9651,7 @@ namespace yyjson
             using type = T;
             // the metadata does not change the read
             static constexpr bool constrained = count_true<!metadata_setting<alternative_setting_t<Settings>>...> != 0;
-            static consteval bool check();
+            static consteval bool check() { return check_alternative_settings<T, Settings...>(); }
         };
         template <typename A>
         using alternative_type_t = typename alternative_traits<A>::type;
@@ -11907,7 +11911,7 @@ namespace yyjson
         }
 
         template <typename T, auto... Settings>
-        consteval bool alternative_traits<alt<T, Settings...>>::check()
+        consteval bool check_alternative_settings()
         {
             static_assert(!is_alt<T>, "yyjson::alt takes a type that is not yyjson::alt");
             constexpr bool arguments[] = {true, alternative_setting_argument<Settings>...};
@@ -11930,6 +11934,8 @@ namespace yyjson
                               "yyjson::property(\"key\", ...) and yyjson::required(\"key\", ...), but no "
                               "setting of a member, such as yyjson::rename or yyjson::default_");
                 constexpr bool taken[] = {true, alternative_setting<alternative_setting_t<Settings>>...};
+                constexpr bool constrained =
+                    count_true<!metadata_setting<alternative_setting_t<Settings>>...> != 0;
                 if constexpr (constrained && std::ranges::all_of(taken, std::identity{}))
                     (void)checked_tree<&build_alternative_tree<Settings...>>::tree;
             }
