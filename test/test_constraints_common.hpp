@@ -1548,7 +1548,8 @@ namespace
 }  // namespace
 
 // The alternatives of `yyjson::any_of_variant`, with settings given as values and through a pointer
-inline constexpr std::string_view union_id_regex = "^[a-z]+$";
+inline constexpr char union_id_chars[] = "^[a-z]+$";
+inline constexpr std::string_view union_id_regex = union_id_chars;
 inline constexpr auto union_id_pattern = yyjson::pattern(union_id_regex);
 constexpr bool union_even(int v) { return v % 2 == 0; }
 using UnionValues = yyjson::any_of_variant<
@@ -1582,7 +1583,9 @@ struct UnionShape
     double size = 0;
     bool operator==(const UnionShape&) const = default;
 };
-inline constexpr auto union_y_needs_x = yyjson::dependent_required("y", {"x"});
+inline constexpr char union_key_x[] = "x";
+inline constexpr char union_key_y[] = "y";
+inline constexpr auto union_y_needs_x = yyjson::dependent_required(union_key_y, {union_key_x});
 // The tag of the variant that holds a union is a key of the object of its alternative.
 using UnionTagged = std::variant<
     yyjson::any_of_variant<yyjson::alt<UnionPoint, yyjson::property("x"), yyjson::additional_properties(false)>>>;
