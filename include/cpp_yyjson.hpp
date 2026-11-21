@@ -28318,7 +28318,7 @@ namespace yyjson
             static constexpr bool first_in_order = [] {
                 for (std::size_t i = 0; i < n; ++i)
                 {
-                    if (reads_objects[i]) return i == alternatives[0];
+                    if (reads_objects[i]) return size != 0 && i == alternatives[0];
                 }
                 return false;
             }();
