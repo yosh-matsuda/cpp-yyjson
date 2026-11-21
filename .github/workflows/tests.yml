@@ -49,6 +49,14 @@ jobs:
     - name: Configure VS Toolchain
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Install LLVM 22 for the Visual Studio 2026 STL
+      if: matrix.os == 'windows-2025' && matrix.compiler.cxx == 'clang-cl'
+      shell: pwsh
+      run: |
+        choco upgrade llvm --version=22.1.8 --yes --no-progress
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "$env:ProgramFiles\LLVM\bin" >> $env:GITHUB_PATH
+
     - name: Build and test
       run: |
         rm -rf "${{ github.workspace }}\build"
