@@ -213,8 +213,7 @@ jobs:
         if [[ "$CC" == gcc-* ]]; then export CMAKE_BUILD_PARALLEL_LEVEL=2; fi
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCPPYYJSON_USE_BUNDLED_YYJSON=OFF -DCMAKE_PREFIX_PATH=${{ runner.temp }}/yyjson-install -G "Ninja Multi-Config"
-        cmake --build ${{ github.workspace }}/build --config Debug
-        ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
+        # The jobs with the bundled yyjson test Debug with the same compilers.
         cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
