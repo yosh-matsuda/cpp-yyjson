@@ -9577,10 +9577,11 @@ namespace yyjson
         {
         };
 
-        // The node I of the tree of `Tree::tree`: its keywords, values and patterns, and its subschemas by `at`.
+        // The node I of the tree of `Tree::tree`: its keywords, values and patterns. `schema_at` gives its subschemas.
         template <typename Tree, std::size_t I>
         struct node_schema
         {
+            using tree_type = Tree;
             static constexpr const auto& tree = Tree::tree;
             static constexpr std::size_t index = I;
             static constexpr const schema_node& node = Tree::tree.nodes[I];
@@ -9589,9 +9590,11 @@ namespace yyjson
                                                                  node.values_count};
             static constexpr std::span<const std::string_view> patterns{
                 Tree::tree.patterns.data() + node.patterns_first, node.patterns_count};
-            template <std::size_t J>
-            using at = node_schema<Tree, J>;
         };
+        // The node J of the tree of the node_schema Schema. It is not a member template, because Clang 21 can recurse
+        // without end when it hashes a member template of a dependent type whose argument names another one.
+        template <typename Schema, std::size_t J>
+        using schema_at = node_schema<typename Schema::tree_type, J>;
 
         // The schema of the field R of S, by its index among all the fields, of a struct that `has_constraints`.
         template <typename S, std::size_t R>
@@ -12611,10 +12614,10 @@ namespace yyjson
         template <typename Schema, std::size_t R, typename F, typename Input>
         constraint_kind combinator_violation(const F& field, Input input)
         {
-            using N = typename Schema::template at<R>;
+            using N = schema_at<Schema, R>;
             const unknown_tracker<N::node.next != 0> tracker;
             const auto holds = [&field, input]<std::size_t J>(std::integral_constant<std::size_t, J>) {
-                using operand = typename Schema::template at<N::node.operands_first + J>;
+                using operand = schema_at<Schema, N::node.operands_first + J>;
                 return constraint_violation<operand, true>(field, input_for<operand, F>(input)) ==
                        constraint_kind::none;
             };
@@ -13651,7 +13654,7 @@ namespace yyjson
             const auto throw_at = [&](const auto& target) {
                 if (r.kind == constraint_kind::closed_key)
                     throw_cast_failure(facts, target, r.key, "reading {}{}{}", type_name<T>(), in, via);
-                auto key_facts = constraint_facts<typename N::template at<N::node.keys>>(r.kind);
+                auto key_facts = constraint_facts<schema_at<N, N::node.keys>>(r.kind);
                 key_facts.owner = type_name<T>();
                 key_facts.detail = static_cast<std::uint8_t>(failure_detail::key);
                 throw_cast_failure(key_facts, target, r.key, "reading a key of {} in yyjson::property_names{}{}",
@@ -21367,7 +21370,7 @@ namespace yyjson
                     return std::size_t{1};
             }();
             return []<std::size_t... J>(std::index_sequence<J...>) {
-                return (counts_input<typename Schema::template at<(Sub == 0 ? Schema::node.prefix_first + J : Sub)>,
+                return (counts_input<schema_at<Schema, (Sub == 0 ? Schema::node.prefix_first + J : Sub)>,
                                      typename array_element_of<V, J>::type, Written>() ||
                         ...);
             }(std::make_index_sequence<size>{});
@@ -21377,9 +21380,9 @@ namespace yyjson
         template <typename Schema, std::size_t R, typename F, bool Written>
         consteval bool combinators_count_input()
         {
-            using N = typename Schema::template at<R>;
+            using N = schema_at<Schema, R>;
             const bool operands = []<std::size_t... J>(std::index_sequence<J...>) {
-                return (counts_input<typename Schema::template at<N::node.operands_first + J>, F, Written>() || ...);
+                return (counts_input<schema_at<Schema, N::node.operands_first + J>, F, Written>() || ...);
             }(std::make_index_sequence<N::node.operands_count>());
             if constexpr (N::node.next != 0)
                 return operands || combinators_count_input<Schema, N::node.next, F, Written>();
@@ -21393,9 +21396,9 @@ namespace yyjson
         template <typename Schema, std::size_t R>
         consteval bool combinators_check_members()
         {
-            using N = typename Schema::template at<R>;
+            using N = schema_at<Schema, R>;
             const bool operands = []<std::size_t... J>(std::index_sequence<J...>) {
-                return (checks_members<typename Schema::template at<N::node.operands_first + J>>() || ...);
+                return (checks_members<schema_at<Schema, N::node.operands_first + J>>() || ...);
             }(std::make_index_sequence<N::node.operands_count>());
             if constexpr (N::node.next != 0)
                 return operands || combinators_check_members<Schema, N::node.next>();
@@ -21501,7 +21504,7 @@ namespace yyjson
                 if constexpr (unique_set<V>)
                     if (n.constraints.has<min_properties>() || n.constraints.has<max_properties>()) return true;
                 if constexpr (n.properties != 0)
-                    return counts_input<typename Schema::template at<n.properties>,
+                    return counts_input<schema_at<Schema, Schema::node.properties>,
                                         std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>,
                                         Written>();
                 else
@@ -21718,7 +21721,7 @@ namespace yyjson
         {
             const auto check = [&e, j, v, written]<std::size_t J>(std::integral_constant<std::size_t, J>) {
                 using E = typename array_element_of<V, J>::type;
-                using S = typename Schema::template at<(Sub == 0 ? Schema::node.prefix_first + J : Sub)>;
+                using S = schema_at<Schema, (Sub == 0 ? Schema::node.prefix_first + J : Sub)>;
                 if constexpr (Sub != 0 && array_written_tuple<V> && !element_kinds_fit<S, E>)
                 {
                     if constexpr (requires { e.record; })
@@ -21884,8 +21887,8 @@ namespace yyjson
                                   "yyjson::prefix_items has more positions than the tuple has elements");
                     if (any_tuple_element(v, [](auto j, const auto& e) {
                             if constexpr (j < Schema::node.prefix_count)
-                                return constraint_violation<typename Schema::template at<Schema::node.prefix_first + j>,
-                                                            true>(e) != constraint_kind::none;
+                                return constraint_violation<schema_at<Schema, Schema::node.prefix_first + j>, true>(
+                                           e) != constraint_kind::none;
                             else
                                 return false;
                         }))
@@ -21896,18 +21899,17 @@ namespace yyjson
                     auto it = std::ranges::begin(v);
                     const auto end = std::ranges::end(v);
                     const bool violated = [&]<std::size_t... J>(std::index_sequence<J...>) {
-                        return (
-                            (it != end &&
-                             constraint_violation<typename Schema::template at<Schema::node.prefix_first + J>, true>(
-                                 static_cast<const constrained_element_t<V>&>(*it++)) != constraint_kind::none) ||
-                            ...);
+                        return ((it != end &&
+                                 constraint_violation<schema_at<Schema, Schema::node.prefix_first + J>, true>(
+                                     static_cast<const constrained_element_t<V>&>(*it++)) != constraint_kind::none) ||
+                                ...);
                     }(std::make_index_sequence<Schema::node.prefix_count>{});
                     if (violated) return constraint_kind::prefix_items;
                 }
             }
             if constexpr (n.items != 0)
             {
-                using items = typename Schema::template at<Schema::node.items>;
+                using items = schema_at<Schema, Schema::node.items>;
                 if constexpr (!std::same_as<Input, no_input> && elements_count_input<Schema, V, n.items>())
                 {
                     auto cursor = element_cursor<V>{&v};
@@ -21944,7 +21946,7 @@ namespace yyjson
             }
             if constexpr (n.contains != 0)
             {
-                using contained = typename Schema::template at<Schema::node.contains>;
+                using contained = schema_at<Schema, Schema::node.contains>;
                 constexpr bool has_min = c.has<yyjson::min_contains>();
                 constexpr bool has_max = c.has<yyjson::max_contains>();
                 constexpr std::size_t min = has_min ? c.min_contains : 1;
@@ -22058,7 +22060,7 @@ namespace yyjson
             }
             if constexpr (n.properties != 0)
             {
-                using properties = typename Schema::template at<Schema::node.properties>;
+                using properties = schema_at<Schema, Schema::node.properties>;
                 using E = std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>;
                 const auto holds = [](const E& value, auto in) {
                     return constraint_violation<properties, true>(value, input_for<properties, E>(in)) ==
@@ -22172,7 +22174,7 @@ namespace yyjson
             }
             if constexpr (n.keys != 0)
             {
-                using names = typename Schema::template at<Schema::node.keys>;
+                using names = schema_at<Schema, Schema::node.keys>;
                 const auto key_holds = [](const auto& map, const auto& key) {
                     // a later null of a repeated key erases the member
                     const auto it = map.find(key);
@@ -22312,7 +22314,7 @@ namespace yyjson
         template <typename Schema, std::size_t M, typename O>
         bool dom_members_hold(const O& o)
         {
-            using N = typename Schema::template at<M>;
+            using N = schema_at<Schema, M>;
             const auto it = o.find(N::node.key.view());
             if (it == o.end())
             {
@@ -22512,7 +22514,7 @@ namespace yyjson
         template <typename Schema, std::size_t M, typename Tagged, typename S, typename Facts, typename Json>
         bool struct_position_members_hold(const S& s, const Facts& facts, const Json& obj, std::string_view id)
         {
-            using N = typename Schema::template at<M>;
+            using N = schema_at<Schema, M>;
             constexpr auto k = struct_field_of_key<S>(N::node.key.view());
             const auto holds = [&] {
                 if constexpr (k == struct_field_count<S>)
@@ -22629,7 +22631,7 @@ namespace yyjson
             }
             if constexpr (c.template has<property_names<>>())
             {
-                using K = typename Schema::template at<node.keys>;
+                using K = schema_at<Schema, node.keys>;
                 const auto violates = [](std::string_view key) {
                     if constexpr (subtree_takes_string(Schema::tree, node.keys))
                         return constraint_violation<K, true>(std::string(key)) != constraint_kind::none;
@@ -22653,7 +22655,7 @@ namespace yyjson
             if constexpr (node.properties != 0)
             {
                 // the members that `yyjson::property` does not name, tags too, as in JSON Schema
-                using P = typename Schema::template at<node.properties>;
+                using P = schema_at<Schema, node.properties>;
                 const auto violates = [&](std::string_view key, const auto& value) {
                     return !names(key) && constraint_violation<P, true>(value) != constraint_kind::none;
                 };
@@ -22918,14 +22920,13 @@ namespace yyjson
                             if constexpr (J < Schema::node.prefix_count)
                             {
                                 if (kind == constraint_kind::prefix_items)
-                                    throw_if_violated<S, K, typename Schema::template at<Schema::node.prefix_first + J>,
-                                                      E, E>((*a)[J], x);
+                                    throw_if_violated<S, K, schema_at<Schema, Schema::node.prefix_first + J>, E, E>(
+                                        (*a)[J], x);
                             }
                             else if constexpr (Schema::node.items != 0)
                             {
                                 if (kind == constraint_kind::items)
-                                    throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, E>(
-                                        (*a)[J], x);
+                                    throw_if_violated<S, K, schema_at<Schema, Schema::node.items>, E, E>((*a)[J], x);
                             }
                         }(),
                         ...);
@@ -22953,8 +22954,8 @@ namespace yyjson
                     if (kind == constraint_kind::prefix_items)
                         [&]<std::size_t... J>(std::index_sequence<J...>) {
                             ((J < a->size()
-                                  ? throw_if_violated<S, K, typename Schema::template at<Schema::node.prefix_first + J>,
-                                                      E, Read>((*a)[J], element_at<V, J>(&cursor, J, written))
+                                  ? throw_if_violated<S, K, schema_at<Schema, Schema::node.prefix_first + J>, E, Read>(
+                                        (*a)[J], element_at<V, J>(&cursor, J, written))
                                   : void()),
                              ...);
                         }(std::make_index_sequence<Schema::node.prefix_count>{});
@@ -22964,7 +22965,7 @@ namespace yyjson
                         std::size_t j = 0;
                         for (const auto& e : *a)
                             if (j++ >= n.prefix_count)
-                                throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, Read>(
+                                throw_if_violated<S, K, schema_at<Schema, Schema::node.items>, E, Read>(
                                     e, element_at<V, 0>(&cursor, j - 1, written));
                     }
                 if constexpr (Schema::constraints.template has<unique_items_t>())
@@ -22989,15 +22990,15 @@ namespace yyjson
                             const E* x = nullptr;
                             auto held = std::optional<E>();
                             if (paired && it != std::ranges::end(*v)) x = element_address(std::get<1>(*it++), held);
-                            throw_if_violated<S, K, typename Schema::template at<Schema::node.properties>, E, E>(
-                                std::get<1>(kv), x);
+                            throw_if_violated<S, K, schema_at<Schema, Schema::node.properties>, E, E>(std::get<1>(kv),
+                                                                                                      x);
                         }
                     }
                 }
                 if constexpr (n.keys != 0)
                 {
                     using Key = std::remove_cv_t<std::tuple_element_t<0, Pair>>;
-                    using keys = typename Schema::template at<Schema::node.keys>;
+                    using keys = schema_at<Schema, Schema::node.keys>;
                     if (kind == constraint_kind::property_names)
                         for (const auto& kv : *o)
                         {
@@ -23022,8 +23023,7 @@ namespace yyjson
                         if (kind == constraint_kind::prefix_items)
                             [&]<std::size_t... J>(std::index_sequence<J...>) {
                                 ((J < a->size()
-                                      ? throw_if_violated<
-                                            S, K, typename Schema::template at<Schema::node.prefix_first + J>, E, E>(
+                                      ? throw_if_violated<S, K, schema_at<Schema, Schema::node.prefix_first + J>, E, E>(
                                             (*a)[J])
                                       : void()),
                                  ...);
@@ -23034,7 +23034,7 @@ namespace yyjson
                             std::size_t j = 0;
                             for (const auto& e : *a)
                                 if (j++ >= n.prefix_count)
-                                    throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, E>(e);
+                                    throw_if_violated<S, K, schema_at<Schema, Schema::node.items>, E, E>(e);
                         }
                     if constexpr (Schema::constraints.template has<unique_items_t>())
                         if (kind == constraint_kind::unique_items)
@@ -23047,13 +23047,13 @@ namespace yyjson
                     if constexpr (n.properties != 0)
                         if (kind == constraint_kind::additional_properties)
                             for (const auto& kv : *o)
-                                throw_if_violated<S, K, typename Schema::template at<Schema::node.properties>, E, E>(
+                                throw_if_violated<S, K, schema_at<Schema, Schema::node.properties>, E, E>(
                                     std::get<1>(kv));
                     if constexpr (n.keys != 0)
                         if (kind == constraint_kind::property_names)
                             for (const auto& kv : *o)
                             {
-                                using keys = typename Schema::template at<Schema::node.keys>;
+                                using keys = schema_at<Schema, Schema::node.keys>;
                                 const auto violated =
                                     constraint_violation<keys, true>(std::string_view(std::get<0>(kv)));
                                 if (violated != constraint_kind::none)
@@ -23080,7 +23080,7 @@ namespace yyjson
             using schema = extra_keys_schema<S, R>;
             if constexpr (schema::node.keys != 0)
             {
-                using names = typename schema::template at<schema::node.keys>;
+                using names = schema_at<schema, schema::node.keys>;
                 using Key = typename key_map_type<S, R>::key_type;
                 if constexpr (constraint_string<Key>)
                     return constraint_violation<names, true>(Key(key));
@@ -23099,7 +23099,7 @@ namespace yyjson
             using schema = extra_keys_schema<S, R>;
             if constexpr (schema::node.properties != 0)
             {
-                using values = typename schema::template at<schema::node.properties>;
+                using values = schema_at<schema, schema::node.properties>;
                 return constraint_violation<values, true>(e, input_for<values, E>(input));
             }
             else
@@ -23113,7 +23113,7 @@ namespace yyjson
         {
             using schema = extra_keys_schema<S, R>;
             if constexpr (schema::node.properties != 0)
-                return counts_input<typename schema::template at<schema::node.properties>,
+                return counts_input<schema_at<schema, schema::node.properties>,
                                     typename key_map_type<S, R>::mapped_type>();
             else
                 return false;
@@ -23125,7 +23125,7 @@ namespace yyjson
                                                                                       constraint_kind kind)
         {
             using schema = extra_keys_schema<S, R>;
-            using keys = typename schema::template at<schema::node.keys>;
+            using keys = schema_at<schema, schema::node.keys>;
             auto facts = constraint_facts<keys>(kind);
             facts.owner = type_name<S>();
             facts.detail = static_cast<std::uint8_t>(failure_detail::key);
@@ -23137,7 +23137,7 @@ namespace yyjson
                                                                                         constraint_kind kind)
         {
             using schema = extra_keys_schema<S, R>;
-            using values = typename schema::template at<schema::node.properties>;
+            using values = schema_at<schema, schema::node.properties>;
             auto facts = constraint_facts<values>(kind);
             facts.owner = type_name<S>();
             throw_cast_failure(facts, target_of(json), key, "reading a member value of {}", type_name<S>());
@@ -25108,7 +25108,7 @@ namespace yyjson
             {
                 auto j = std::size_t{0};
                 for (const auto& e : arr)
-                    if (j++ >= K) throw_if_violated<S, K, typename schema::template at<schema::node.items>, E, E>(e);
+                    if (j++ >= K) throw_if_violated<S, K, schema_at<schema, schema::node.items>, E, E>(e);
             }
             throw_constraint_violation<S, K, schema>(json, kind, constraint_subject::element);
         }
@@ -25373,11 +25373,10 @@ namespace yyjson
         template <typename Schema, std::size_t R, typename F>
         consteval json_need combinators_need()
         {
-            using N = typename Schema::template at<R>;
+            using N = schema_at<Schema, R>;
             auto need = json_need::none;
             all_indices<N::node.operands_count>([&](auto j) {
-                need =
-                    max_need(need, json_requirement<typename Schema::template at<N::node.operands_first + j()>, F>());
+                need = max_need(need, json_requirement<schema_at<Schema, N::node.operands_first + j()>, F>());
                 return true;
             });
             if constexpr (N::node.next != 0) need = max_need(need, combinators_need<Schema, N::node.next, F>());
@@ -25394,12 +25393,10 @@ namespace yyjson
             const auto element = [&]<std::size_t Sub, typename E>(std::integral_constant<std::size_t, Sub>,
                                                                   std::type_identity<E>, auto j) {
                 if constexpr (Sub != 0)
-                    need = max_need(need, json_requirement<typename Schema::template at<Sub>, E>());
+                    need = max_need(need, json_requirement<schema_at<Schema, Sub>, E>());
                 else if constexpr (decltype(j)::value < Schema::node.prefix_count)
                     need = max_need(
-                        need,
-                        json_requirement<typename Schema::template at<Schema::node.prefix_first + decltype(j)::value>,
-                                         E>());
+                        need, json_requirement<schema_at<Schema, Schema::node.prefix_first + decltype(j)::value>, E>());
             };
             const auto each = [&]<typename E>(std::type_identity<E> e, auto j) {
                 element(std::integral_constant<std::size_t, 0>(), e, j);
@@ -25434,7 +25431,7 @@ namespace yyjson
             {
                 if constexpr (n.properties != 0)
                     need = json_requirement<
-                        typename Schema::template at<n.properties>,
+                        schema_at<Schema, Schema::node.properties>,
                         std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>>();
             }
             return need;
@@ -25583,7 +25580,7 @@ namespace yyjson
         {
             if constexpr (Schema::node.contains != 0)
             {
-                using contained = typename Schema::template at<Schema::node.contains>;
+                using contained = schema_at<Schema, Schema::node.contains>;
                 const bool extra = [] {
                     if constexpr (has_extra_items<S>)
                         return counts_input<contained, constrained_element_t<extra_items_type<S>>, Written>();
@@ -25715,7 +25712,7 @@ namespace yyjson
             }
             if constexpr (node.contains != 0)
             {
-                using contained = typename Schema::template at<Schema::node.contains>;
+                using contained = schema_at<Schema, Schema::node.contains>;
                 constexpr bool has_min = c.has<yyjson::min_contains>();
                 constexpr bool has_max = c.has<yyjson::max_contains>();
                 constexpr std::size_t min = has_min ? c.min_contains : 1;
@@ -25852,9 +25849,9 @@ namespace yyjson
         constraint_kind array_struct_combinator_violation(const S& t, std::size_t count, std::size_t size,
                                                           Elements elements)
         {
-            using N = typename Schema::template at<R>;
+            using N = schema_at<Schema, R>;
             const auto holds = [&]<std::size_t J>(std::integral_constant<std::size_t, J>) {
-                using operand = typename Schema::template at<N::node.operands_first + J>;
+                using operand = schema_at<Schema, N::node.operands_first + J>;
                 return array_struct_node_violation<operand>(t, count, size, elements) == constraint_kind::none;
             };
             const auto held = [&]<std::size_t... J>(std::index_sequence<J...>) {
@@ -27949,7 +27946,7 @@ namespace yyjson
             if constexpr (adjacent_field<S, K> || !field_reads_as_cast<F>())
                 return kinds_bound(json_kind_all);
             else if constexpr (Node != 0)
-                return bound_of<U, typename union_alternative_schema<V, I>::template at<Node>>();
+                return bound_of<U, schema_at<union_alternative_schema<V, I>, Node>>();
             else if constexpr (has_constraints<S>)
                 return bound_of<U, field_schema<S, struct_declared_index<S, K>>>();
             else
@@ -29164,7 +29161,7 @@ namespace yyjson
         {
             using schema = extra_keys_schema<T, R>;
             if constexpr (schema::node.properties != 0)
-                return json_requirement<typename schema::template at<schema::node.properties>,
+                return json_requirement<schema_at<schema, schema::node.properties>,
                                         typename key_map_type<T, R>::mapped_type>() == json_need::document;
             else
                 return false;
@@ -34486,7 +34483,7 @@ namespace yyjson
         bool struct_values_hold(const T& t, Obj obj)
         {
             using N = node_schema<struct_tree<T>, I>;
-            using P = typename N::template at<N::node.properties>;
+            using P = schema_at<N, N::node.properties>;
             return for_each_struct_value<T, I>(t, obj, [](std::string_view, const auto& value) {
                 return constraint_violation<P, true>(value) == constraint_kind::none;
             });
@@ -34498,7 +34495,7 @@ namespace yyjson
         void throw_struct_values(const T& t, const Json& obj, std::string_view via)
         {
             using N = node_schema<struct_tree<T>, I>;
-            using P = typename N::template at<N::node.properties>;
+            using P = schema_at<N, N::node.properties>;
             for_each_struct_value<T, I>(t, &obj, [&](std::string_view key, const auto& value) {
                 const auto kind = constraint_violation<P, true>(value);
                 if (kind == constraint_kind::none) return true;
@@ -45244,7 +45241,7 @@ namespace yyjson
             check_extra_key<S, r>(key, json);
             if constexpr (schema::node.properties != 0)
             {
-                using values = typename schema::template at<schema::node.properties>;
+                using values = schema_at<schema, schema::node.properties>;
                 if constexpr (!schema_takes_value<values>)
                 {
                     if (const auto violated = constraint_violation<values, true>(json);
@@ -46117,7 +46114,7 @@ namespace yyjson
             check_merged_value(e, json, *sub, nullptr, policies);
             if constexpr (schema::node.properties != 0)
             {
-                using values = typename schema::template at<schema::node.properties>;
+                using values = schema_at<schema, schema::node.properties>;
                 throw_in_document(json, [&](const reader::const_value_ref& value) {
                     check_with_unknowns(json_address(value), deferred_check::map_value, [&] {
                         const auto kind = [&] {

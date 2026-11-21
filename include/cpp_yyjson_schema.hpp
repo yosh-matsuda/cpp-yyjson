@@ -1622,7 +1622,7 @@ namespace yyjson
                 if (nodes[m].named && !named.contains(nodes[m].key.view()))
                     named.emplace(nodes[m].key.view(), empty_object, copy_string);
             if (named.empty()) own.erase("properties");
-            emit_node<typename N::template at<N::node.properties>, yyjson::value, S>(
+            emit_node<detail::schema_at<N, N::node.properties>, yyjson::value, S>(
                 own.emplace("additionalProperties", empty_object));
         }
 
@@ -1636,7 +1636,7 @@ namespace yyjson
             using E = typename yd::key_map_type<S, R>::mapped_type;
             emit<E>(out);
             if constexpr (schema::node.properties != 0)
-                emit_node<typename schema::template at<schema::node.properties>, E, S>(out);
+                emit_node<detail::schema_at<schema, schema::node.properties>, E, S>(out);
         }
 
         // The values that the pattern P of S checks.  The pattern reads a value that it does not keep as `read` does,
@@ -1703,8 +1703,8 @@ namespace yyjson
             {
                 const auto emit_keys = [&]<std::size_t R>(std::integral_constant<std::size_t, R>, object_ref o) {
                     using schema = yd::extra_keys_schema<S, R>;
-                    emit_node<typename schema::template at<schema::node.keys>,
-                              typename yd::key_map_type<S, R>::key_type, S>(o);
+                    emit_node<detail::schema_at<schema, schema::node.keys>, typename yd::key_map_type<S, R>::key_type,
+                              S>(o);
                 };
                 auto names = out.emplace("propertyNames", empty_object);
                 if constexpr (yd::struct_property_names<S>)
@@ -2421,7 +2421,7 @@ namespace yyjson
                 {
                     using schema = yd::field_schema<S, yd::struct_declared_index<S, n>>;
                     if constexpr (schema::node.items != 0)
-                        emit_node<typename schema::template at<schema::node.items>, E, S>(items);
+                        emit_node<detail::schema_at<schema, schema::node.items>, E, S>(items);
                 }
             }
             else if (yd::array_struct_table<S>.second ||
@@ -3389,11 +3389,11 @@ namespace yyjson
                                 [&] {
                                     auto at = sub_at(out, "prefixItems", Js);
                                     if constexpr (Js < n.prefix_count)
-                                        emit_node<typename N::template at<n.prefix_first + Js>,
+                                        emit_node<detail::schema_at<N, N::node.prefix_first + Js>,
                                                   typename P::template prefix<Js>, S>(at);
                                     else if constexpr (n.items != 0)
-                                        emit_node<typename N::template at<n.items>, typename P::template prefix<Js>, S>(
-                                            at);
+                                        emit_node<detail::schema_at<N, N::node.items>, typename P::template prefix<Js>,
+                                                  S>(at);
                                 }(),
                                 ...);
                         }(std::make_index_sequence<std::tuple_size_v<C>>{});
@@ -3408,18 +3408,18 @@ namespace yyjson
                         auto target = out.contains("items") || out.contains("prefixItems") ? conjunct(out) : out;
                         auto prefix = target.emplace("prefixItems", empty_array);
                         [&]<std::size_t... Js>(std::index_sequence<Js...>) {
-                            (emit_node<typename N::template at<n.prefix_first + Js>, typename P::template prefix<Js>,
+                            (emit_node<detail::schema_at<N, N::node.prefix_first + Js>, typename P::template prefix<Js>,
                                        S>(prefix.emplace_back(empty_object)),
                              ...);
                         }(std::make_index_sequence<n.prefix_count>{});
                         if constexpr (n.items != 0)
-                            emit_node<typename N::template at<n.items>, typename P::element, S>(
+                            emit_node<detail::schema_at<N, N::node.items>, typename P::element, S>(
                                 target.emplace("items", empty_object));
                         else if constexpr (n.items_denied)
                             target.emplace("items", false);
                     }
                     else if constexpr (n.items != 0)
-                        emit_node<typename N::template at<n.items>, typename P::element, S>(sub(out, "items"));
+                        emit_node<detail::schema_at<N, N::node.items>, typename P::element, S>(sub(out, "items"));
                     else
                         (out.contains("items") || out.contains("prefixItems") ? conjunct(out) : out)
                             .emplace("items", false);
@@ -3431,7 +3431,7 @@ namespace yyjson
                 auto contained = target.emplace("contains", empty_object);
                 if constexpr (!(yd::tuple_like<C> && !std::ranges::range<C>) && !yd::as_array_struct<C>)
                     emit<typename P::element>(contained);
-                emit_node<typename N::template at<n.contains>, typename P::element, S>(contained);
+                emit_node<detail::schema_at<N, N::node.contains>, typename P::element, S>(contained);
                 if constexpr (c.template has<yyjson::min_contains>()) target.emplace("minContains", c.min_contains);
                 if constexpr (c.template has<yyjson::max_contains>()) target.emplace("maxContains", c.max_contains);
             }
@@ -3451,10 +3451,10 @@ namespace yyjson
             // the root of the conditions of a struct beside the `properties` of its fields, which `emit_struct_values`
             // gives
             if constexpr (n.properties != 0 && !std::same_as<N, yd::node_schema<yd::struct_tree<S>, 0>>)
-                emit_node<typename N::template at<n.properties>, typename P::value, S>(
+                emit_node<detail::schema_at<N, N::node.properties>, typename P::value, S>(
                     sub(out, "additionalProperties"));
             if constexpr (n.keys != 0)
-                emit_node<typename N::template at<n.keys>, typename P::key, S>(sub(out, "propertyNames"));
+                emit_node<detail::schema_at<N, N::node.keys>, typename P::key, S>(sub(out, "propertyNames"));
             // a map read from an array of its pairs is checked as the object of those pairs
             if constexpr (yd::object_written_range<C>)
                 if constexpr (yd::nested_casts<C>::elements)
@@ -3474,10 +3474,10 @@ namespace yyjson
                                 prefix.emplace_back(empty_object);
                             }
                             if constexpr (n.keys != 0)
-                                emit_node<typename N::template at<n.keys>, typename P::key, S>(
+                                emit_node<detail::schema_at<N, N::node.keys>, typename P::key, S>(
                                     sub_at(pair, "prefixItems", 0));
                             if constexpr (n.properties != 0)
-                                emit_node<typename N::template at<n.properties>, typename P::value, S>(
+                                emit_node<detail::schema_at<N, N::node.properties>, typename P::value, S>(
                                     sub_at(pair, "prefixItems", 1));
                         }
                     }
@@ -3507,7 +3507,7 @@ namespace yyjson
         void generator::emit_members(object_ref holder, object_ref out)
         {
             namespace yd = yyjson::detail;
-            using Mn = typename N::template at<M>;
+            using Mn = detail::schema_at<N, M>;
             constexpr auto key = Mn::node.key.view();
             constexpr auto k = [] {
                 if constexpr (yd::object_struct_value<C>())
@@ -3538,11 +3538,11 @@ namespace yyjson
         {
             namespace yd = yyjson::detail;
             using kind = yd::combinator_kind;
-            using Rn = typename N::template at<R>;
+            using Rn = detail::schema_at<N, R>;
             constexpr auto combinator = Rn::node.combinator;
             constexpr auto first = Rn::node.operands_first;
             const auto operand = [&]<std::size_t J>(std::integral_constant<std::size_t, J>, object_ref o) {
-                emit_node<typename N::template at<first + J>, V, S>(o);
+                emit_node<detail::schema_at<N, first + J>, V, S>(o);
             };
             using zero = std::integral_constant<std::size_t, 0>;
             using one = std::integral_constant<std::size_t, 1>;
@@ -3553,17 +3553,17 @@ namespace yyjson
             {
                 auto holder = place(out, "if");
                 operand(zero(), holder.emplace("if", empty_object));
-                if constexpr (!empty_node(N::template at<first + 1>::node))
+                if constexpr (!empty_node(detail::schema_at<N, first + 1>::node))
                     operand(one(), holder.emplace("then", empty_object));
-                if constexpr (!empty_node(N::template at<first + 2>::node))
+                if constexpr (!empty_node(detail::schema_at<N, first + 2>::node))
                     operand(two(), holder.emplace("else", empty_object));
             }
             else if constexpr (combinator == kind::dependent_required)
             {
                 // the node tree holds it as an `if` of the key and a `then` of the dependents, which the keyword
                 // gives back in one place
-                using If = typename N::template at<first>;
-                constexpr auto key = N::template at<If::node.members>::node.key.view();
+                using If = detail::schema_at<N, first>;
+                constexpr auto key = detail::schema_at<N, If::node.members>::node.key.view();
                 auto dependents = [&] {
                     auto all = sub(out, "dependentRequired");
                     if (auto it = all.find(key); it != all.end())
@@ -3574,14 +3574,14 @@ namespace yyjson
                     return all.emplace(key, empty_array, copy_string);
                 }();
                 const auto add = [&]<std::size_t M>(auto& self, std::integral_constant<std::size_t, M>) -> void {
-                    using Mn = typename N::template at<M>;
+                    using Mn = detail::schema_at<N, M>;
                     const auto dependent = Mn::node.key.view();
                     bool listed = false;
                     for (const auto d : dependents) listed = listed || d.as_string() == dependent;
                     if (!listed) dependents.emplace_back(dependent, copy_string);
                     if constexpr (Mn::node.next != 0) self(self, std::integral_constant<std::size_t, Mn::node.next>());
                 };
-                add(add, std::integral_constant<std::size_t, N::template at<first + 1>::node.members>());
+                add(add, std::integral_constant<std::size_t, detail::schema_at<N, first + 1>::node.members>());
             }
             else
             {
