@@ -4654,6 +4654,50 @@ namespace yyjson
         template <typename...>
         inline constexpr bool false_v = false;
 
+        // The name of a type without the "struct ", "class ", "enum " and "union " that MSVC writes before each name.
+        template <std::size_t N>
+        struct type_name_buffer
+        {
+            std::array<char, N> chars{};
+            std::size_t size = 0;
+        };
+        template <std::size_t N>
+        constexpr type_name_buffer<N> without_type_keywords(std::string_view name) noexcept
+        {
+            auto result = type_name_buffer<N>{};
+            for (std::size_t i = 0; i < name.size();)
+            {
+                const auto c = i == 0 ? ' ' : name[i - 1];
+                const auto word =
+                    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+                auto keyword = std::size_t{0};
+                for (const auto k : {std::string_view{"struct "}, std::string_view{"class "}, std::string_view{"enum "},
+                                     std::string_view{"union "}})
+                    if (!word && name.substr(i).starts_with(k)) keyword = k.size();
+                if (keyword != 0)
+                    i += keyword;
+                else
+                    result.chars[result.size++] = name[i++];
+            }
+            return result;
+        }
+
+#if !defined(__clang__) && !defined(__GNUC__) && defined(_MSC_VER)
+        template <typename T>
+        constexpr std::string_view funcsig_type_name() noexcept
+        {
+            constexpr auto signature = std::string_view{__FUNCSIG__};
+            constexpr auto prefix = std::string_view{"funcsig_type_name<"};
+            constexpr auto suffix = std::string_view{">(void)"};
+            const auto start = signature.find(prefix) + prefix.size();
+            const auto end = signature.rfind(suffix);
+            return signature.substr(start, end - start);
+        }
+        template <typename T>
+        inline constexpr auto msvc_type_name =
+            without_type_keywords<funcsig_type_name<T>().size()>(funcsig_type_name<T>());
+#endif
+
         template <typename T>
         constexpr std::string_view type_name() noexcept
         {
@@ -4666,12 +4710,7 @@ namespace yyjson
             const auto end = semicolon != std::string_view::npos ? semicolon : signature.rfind(']');
             return signature.substr(start, end - start);
 #elif defined(_MSC_VER)
-            constexpr auto signature = std::string_view{__FUNCSIG__};
-            constexpr auto prefix = std::string_view{"type_name<"};
-            constexpr auto suffix = std::string_view{">(void)"};
-            const auto start = signature.find(prefix) + prefix.size();
-            const auto end = signature.rfind(suffix);
-            return signature.substr(start, end - start);
+            return {msvc_type_name<T>.chars.data(), msvc_type_name<T>.size};
 #else
             return "unknown";
 #endif
@@ -4875,9 +4914,7 @@ namespace yyjson
         template <typename T>
         consteval bool library_class() noexcept
         {
-            auto name = type_name<T>();
-            for (const auto keyword : {std::string_view{"struct "}, std::string_view{"class "}})
-                if (name.starts_with(keyword)) name.remove_prefix(keyword.size());
+            const auto name = type_name<T>();
             return name.starts_with("std::") || name.starts_with("yyjson::");
         }
 

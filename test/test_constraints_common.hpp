@@ -1378,23 +1378,11 @@ inline constexpr auto yyjson::annotations<Positions> = yyjson::annotate(
 
 namespace
 {
-    // `e.what()` without the position of the read, and without the "struct ", "class " and "enum " that MSVC writes
-    // before the name of a type
+    // `e.what()` without the position of the read
     std::string message_of(const std::exception& e)
     {
         const auto* cast = dynamic_cast<const yyjson::bad_cast*>(&e);
-        auto message = cast != nullptr ? what_without_position(*cast) : std::string(e.what());
-#if defined(_MSC_VER) && !defined(__clang__)
-        for (const std::string_view keyword : {"struct ", "class ", "enum "})
-        {
-            for (auto i = message.find(keyword); i != std::string::npos; i = message.find(keyword, i + 1))
-            {
-                const auto c = i == 0 ? ' ' : message[i - 1];
-                if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '_') message.erase(i, keyword.size());
-            }
-        }
-#endif
-        return message;
+        return cast != nullptr ? what_without_position(*cast) : std::string(e.what());
     }
 
     // `message` about the value at `path`, with the path of the element 0 of an array that holds the value

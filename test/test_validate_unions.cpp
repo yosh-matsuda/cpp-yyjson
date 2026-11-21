@@ -114,10 +114,10 @@ TEST(Validate, Unions)
         "");
     expect_invalid(
         VdItemsOrText(std::vector<int>{1, -2}),
-        std::format("no alternative accepts the value; reading {}: alternative 0 (std::vector<int>): the array has an "
-                    "item that does not satisfy items; alternative 1 ({}): expected a string, got an array",
+        std::format("no alternative accepts the value; reading {}: alternative 0 ({}): the array has an item that does "
+                    "not satisfy items; alternative 1 ({}): expected a string, got an array",
                     yyjson::detail::variant_name<yyjson::any_of_variant<std::vector<int>, std::string>>(),
-                    yyjson::detail::type_name<std::string>()),
+                    yyjson::detail::type_name<std::vector<int>>(), yyjson::detail::type_name<std::string>()),
         "");
     // a keyword that counts the JSON of the alternative
     expect_valid(VdCountedOrMap(VdCounted{1, 2}));

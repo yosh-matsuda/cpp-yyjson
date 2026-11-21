@@ -63,13 +63,10 @@ namespace yyjson
 
         inline constexpr std::string_view dialect = "https://json-schema.org/draft/2020-12/schema";
 
-        // The name in `$defs` of the type named `type_name`: the qualified name without "struct ", "class " or
-        // "enum ", with "::" as "." and each character other than `[A-Za-z0-9._-]` as "_".
+        // The name in `$defs` of the type named `type_name`: the qualified name with "::" as "." and each character
+        // other than `[A-Za-z0-9._-]` as "_".
         inline std::string def_name(std::string_view type_name)
         {
-            for (const auto prefix :
-                 {std::string_view("struct "), std::string_view("class "), std::string_view("enum ")})
-                if (type_name.starts_with(prefix)) type_name.remove_prefix(prefix.size());
             auto result = std::string();
             for (std::size_t i = 0; i < type_name.size(); ++i)
             {

@@ -219,7 +219,8 @@ TEST(ReadPolicies, Containers)
     // an element twice in a set, which would drop it
     EXPECT_EQ(read_with<std::set<int>>("[1,2,1]"), "[1,2]");
     EXPECT_EQ(read_with<std::set<int>>("[1,2,1]", yyjson::strict),
-              error("the array has a duplicate element at /2; reading std::set<int>"));
+              error(std::format("the array has a duplicate element at /2; reading {}",
+                                yyjson::detail::type_name<std::set<int>>())));
     EXPECT_EQ(read_with<std::set<int>>("[1,2,3]", yyjson::strict), "[1,2,3]");
     EXPECT_TRUE(direct_read);
     EXPECT_TRUE(read_with<std::unordered_set<int>>("[1,1]", yyjson::reject_duplicates)
@@ -228,7 +229,8 @@ TEST(ReadPolicies, Containers)
     EXPECT_EQ(read_with<std::unordered_multiset<int>>("[1,1]", yyjson::strict), "[1,1]");
     EXPECT_EQ(read_with<std::vector<int>>("[1,1]", yyjson::strict), "[1,1]");
     EXPECT_EQ(read_with<std::vector<std::set<int>>>("[[1],[2,2]]", yyjson::strict),
-              error("the array has a duplicate element at /1/1; reading std::set<int>"));
+              error(std::format("the array has a duplicate element at /1/1; reading {}",
+                                yyjson::detail::type_name<std::set<int>>())));
 }
 
 TEST(ReadPolicies, UntaggedVariant)

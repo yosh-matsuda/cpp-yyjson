@@ -2,6 +2,18 @@
 
 // NOLINTBEGIN
 
+// a message names a type without the keywords that MSVC writes before each name in it
+constexpr bool name_without_keywords(std::string_view name, std::string_view expected)
+{
+    const auto buffer = yyjson::detail::without_type_keywords<64>(name);
+    return std::string_view(buffer.chars.data(), buffer.size) == expected;
+}
+static_assert(name_without_keywords("struct ns::S", "ns::S"));
+static_assert(name_without_keywords("class std::vector<struct A,class std::allocator<struct A> >",
+                                    "std::vector<A,std::allocator<A> >"));
+static_assert(name_without_keywords("enum E", "E") && name_without_keywords("union U", "U"));
+static_assert(name_without_keywords("my_struct Xclass Y", "my_struct Xclass Y"));
+
 // `bad_cast` names the JSON Pointer of the value that fails, and `yyjson::read<T>` its position in the text
 struct PathItem
 {
