@@ -25577,18 +25577,21 @@ namespace yyjson
             {
                 constexpr const auto& tree = array_struct_tree<S>::tree;
                 // the counts of the type and of its `yyjson::all_of`, and the keywords of any subschema
+                // (each lambda names the tree again, because MSVC 19.44 rejects the use of a reference without capture)
                 constexpr auto least = [] {
+                    const auto& array_tree = array_struct_tree<S>::tree;
                     auto n = std::size_t{0};
-                    for (const auto k : position_nodes(tree, 0))
-                        if (tree.nodes[k].constraints.template has<min_items>())
-                            n = std::max(n, tree.nodes[k].constraints.min_items);
+                    for (const auto k : position_nodes(array_tree, 0))
+                        if (array_tree.nodes[k].constraints.template has<min_items>())
+                            n = std::max(n, array_tree.nodes[k].constraints.min_items);
                     return n;
                 }();
                 constexpr auto most = [] {
+                    const auto& array_tree = array_struct_tree<S>::tree;
                     auto n = std::numeric_limits<std::size_t>::max();
-                    for (const auto k : position_nodes(tree, 0))
-                        if (tree.nodes[k].constraints.template has<max_items>())
-                            n = std::min(n, tree.nodes[k].constraints.max_items);
+                    for (const auto k : position_nodes(array_tree, 0))
+                        if (array_tree.nodes[k].constraints.template has<max_items>())
+                            n = std::min(n, array_tree.nodes[k].constraints.max_items);
                     return n;
                 }();
                 constexpr bool unique = std::ranges::any_of(
