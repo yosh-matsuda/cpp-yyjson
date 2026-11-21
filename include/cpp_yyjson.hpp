@@ -22548,7 +22548,7 @@ namespace yyjson
         constraint_kind struct_json_violation(const S& s, const Json& json, std::string_view tag, std::string_view id)
         {
             constexpr auto n = struct_field_count<S>;
-            constexpr const schema_node& node = Schema::node;
+            static constexpr const schema_node& node = Schema::node;
             constexpr const field_constraints& c = Schema::constraints;
             constexpr auto named = members_key_mask<S>(Schema::tree, node.members);
             static_assert(struct_position_keys_fit<Schema, Tagged, S>());
@@ -25344,14 +25344,16 @@ namespace yyjson
                                                                   std::type_identity<E>, auto j) {
                 if constexpr (Sub != 0)
                     need = max_need(need, json_requirement<typename Schema::template at<Sub>, E>());
-                else if constexpr (decltype(j)::value < n.prefix_count)
+                else if constexpr (decltype(j)::value < Schema::node.prefix_count)
                     need = max_need(
-                        need, json_requirement<typename Schema::template at<n.prefix_first + decltype(j)::value>, E>());
+                        need,
+                        json_requirement<typename Schema::template at<Schema::node.prefix_first + decltype(j)::value>,
+                                         E>());
             };
             const auto each = [&]<typename E>(std::type_identity<E> e, auto j) {
                 element(std::integral_constant<std::size_t, 0>(), e, j);
-                element(std::integral_constant<std::size_t, n.items>(), e, j);
-                element(std::integral_constant<std::size_t, n.contains>(), e, j);
+                element(std::integral_constant<std::size_t, Schema::node.items>(), e, j);
+                element(std::integral_constant<std::size_t, Schema::node.contains>(), e, j);
             };
             if constexpr (as_array_struct<V>)
             {

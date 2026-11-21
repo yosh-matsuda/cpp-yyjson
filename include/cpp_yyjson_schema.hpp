@@ -3368,7 +3368,7 @@ namespace yyjson
         void generator::emit_array_keywords(object_ref out)
         {
             namespace yd = yyjson::detail;
-            constexpr const auto& n = N::node;
+            static constexpr const auto& n = N::node;
             constexpr const auto& c = N::constraints;
             using P = position_types<C>;
             if constexpr (c.template has<yyjson::min_items>()) tighten(out, "minItems", c.min_items, true);
