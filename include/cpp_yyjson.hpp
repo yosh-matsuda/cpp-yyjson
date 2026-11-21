@@ -25326,22 +25326,21 @@ namespace yyjson
         template <typename Tree>
         consteval bool subtree_compares_json(const Tree& tree, std::size_t root)
         {
-            auto pending = std::vector<std::size_t>{root};
-            while (!pending.empty())
-            {
-                const auto& n = tree.nodes[pending.back()];
-                pending.pop_back();
-                if ((n.constraints.bits & constraint_bit<unique_items_t>) != 0) return true;
-                for (std::size_t i = 0; i < n.values_count; ++i)
-                    if (tree.values[n.values_first + i].kind == json_scalar::kind_t::json) return true;
-                for (const auto sub : {n.items, n.properties, n.keys, n.contains})
-                    if (sub != 0) pending.push_back(sub);
-                for (std::size_t j = 0; j < n.prefix_count; ++j) pending.push_back(n.prefix_first + j);
-                for (auto r = n.combinators; r != 0; r = tree.nodes[r].next)
-                    for (std::size_t j = 0; j < tree.nodes[r].operands_count; ++j)
-                        pending.push_back(tree.nodes[r].operands_first + j);
-                for (auto m = n.members; m != 0; m = tree.nodes[m].next) pending.push_back(m);
-            }
+            const auto& n = tree.nodes[root];
+            if ((n.constraints.bits & constraint_bit<unique_items_t>) != 0) return true;
+            for (std::size_t i = 0; i < n.values_count; ++i)
+                if (tree.values[n.values_first + i].kind == json_scalar::kind_t::json) return true;
+            if (n.items != 0 && subtree_compares_json(tree, n.items)) return true;
+            if (n.properties != 0 && subtree_compares_json(tree, n.properties)) return true;
+            if (n.keys != 0 && subtree_compares_json(tree, n.keys)) return true;
+            if (n.contains != 0 && subtree_compares_json(tree, n.contains)) return true;
+            for (std::size_t j = 0; j < n.prefix_count; ++j)
+                if (subtree_compares_json(tree, n.prefix_first + j)) return true;
+            for (auto r = n.combinators; r != 0; r = tree.nodes[r].next)
+                for (std::size_t j = 0; j < tree.nodes[r].operands_count; ++j)
+                    if (subtree_compares_json(tree, tree.nodes[r].operands_first + j)) return true;
+            for (auto m = n.members; m != 0; m = tree.nodes[m].next)
+                if (subtree_compares_json(tree, m)) return true;
             return false;
         }
 
@@ -29160,6 +29159,16 @@ namespace yyjson
                 return false;
         }
 
+        template <typename T, std::size_t R>
+        consteval bool key_map_compares_json()
+        {
+            using schema = extra_keys_schema<T, R>;
+            if constexpr (schema::node.properties != 0)
+                return json_requirement<typename schema::template at<schema::node.properties>,
+                                        typename key_map_type<T, R>::mapped_type>() == json_need::document;
+            else
+                return false;
+        }
         // Whether a keyword of T itself, of one of its fields, or of the values of its key maps compares JSON values
         // that a typed comparison cannot, so that T must read through a document.
         template <typename T>
@@ -29198,26 +29207,19 @@ namespace yyjson
                                });
                 if constexpr (has_key_maps<T>)
                 {
-                    const auto map_compares = [](auto r) {
-                        using schema = extra_keys_schema<T, decltype(r)::value>;
-                        if constexpr (schema::node.properties != 0)
-                            return json_requirement<typename schema::template at<schema::node.properties>,
-                                                    typename key_map_type<T, decltype(r)::value>::mapped_type>() ==
-                                   json_need::document;
-                        else
-                            return false;
-                    };
-                    compares =
-                        compares || !all_indices<pattern_count<T>>([&](auto p) {
-                            return !map_compares(std::integral_constant<std::size_t, pattern_field_indices<T>[p()]>());
-                        });
+                    compares = compares || !all_indices<pattern_count<T>>([](auto p) {
+                                   return !key_map_compares_json<T, pattern_field_indices<T>[p()]>();
+                               });
                     if constexpr (has_extra_keys<T>)
-                        compares = compares || map_compares(std::integral_constant<std::size_t, extra_keys_index<T>>());
+                        compares = compares || key_map_compares_json<T, extra_keys_index<T>>();
                 }
                 if constexpr (has_struct_conditions<T>) compares = compares || struct_node_compares_json<T, 0>();
                 return compares;
             }
         }
+        // A variable, not a call in the member initializer below, so that MSVC evaluates it once per type.
+        template <typename T>
+        constexpr bool type_compares_json_v = type_compares_json<T>();
         // A node marked for a type whose keywords compare JSON values that a typed comparison cannot.
         template <typename T>
         struct json_equality_type_node;
@@ -29228,7 +29230,7 @@ namespace yyjson
         {
             using edges = decltype(joined_nodes(json_equality_type_nodes(typename read_type_node<T>::edges{}),
                                                 key_map_value_nodes<json_equality_type_node, T, read_conversion>()));
-            static constexpr bool marked = type_compares_json<T>();
+            static constexpr bool marked = type_compares_json_v<T>;
         };
         // Whether a value of T read from JSON has a keyword that compares JSON values, which only a document keeps.
         template <typename T>
