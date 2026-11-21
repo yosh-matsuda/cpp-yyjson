@@ -186,7 +186,7 @@ namespace constraint_tree_rules
         (yyjson::detail::position_empty_kinds(
              yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>(), 0) &
          yyjson::detail::object_kind) != 0;
-    // the two lambdas below hold const locals, because MSVC 19.44 stops with C1001 on a constexpr local
+    // a const local, because MSVC 19.44 stops with C1001 on a constexpr local here
     template <typename T>
     constexpr bool struct_empty = [] {
         const auto counts =
@@ -196,10 +196,10 @@ namespace constraint_tree_rules
                 yyjson::detail::object_kind) != 0;
     }();
     template <typename T>
-    constexpr bool names_empty = [] {
-        const auto tree = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>();
-        return yyjson::detail::position_reads_nothing<std::string>(tree, tree.nodes[0].keys);
-    }();
+    constexpr auto names_tree_of = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>();
+    template <typename T>
+    constexpr bool names_empty =
+        yyjson::detail::position_reads_nothing<std::string>(names_tree_of<T>, names_tree_of<T>.nodes[0].keys);
     using enum yyjson::detail::constraint_error;
     static_assert(tree_error<MinimumTwice> == keyword_twice && tree_error<ConstTwice> == keyword_twice &&
                   tree_error<EnumTwice> == keyword_twice && tree_error<FormatTwice> == keyword_twice &&
