@@ -2513,14 +2513,14 @@ namespace yyjson
             }
         }
 
-        // Whether the I-th of Vs is the first of its type.
-        template <std::size_t I, typename... Vs>
+        // Whether the I-th type of the tuple Vs is the first of its type.
+        template <std::size_t I, typename Vs>
         consteval bool first_of_type()
         {
-            using V = std::tuple_element_t<I, std::tuple<Vs...>>;
+            using V = std::tuple_element_t<I, Vs>;
             return []<std::size_t... Js>(std::index_sequence<Js...>) {
-                return ((Js >= I || !std::same_as<std::tuple_element_t<Js, std::tuple<Vs...>>, V>) && ...);
-            }(std::index_sequence_for<Vs...>{});
+                return ((Js >= I || !std::same_as<std::tuple_element_t<Js, Vs>, V>) && ...);
+            }(std::make_index_sequence<std::tuple_size_v<Vs>>{});
         }
 
         // The schema of a value that is one of Vs: of each of them under `combinator`, or of V when all are V.
@@ -2532,12 +2532,14 @@ namespace yyjson
                 emit<first>(out);
             else
             {
+                // a tuple of Vs, because MSVC 19.44 does not expand Vs in a lambda inside the expansion of Is
+                using alternatives = std::tuple<Vs...>;
                 auto each = out.emplace(combinator, empty_array);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (
                         [&] {
-                            if constexpr (first_of_type<Is, Vs...>())
-                                emit<std::tuple_element_t<Is, std::tuple<Vs...>>>(each.emplace_back(empty_object));
+                            if constexpr (first_of_type<Is, alternatives>())
+                                emit<std::tuple_element_t<Is, alternatives>>(each.emplace_back(empty_object));
                         }(),
                         ...);
                 }(std::index_sequence_for<Vs...>{});
